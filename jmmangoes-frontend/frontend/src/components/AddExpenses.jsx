@@ -1,0 +1,291 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { toast } from 'react-toastify';
+import api from '../lib/api';
+import useAuthStore from '../store/authStore';
+
+const todayISO = new Date().toISOString().slice(0, 10);
+
+const AddExpenses = () => {
+  const user = useAuthStore((state) => state.user);
+  const canView = user?.role === 'admin' || user?.permissions?.addExpense?.view;
+  const canManage = user?.role === 'admin' || user?.permissions?.addExpense?.manage;
+  const isSuperUser = user?.role === 'admin';
+  const [sites, setSites] = useState([]);
+  const [heads, setHeads] = useState([]);
+  const [items, setItems] = useState([]);
+  const [entries, setEntries] = useState([]);
+
+  const [siteId, setSiteId] = useState('');
+  const [entryDate, setEntryDate] = useState(todayISO);
+  const [headId, setHeadId] = useState('');
+  const [itemId, setItemId] = useState('');
+  const [customItemName, setCustomItemName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateTo, setDateTo] = useState(todayISO);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [editHeadId, setEditHeadId] = useState('');
+  const [editItemId, setEditItemId] = useState('');
+  const [editCustomItemName, setEditCustomItemName] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editRemarks, setEditRemarks] = useState('');
+  const [editDate, setEditDate] = useState(todayISO);
+
+  const loadMasters = async () => {
+    const [sitesRes, headsRes, itemsRes] = await Promise.all([
+      api.get('/expenses/sites'),
+      api.get('/expense-heads/for-entry'),
+      api.get('/expense-items'),
+    ]);
+    const s = sitesRes.data || [];
+    setSites(s);
+    setHeads(headsRes.data || []);
+    setItems(itemsRes.data || []);
+    if (!siteId && s.length) setSiteId(s[0]._id);
+  };
+
+  const loadEntries = async (targetSiteId = siteId) => {
+    if (!targetSiteId) return setEntries([]);
+    const res = await api.get('/expense-entries', { params: { siteId: targetSiteId, dateFrom, dateTo } });
+    setEntries(res.data || []);
+  };
+
+  useEffect(() => {
+    if (canView) loadMasters().catch(console.error);
+  }, [canView]);
+
+  useEffect(() => {
+    if (canView && siteId) loadEntries(siteId).catch(console.error);
+  }, [canView, siteId, dateFrom, dateTo]);
+
+  const filteredItems = useMemo(
+    () => items.filter((i) => String(i.headId) === String(headId)),
+    [items, headId]
+  );
+
+  const handleSaveExpense = async () => {
+    if (!canManage) return toast.warn('No manage permission.');
+    const value = Number(amount);
+    if (!siteId || !headId || Number.isNaN(value) || value < 0) return toast.warn('Provide valid expense data.');
+    const isOther = itemId === 'other';
+    if ((!itemId || isOther) && !customItemName.trim()) return toast.warn('Select expense name or enter other name.');
+    try {
+      await api.post('/expense-entries', {
+        siteId,
+        date: entryDate,
+        headId,
+        itemId: isOther ? null : (itemId || null),
+        itemName: isOther || !itemId ? customItemName.trim() : '',
+        amount: value,
+        remarks,
+      });
+      toast.success('Expense entry saved.');
+      setItemId('');
+      setCustomItemName('');
+      setAmount('');
+      setRemarks('');
+      await loadEntries(siteId);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to save expense entry.');
+    }
+  };
+
+  const downloadCsv = () => {
+    const headers = ['Date & Time', 'Site', 'Head', 'Expense Name', 'Amount', 'Remarks', 'Entered By'];
+    const rows = entries.map((e) => [
+      `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
+      `"${String(e.siteName || '').replace(/"/g, '""')}"`,
+      `"${String(e.headName || '').replace(/"/g, '""')}"`,
+      `"${String(e.itemName || '').replace(/"/g, '""')}"`,
+      `"${Number(e.amount || 0).toFixed(2)}"`,
+      `"${String(e.remarks || '').replace(/"/g, '""')}"`,
+      `"${String(e.enteredByName || '-').replace(/"/g, '""')}"`,
+    ].join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `expenses_${dateFrom}_${dateTo}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const totalExpense = useMemo(
+    () => entries.reduce((sum, e) => sum + Number(e.amount || 0), 0),
+    [entries]
+  );
+
+  const openEdit = (e) => {
+    setEditingEntry(e);
+    setEditHeadId(e.headId || '');
+    const matchedItem = items.find((i) => i.name.toLowerCase() === String(e.itemName || '').toLowerCase() && String(i.headId) === String(e.headId));
+    setEditItemId(matchedItem?._id || 'other');
+    setEditCustomItemName(matchedItem ? '' : (e.itemName || ''));
+    setEditAmount(String(e.amount ?? ''));
+    setEditRemarks(e.remarks || '');
+    setEditDate(new Date(e.date || e.createdAt).toISOString().slice(0, 10));
+  };
+
+  const saveEdit = async () => {
+    if (!editingEntry) return;
+    const value = Number(editAmount);
+    const isOther = editItemId === 'other';
+    if (Number.isNaN(value) || value < 0) return toast.warn('Invalid amount.');
+    if ((!editItemId || isOther) && !editCustomItemName.trim()) return toast.warn('Expense name is required.');
+    try {
+      await api.put(`/expense-entries/${editingEntry._id}`, {
+        date: editDate,
+        headId: editHeadId,
+        itemId: isOther ? null : editItemId,
+        itemName: isOther || !editItemId ? editCustomItemName.trim() : '',
+        amount: value,
+        remarks: editRemarks,
+      });
+      toast.success('Expense updated.');
+      setEditingEntry(null);
+      await loadEntries(siteId);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to update expense.');
+    }
+  };
+
+  const removeEntry = async (id) => {
+    if (!window.confirm('Remove this expense entry?')) return;
+    try {
+      await api.delete(`/expense-entries/${id}`);
+      toast.success('Expense removed.');
+      await loadEntries(siteId);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to remove expense.');
+    }
+  };
+
+  if (!canView) return <div className="p-4 text-black">Access denied.</div>;
+
+  return (
+    <div className="p-3 md:p-4 text-black">
+      <h2 className="text-2xl font-bold mb-4">Add Expenses</h2>
+
+      <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Site</label>
+          <select value={siteId} onChange={(e) => setSiteId(e.target.value)} className="w-full border p-2 rounded">
+            <option value="">Select Site</option>
+            {sites.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Expense Date</label>
+          <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="w-full border p-2 rounded" />
+        </div>
+      </div>
+
+      <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <select value={headId} onChange={(e) => { setHeadId(e.target.value); setItemId(''); setCustomItemName(''); }} className="border p-2 rounded">
+          <option value="">Select Expense Head</option>
+          {heads.map((h) => <option key={h._id} value={h._id}>{h.name}</option>)}
+        </select>
+        <select value={itemId} onChange={(e) => { setItemId(e.target.value); if (e.target.value !== 'other') setCustomItemName(''); }} className="border p-2 rounded">
+          <option value="">Select Expense Name</option>
+          {filteredItems.map((i) => <option key={i._id} value={i._id}>{i.name}</option>)}
+          <option value="other">Other</option>
+        </select>
+        {(itemId === 'other' || (!itemId && customItemName !== '')) && (
+          <input value={customItemName} onChange={(e) => setCustomItemName(e.target.value)} placeholder="Enter expense name" className="border p-2 rounded" />
+        )}
+        <input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount" className="border p-2 rounded" />
+        <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" className="border p-2 rounded md:col-span-2" />
+        <button onClick={handleSaveExpense} disabled={!canManage} className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-60">Save Expense</button>
+      </div>
+
+      <div className="bg-white rounded shadow p-4 mb-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="border p-2 rounded" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="border p-2 rounded" />
+        <button onClick={() => loadEntries(siteId)} className="bg-blue-600 text-white px-4 py-2 rounded">Apply Range</button>
+        <button onClick={downloadCsv} className="bg-green-600 text-white px-4 py-2 rounded">Download CSV</button>
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow">
+        <div className="px-4 py-3 border-b font-semibold">Expenses History ({dateFrom} to {dateTo})</div>
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr>
+              <th className="border px-3 py-2">Date & Time</th>
+              <th className="border px-3 py-2">Head</th>
+              <th className="border px-3 py-2">Expense</th>
+              <th className="border px-3 py-2">Amount</th>
+              <th className="border px-3 py-2">Remarks</th>
+              <th className="border px-3 py-2">Entered By</th>
+              {isSuperUser && <th className="border px-3 py-2">Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e._id}>
+                <td className="border px-3 py-2">{new Date(e.createdAt || e.date).toLocaleString()}</td>
+                <td className="border px-3 py-2">{e.headName}</td>
+                <td className="border px-3 py-2">{e.itemName}</td>
+                <td className="border px-3 py-2">PKR {Number(e.amount || 0).toFixed(2)}</td>
+                <td className="border px-3 py-2">{e.remarks || '-'}</td>
+                <td className="border px-3 py-2">{e.enteredByName || '-'}</td>
+                {isSuperUser && (
+                  <td className="border px-3 py-2">
+                    <div className="flex gap-2">
+                      <button onClick={() => openEdit(e)} className="text-blue-600 hover:underline">Edit</button>
+                      <button onClick={() => removeEntry(e._id)} className="text-red-600 hover:underline">Remove</button>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {entries.length === 0 && (
+              <tr><td colSpan={isSuperUser ? 7 : 6} className="border px-3 py-3 text-center text-gray-500">No expense entries found.</td></tr>
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={isSuperUser ? 6 : 5} className="border px-3 py-2 text-right font-semibold">Total Expense</td>
+              <td className="border px-3 py-2 font-bold">PKR {totalExpense.toFixed(2)}</td>
+              {isSuperUser && <td className="border px-3 py-2" />}
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      {editingEntry && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow-lg w-full max-w-xl p-4">
+            <h3 className="text-xl font-semibold mb-3">Edit Expense Entry</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="border p-2 rounded" />
+              <select value={editHeadId} onChange={(e) => { setEditHeadId(e.target.value); setEditItemId(''); setEditCustomItemName(''); }} className="border p-2 rounded">
+                <option value="">Select Expense Head</option>
+                {heads.map((h) => <option key={h._id} value={h._id}>{h.name}</option>)}
+              </select>
+              <select value={editItemId} onChange={(e) => { setEditItemId(e.target.value); if (e.target.value !== 'other') setEditCustomItemName(''); }} className="border p-2 rounded">
+                <option value="">Select Expense Name</option>
+                {items.filter((i) => String(i.headId) === String(editHeadId)).map((i) => <option key={i._id} value={i._id}>{i.name}</option>)}
+                <option value="other">Other</option>
+              </select>
+              {(editItemId === 'other' || (!editItemId && editCustomItemName !== '')) && (
+                <input value={editCustomItemName} onChange={(e) => setEditCustomItemName(e.target.value)} placeholder="Enter expense name" className="border p-2 rounded" />
+              )}
+              <input type="number" min={0} value={editAmount} onChange={(e) => setEditAmount(e.target.value)} placeholder="Amount" className="border p-2 rounded" />
+              <input value={editRemarks} onChange={(e) => setEditRemarks(e.target.value)} placeholder="Remarks" className="border p-2 rounded" />
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setEditingEntry(null)} className="px-4 py-2 rounded border">Cancel</button>
+              <button onClick={saveEdit} className="px-4 py-2 rounded bg-green-600 text-white">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AddExpenses;
