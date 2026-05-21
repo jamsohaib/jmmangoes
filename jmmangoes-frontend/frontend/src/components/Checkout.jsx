@@ -30,8 +30,9 @@ function Checkout() {
   const [unitShipping, setUnitShipping] = useState(0);
   const itemsCount = totalItems();
   
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const shippingCost = unitShipping * itemsCount;
+  const safeUnitShipping = Number(unitShipping || 0);
+  const subtotal = cart.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+  const shippingCost = safeUnitShipping * Number(itemsCount || 0);
   const totalCost = subtotal + shippingCost;
 
    const [otherFiled, setOtherFiled] = useState(false);
@@ -49,7 +50,8 @@ function Checkout() {
   useEffect(() => {
     const city = formData.city.trim().toLowerCase();
     const override = settings.cityOverrides?.find(o => o.city.toLowerCase() === city);
-    setUnitShipping(override ? override.cost : settings.zoneAUnitCost);
+    const nextUnit = override ? Number(override.cost || 0) : Number(settings.zoneAUnitCost || 0);
+    setUnitShipping(Number.isFinite(nextUnit) ? nextUnit : 0);
   }, [formData.city, settings]);
 
    const handleChange = e => {
@@ -165,7 +167,7 @@ function Checkout() {
       </ul>
 
       <div className="flex justify-between gap-3 mt-4 text-sm md:text-base">
-        <span>Unit Shipping Rate for {formData.city===''?"Standard (May Update with City selection)": formData.city} : </span> <span>PKR {unitShipping.toFixed(2)}</span>
+        <span>Unit Shipping Rate for {formData.city===''?"Standard (May Update with City selection)": formData.city} : </span> <span>PKR {safeUnitShipping.toFixed(2)}</span>
       </div>
       <div className="flex justify-between gap-3 text-sm md:text-base">
         <span>Shipping (×{itemsCount} items):</span> <span>PKR {shippingCost.toFixed(2)}</span>
