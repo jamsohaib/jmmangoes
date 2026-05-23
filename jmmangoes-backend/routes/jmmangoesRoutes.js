@@ -106,6 +106,22 @@ jmm_route.post('/upload-product-image', authenticateUser, authorizePage('product
     filename: req.file.filename,
   });
 });
+jmm_route.post('/upload-payment-image', authenticateUser, authorizePage('paymentManager', 'manage'), upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: 'No image file uploaded' });
+  return res.status(201).json({
+    success: true,
+    imageUrl: `/images/${req.file.filename}`,
+    filename: req.file.filename,
+  });
+});
+jmm_route.post('/upload-payment-receipt', upload.single('receipt'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: 'No receipt file uploaded' });
+  return res.status(201).json({
+    success: true,
+    receiptUrl: `/images/${req.file.filename}`,
+    filename: req.file.filename,
+  });
+});
 jmm_route.get('/getProducts', authenticateUser, authorizePage('productsPage', 'view'), jmm_controller.handleGetProducts);
 jmm_route.get('/products/sites', authenticateUser, authorizePage('productsPage', 'view'), jmm_controller.handleGetProductSites);
 jmm_route.put('/products/:id', authenticateUser, authorizePage('productsPage', 'manage'), jmm_controller.handleUpdateProduct);
@@ -148,6 +164,11 @@ jmm_route.get('/couriers', authenticateUser, authorizePage('courierManagement', 
 jmm_route.post('/couriers', authenticateUser, authorizePage('courierManagement', 'manage'), jmm_controller.handleCreateCourier);
 jmm_route.put('/couriers/:id', authenticateUser, authorizePage('courierManagement', 'manage'), jmm_controller.handleUpdateCourier);
 jmm_route.delete('/couriers/:id', authenticateUser, authorizePage('courierManagement', 'manage'), jmm_controller.handleDeleteCourier);
+jmm_route.get('/payment-methods', authenticateUser, authorizePage('paymentManager', 'view'), jmm_controller.handleGetPaymentMethods);
+jmm_route.post('/payment-methods', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleCreatePaymentMethod);
+jmm_route.put('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleUpdatePaymentMethod);
+jmm_route.delete('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleDeletePaymentMethod);
+jmm_route.get('/payment-methods/public', jmm_controller.handleGetPublicPaymentMethods);
 jmm_route.get('/orders', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrders);
 jmm_route.put('/orders/:id/confirm', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleConfirmOrder);
 jmm_route.put('/orders/:id/reject', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRejectOrder);
@@ -156,6 +177,7 @@ jmm_route.put('/orders/:id/dispatch', authenticateUser, authorizePage('orderMana
 jmm_route.put('/orders/:id/cancel', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCancelOrder);
 jmm_route.put('/orders/:id/deliver', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleDeliverOrder);
 jmm_route.put('/orders/:id/return', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReturnOrder);
+jmm_route.put('/orders/:id/verify-payment', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleVerifyOrderPayment);
 jmm_route.put('/orders/:id/feedback-reminder', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleSendFeedbackReminder);
 jmm_route.get('/orders/feedback-report', authenticateUser, authorizePage('feedbackReport', 'view'), jmm_controller.handleFeedbackReport);
 jmm_route.get('/expenses/sites', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetAssignedSites);

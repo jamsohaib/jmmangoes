@@ -15,6 +15,7 @@ const permissionKeys = [
   { key: 'manageExpense', label: 'Manage Expense' },
   { key: 'addExpense', label: 'Add Expenses' },
   { key: 'emailAlerts', label: 'Email Alerts' },
+  { key: 'paymentManager', label: 'Payment Manager' },
   { key: 'courierManagement', label: 'Courier Management' },
   { key: 'orderManagement', label: 'Order Management' },
   { key: 'feedbackReport', label: 'Feedback Report' },

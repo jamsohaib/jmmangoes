@@ -21,7 +21,9 @@ const ExpenseItem = require('../model/ExpenseItemSchema');
 const ExpenseEntry = require('../model/ExpenseEntrySchema');
 const OrderAlertEmail = require('../model/OrderAlertEmailSchema');
 const Courier = require('../model/CourierSchema');
+const PaymentMethod = require('../model/PaymentMethodSchema');
 const { sendMail } = require('../services/mailer');
+const logger = require('../utils/logger');
 
 
 async function ensureOnlineSite() {
@@ -51,19 +53,23 @@ async function ensureDefaultExpenseSetup() {
   return othersHead;
 }
 
+function normalizePaymentCode(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 async function getNextOrderNumber() {
-  const today = new Date();
-  const y = today.getFullYear();
-  const m = String(today.getMonth() + 1).padStart(2, '0');
-  const d = String(today.getDate()).padStart(2, '0');
-  const prefix = `JMM-${y}${m}${d}-`;
-  const latest = await Order.findOne({ orderNumber: { $regex: `^${prefix}` } }).sort({ createdAt: -1 });
-  let seq = 1;
-  if (latest?.orderNumber) {
-    const tail = Number(latest.orderNumber.split('-').pop());
-    if (!Number.isNaN(tail)) seq = tail + 1;
-  }
-  return `${prefix}${String(seq).padStart(4, '0')}`;
+  const numericRows = await Order.find({ orderNumber: { $regex: '^[0-9]{6}$' } })
+    .sort({ orderNumber: -1 })
+    .limit(1)
+    .select('orderNumber');
+  const latest = Number(numericRows?.[0]?.orderNumber || 100000);
+  const next = Number.isFinite(latest) ? latest + 1 : 100001;
+  if (next > 999999) return String(Math.floor(100000 + Math.random() * 900000));
+  return String(next).padStart(6, '0');
 }
 
 async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
@@ -78,7 +84,7 @@ async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
 
 
 async function handleRegister(req,res){ 
-    console.log("In handleRegistration");
+    logger.debug("In handleRegistration");
    const { name, email, username, contactNumber, password } = req.body;
   try {
     let user = await userDetails.findOne({ username });
@@ -102,7 +108,7 @@ async function handleRegister(req,res){
 
 
 async function handleLogin(req, res) {
-  console.log("In handleLogin");
+  logger.debug("In handleLogin");
   const { username, password } = req.body;
   try {
     const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'admin';
@@ -169,7 +175,7 @@ async function handleLogin(req, res) {
       { expiresIn: '1h' }
     );
 
-    console.log('Token value is : ', token);
+    logger.debug('Token generated for login');
 
     // Send JWT in HTTP-only cookie
     res.cookie('token', token, {
@@ -199,7 +205,7 @@ async function handleLogin(req, res) {
 }
 
 async function handleLogout(req,res){ 
-    console.log("In handleLogout");
+    logger.debug("In handleLogout");
 
       const isProduction = process.env.NODE_ENV === 'production';
       res.clearCookie('token', {
@@ -221,7 +227,7 @@ async function handleLogout(req,res){
 
 
 async function handleAddProducts(req,res){ 
-    console.log("In handleAddProducts");
+    logger.debug("In handleAddProducts");
 
     try {
     const { name, description, price, weight, imageUrl, category, locationPrices = [], productChannel = 'website', availableSiteId = null } = req.body;
@@ -277,7 +283,7 @@ async function handleAddProducts(req,res){
 
 
 async function handleGetProducts(req,res){ 
-  console.log("In handleGetProducts");
+  logger.debug("In handleGetProducts");
 
   try {
     let query = {};
@@ -288,7 +294,7 @@ async function handleGetProducts(req,res){
     const products = await Product.find(query).sort({ createdAt: -1 });
     res.status(200).json(products);
   } catch (err) {
-    console.error('Error fetching products:', err);
+    logger.error('Error fetching products', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -296,7 +302,7 @@ async function handleGetProducts(req,res){
 
 
 async function handleUpdateProductQuantity(req, res) {
-  console.log('In handleUpdateProductQuantity');
+  logger.debug('In handleUpdateProductQuantity');
 
   const { id } = req.params;
   const { quantity } = req.body;
@@ -314,14 +320,14 @@ async function handleUpdateProductQuantity(req, res) {
 
     res.status(200).json({ success: true, message: 'Quantity updated', product: updatedProduct });
   } catch (err) {
-    console.error('Error updating product quantity:', err);
+    logger.error('Error updating product quantity', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
 
 
 async function handleUpdateProductPrice(req, res) {
-  console.log('In handleUpdateProductPrice');
+  logger.debug('In handleUpdateProductPrice');
   const { id } = req.params;
   const { price } = req.body;
     
@@ -338,7 +344,7 @@ async function handleUpdateProductPrice(req, res) {
 
     res.status(200).json({ success: true, message: 'Price updated', product: updatedProduct });
   } catch (err) {
-    console.error('Error updating product quantity:', err);
+    logger.error('Error updating product quantity', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -450,13 +456,13 @@ async function handleRemoveLocationPrice(req, res) {
 
 
 async function handleGetProductsForPublic(req,res){ 
-  console.log("In handleGetProductsForPublic");
+  logger.debug("In handleGetProductsForPublic");
 
   try {
     const products = await Product.find({ isActive: true, productChannel: 'website' }).sort({ createdAt: -1 });
     res.status(200).json(products);
   } catch (err) {
-    console.error('Error fetching products:', err);
+    logger.error('Error fetching products', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -1371,7 +1377,7 @@ async function handleStockAdjustments(req, res) {
 
 
 async function handleUpdateShippingCosts(req,res){ 
-  console.log("In handleUpdateShippingCosts");
+  logger.debug("In handleUpdateShippingCosts");
 
   try {
     const { zoneAUnitCost, cityOverrides, allowedCities } = req.body;
@@ -1404,7 +1410,7 @@ async function handleUpdateShippingCosts(req,res){
     }
     res.json({ success: true });
   } catch (err) {
-    console.error('Error Updating Shipping settings:', err);
+    logger.error('Error updating shipping settings', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error in Updating Shipping details', error: err.message });
   }
 }
@@ -1481,6 +1487,99 @@ async function handleDeleteCourier(req, res) {
   }
 }
 
+async function handleGetPaymentMethods(req, res) {
+  try {
+    const rows = await PaymentMethod.find({}).sort({ createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetPublicPaymentMethods(req, res) {
+  try {
+    const rows = await PaymentMethod.find({ isActive: true }).sort({ createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreatePaymentMethod(req, res) {
+  try {
+    const {
+      name,
+      code = '',
+      requiresReceipt = false,
+      allowReceiptUpload = false,
+      discountType = 'none',
+      discountValue = 0,
+      chargeType = 'none',
+      chargeValue = 0,
+      qrImageUrl = '',
+      methodImageUrl = '',
+      details = '',
+      isCashOnDelivery = false,
+      isActive = true,
+    } = req.body;
+
+    if (!String(name || '').trim()) return res.status(400).json({ message: 'Payment method name is required' });
+    const normalizedCode = normalizePaymentCode(code || name);
+    if (!normalizedCode) return res.status(400).json({ message: 'Payment method code is invalid' });
+    const exists = await PaymentMethod.findOne({ code: normalizedCode });
+    if (exists) return res.status(400).json({ message: 'Payment method already exists' });
+
+    const row = await PaymentMethod.create({
+      name: String(name).trim(),
+      code: normalizedCode,
+      requiresReceipt: Boolean(requiresReceipt),
+      allowReceiptUpload: Boolean(allowReceiptUpload),
+      discountType,
+      discountValue: Number(discountValue || 0),
+      chargeType,
+      chargeValue: Number(chargeValue || 0),
+      qrImageUrl: String(qrImageUrl || '').trim(),
+      methodImageUrl: String(methodImageUrl || '').trim(),
+      details: String(details || '').trim(),
+      isCashOnDelivery: Boolean(isCashOnDelivery),
+      isActive: Boolean(isActive),
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdatePaymentMethod(req, res) {
+  try {
+    const { id } = req.params;
+    const payload = { ...req.body };
+    if (payload.code || payload.name) {
+      payload.code = normalizePaymentCode(payload.code || payload.name);
+      const clash = await PaymentMethod.findOne({ code: payload.code, _id: { $ne: id } });
+      if (clash) return res.status(400).json({ message: 'Payment method code already exists' });
+    }
+    if (payload.discountValue !== undefined) payload.discountValue = Number(payload.discountValue || 0);
+    if (payload.chargeValue !== undefined) payload.chargeValue = Number(payload.chargeValue || 0);
+    const row = await PaymentMethod.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    if (!row) return res.status(404).json({ message: 'Payment method not found' });
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeletePaymentMethod(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await PaymentMethod.findByIdAndDelete(id);
+    if (!row) return res.status(404).json({ message: 'Payment method not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetOrders(req, res) {
   try {
     const rows = await Order.find({}).sort({ createdAt: -1 });
@@ -1528,7 +1627,7 @@ async function handleRejectOrder(req, res) {
 async function handleModifyOrder(req, res) {
   try {
     const { id } = req.params;
-    const { items = [], discountAmount = 0 } = req.body;
+    const { items = [], discountAmount = 0, paymentMethodId } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Items are required' });
@@ -1564,13 +1663,52 @@ async function handleModifyOrder(req, res) {
     const subtotal = normalizedItems.reduce((s, i) => s + Number(i.price || 0) * Number(i.quantity || 0), 0);
     order.subtotal = subtotal;
     order.discountAmount = Number(discountAmount || 0);
-    order.finalAmount = Math.max(0, subtotal + Number(order.shippingCost || 0) - Number(order.discountAmount || 0));
+    const baseAfterAdminDiscount = Math.max(0, subtotal + Number(order.shippingCost || 0) - Number(order.discountAmount || 0));
+
+    let selectedPaymentMethod = null;
+    if (paymentMethodId) {
+      selectedPaymentMethod = await PaymentMethod.findById(paymentMethodId);
+      if (!selectedPaymentMethod || !selectedPaymentMethod.isActive) {
+        return res.status(400).json({ message: 'Selected payment method is not available' });
+      }
+    }
+
+    let paymentDiscount = 0;
+    if (selectedPaymentMethod?.discountType === 'fixed') {
+      paymentDiscount = Number(selectedPaymentMethod.discountValue || 0);
+    } else if (selectedPaymentMethod?.discountType === 'percentage') {
+      paymentDiscount = (Number(baseAfterAdminDiscount || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
+    }
+    paymentDiscount = Math.max(0, Number(paymentDiscount || 0));
+
+    let paymentCharge = 0;
+    if (selectedPaymentMethod?.chargeType === 'fixed') {
+      paymentCharge = Number(selectedPaymentMethod.chargeValue || 0);
+    } else if (selectedPaymentMethod?.chargeType === 'percentage') {
+      paymentCharge = (Number(baseAfterAdminDiscount || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    }
+    paymentCharge = Math.max(0, Number(paymentCharge || 0));
+
+    const payableAmount = Math.max(0, Number(baseAfterAdminDiscount || 0) - paymentDiscount + paymentCharge);
+    order.finalAmount = payableAmount;
+    if (selectedPaymentMethod) {
+      order.paymentMode = selectedPaymentMethod?.isCashOnDelivery ? 'cod' : 'prepaid';
+      order.paymentDetails = {
+        ...(order.paymentDetails || {}),
+        methodId: selectedPaymentMethod._id,
+        methodName: selectedPaymentMethod.name || '',
+        methodCode: selectedPaymentMethod.code || '',
+        paymentDiscount,
+        paymentCharge,
+        payableAmount,
+      };
+    }
     await order.save();
 
     try {
       await sendOrderAlertEmails(`Order Modified - ${order.orderNumber}`, `Your order ${order.orderNumber} has been modified. Updated amount: ${order.finalAmount}`, order.customer?.email);
     } catch (mailErr) {
-      console.error('Order modified but email failed:', mailErr?.message || mailErr);
+      logger.warn('Order modified but email failed', { error: mailErr?.message || String(mailErr) });
     }
 
     return res.status(200).json({ success: true, order });
@@ -1702,6 +1840,24 @@ async function handleReturnOrder(req, res) {
   }
 }
 
+async function handleVerifyOrderPayment(req, res) {
+  try {
+    const { id } = req.params;
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    order.paymentDetails = {
+      ...(order.paymentDetails || {}),
+      isVerified: true,
+      verifiedAt: new Date(),
+      verifiedByName: req.user?.name || req.user?.username || 'Admin',
+    };
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetOrderFeedbackMeta(req, res) {
   try {
     const { orderNumber } = req.params;
@@ -1777,25 +1933,25 @@ async function handleFeedbackReport(req, res) {
 }
 
 async function handleFetchingShippingCosts(req,res){ 
-  console.log("In handleGetShippingCosts");
+  logger.debug("In handleGetShippingCosts");
 
   try {
    
     const settings = await ShippingSettings.findOne({}).sort({ updatedAt: -1, createdAt: -1 });
-    console.log(settings);
+    logger.debug("Loaded shipping settings");
     res.json(settings || {});
   } catch (err) {
-    console.error('Error fetching Shipping settings:', err);
+    logger.error('Error fetching shipping settings', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error in fetching Shipping details', error: err.message });
   }
 }
 
 
 async function handleCheckout(req,res){ 
-  console.log("In handleCheckout");
+  logger.debug("In handleCheckout");
 
  try {
-    const { customer, items } = req.body;
+    const { customer, items, paymentMethodId = '', receiptUrl = '' } = req.body;
 
     // Load shipping settings
     const settings = await ShippingSettings.findOne({});
@@ -1811,8 +1967,37 @@ async function handleCheckout(req,res){
     const shippingCost = shippingRate * totalQuantity;
     const totalCost = subtotal + shippingCost;
 
-    console.log('shipping cost : ',shippingCost);
-    console.log('total cost : ',totalCost);
+    let selectedPaymentMethod = null;
+    if (paymentMethodId) {
+      selectedPaymentMethod = await PaymentMethod.findById(paymentMethodId);
+      if (!selectedPaymentMethod || !selectedPaymentMethod.isActive) {
+        return res.status(400).json({ success: false, message: 'Selected payment method is not available' });
+      }
+      if (selectedPaymentMethod.requiresReceipt && !String(receiptUrl || '').trim()) {
+        return res.status(400).json({ success: false, message: 'Receipt is required for selected payment method' });
+      }
+    }
+
+    let paymentDiscount = 0;
+    if (selectedPaymentMethod?.discountType === 'fixed') {
+      paymentDiscount = Number(selectedPaymentMethod.discountValue || 0);
+    } else if (selectedPaymentMethod?.discountType === 'percentage') {
+      paymentDiscount = (Number(totalCost || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
+    }
+    paymentDiscount = Math.max(0, Number(paymentDiscount || 0));
+
+    let paymentCharge = 0;
+    if (selectedPaymentMethod?.chargeType === 'fixed') {
+      paymentCharge = Number(selectedPaymentMethod.chargeValue || 0);
+    } else if (selectedPaymentMethod?.chargeType === 'percentage') {
+      paymentCharge = (Number(totalCost || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    }
+    paymentCharge = Math.max(0, Number(paymentCharge || 0));
+
+    const payableAmount = Math.max(0, Number(totalCost || 0) - paymentDiscount + paymentCharge);
+
+    logger.debug('Checkout shipping cost computed', { shippingCost });
+    logger.debug('Checkout total cost computed', { totalCost });
 
     // Save order
     const orderNumber = await getNextOrderNumber();
@@ -1825,7 +2010,17 @@ async function handleCheckout(req,res){
       shippingCost,
       totalCost,
       discountAmount: 0,
-      finalAmount: totalCost,
+      finalAmount: payableAmount,
+      paymentMode: selectedPaymentMethod?.isCashOnDelivery ? 'cod' : 'prepaid',
+      paymentDetails: {
+        methodId: selectedPaymentMethod?._id || null,
+        methodName: selectedPaymentMethod?.name || '',
+        methodCode: selectedPaymentMethod?.code || '',
+        receiptUrl: String(receiptUrl || '').trim(),
+        paymentDiscount,
+        paymentCharge,
+        payableAmount,
+      },
       status: 'pending_confirmation',
     });
     await order.save();
@@ -1844,17 +2039,20 @@ City: ${customerCity}
 Subtotal: ${subtotal}
 Shipping: ${shippingCost}
 Total: ${totalCost}
+Payment Method: ${selectedPaymentMethod?.name || 'N/A'}
+Payment Discount: ${paymentDiscount}
+Payment Charge: ${paymentCharge}
+Payable: ${payableAmount}
 Items:
 ${lines}`;
-    try {
-      await sendOrderAlertEmails(`New JM Mangoes Order ${orderNumber}`, text, customer?.email);
-    } catch (mailErr) {
-      console.error('Order placed but email sending failed:', mailErr?.message || mailErr);
-    }
+    sendOrderAlertEmails(`New JM Mangoes Order ${orderNumber}`, text, customer?.email)
+      .catch((mailErr) => {
+        logger.warn('Order placed but email sending failed', { error: mailErr?.message || String(mailErr) });
+      });
 
-    res.status(201).json({ success: true, orderId: order._id, orderNumber, totalCost });
+    res.status(201).json({ success: true, orderId: order._id, orderNumber, totalCost, payableAmount });
   } catch (err) {
-    console.error('Checkout error:', err);
+    logger.error('Checkout error', { error: err?.message || String(err) });
     res.status(500).json({ success: false, message: 'Checkout failed' });
   }
 }
@@ -1913,6 +2111,11 @@ module.exports = {
     handleCreateCourier,
     handleUpdateCourier,
     handleDeleteCourier,
+    handleGetPaymentMethods,
+    handleGetPublicPaymentMethods,
+    handleCreatePaymentMethod,
+    handleUpdatePaymentMethod,
+    handleDeletePaymentMethod,
     handleGetOrders,
     handleConfirmOrder,
     handleRejectOrder,
@@ -1922,6 +2125,7 @@ module.exports = {
     handleDeliverOrder,
     handleSendFeedbackReminder,
     handleReturnOrder,
+    handleVerifyOrderPayment,
     handleGetOrderFeedbackMeta,
     handleSubmitOrderFeedback,
     handleFeedbackReport,
@@ -1934,3 +2138,4 @@ module.exports = {
     handleCheckout,
     
 }
+

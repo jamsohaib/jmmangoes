@@ -40,6 +40,7 @@ import CourierManagement from './components/CourierManagement';
 import OrderManagement from './components/OrderManagement';
 import OrderFeedback from './components/OrderFeedback';
 import FeedbackReport from './components/FeedbackReport';
+import PaymentManager from './components/PaymentManager';
 
 function App() {
   return (
@@ -81,6 +82,7 @@ function App() {
              <Route path="/orders" element={<OrderHistory />} /> 
              <Route path="/email-alerts" element={<EmailAlertsManagement />} />
              <Route path="/courier-management" element={<CourierManagement />} />
+             <Route path="/payment-manager" element={<PaymentManager />} />
              <Route path="/order-management" element={<OrderManagement />} />
              <Route path="/feedback-report" element={<FeedbackReport />} />
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />

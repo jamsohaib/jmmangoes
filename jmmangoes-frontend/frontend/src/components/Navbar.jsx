@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import useAuthStore from '../store/authStore';
+import useCartStore from '../store/cartStore';
 import api from '../lib/api';
 
 const Navbar = () => {
@@ -9,6 +10,7 @@ const Navbar = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const cartCount = useCartStore((state) => state.totalItems());
 
   const isAdmin = user?.role === 'admin';
   const canView = (key) => isAdmin || !!user?.permissions?.[key]?.view;
@@ -24,6 +26,7 @@ const Navbar = () => {
     { to: '/manage-expense', label: 'Manage Expense', key: 'manageExpense' },
     { to: '/add-expenses', label: 'Add Expenses', key: 'addExpense' },
     { to: '/email-alerts', label: 'Email Alerts', key: 'emailAlerts' },
+    { to: '/payment-manager', label: 'Payment Manager', key: 'paymentManager' },
     { to: '/courier-management', label: 'Courier Management', key: 'courierManagement' },
     { to: '/order-management', label: 'Order Management', key: 'orderManagement' },
     { to: '/feedback-report', label: 'Feedback Report', key: 'feedbackReport' },
@@ -60,15 +63,36 @@ const Navbar = () => {
         <Link to="/" className="flex items-center ml-2 md:ml-3" onClick={() => setMenuOpen(false)}>
           <img src="/images/favicons_jm_mangoes-removebg-preview.png" alt="JM Mangoes Logo" className="h-16 md:h-28 w-auto object-contain cursor-pointer" />
         </Link>
-        <button
-          type="button"
-          onClick={() => setMenuOpen((prev) => !prev)}
-          className="md:hidden flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
-          aria-label="Toggle menu"
-        >
-          <span className="text-xl leading-none" aria-hidden="true">☰</span>
-          <span>{menuOpen ? 'Close' : 'Menu'}</span>
-        </button>
+
+        <div className="md:hidden flex items-center gap-2">
+          <Link
+            to="/checkout"
+            onClick={() => setMenuOpen(false)}
+            className="relative inline-flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
+            aria-label="Open cart and checkout"
+          >
+            <span className="text-sm leading-none">Cart</span>
+            <span
+              className="min-w-[1.25rem] h-5 px-1 rounded-full bg-green-700 text-white text-xs inline-flex items-center justify-center"
+              aria-label={`${cartCount} items in cart`}
+            >
+              {cartCount}
+            </span>
+          </Link>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((prev) => !prev)}
+            className="inline-flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
+            aria-label="Toggle menu"
+          >
+            <span className="inline-flex items-center" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                <path d="M3 6.75A.75.75 0 0 1 3.75 6h16.5a.75.75 0 0 1 0 1.5H3.75A.75.75 0 0 1 3 6.75Zm0 5.25a.75.75 0 0 1 .75-.75h16.5a.75.75 0 0 1 0 1.5H3.75A.75.75 0 0 1 3 12Zm.75 4.5a.75.75 0 0 0 0 1.5h16.5a.75.75 0 0 0 0-1.5H3.75Z" />
+              </svg>
+            </span>
+            <span>{menuOpen ? 'Close' : 'Menu'}</span>
+          </button>
+        </div>
 
         <div className={`${menuOpen ? 'flex' : 'hidden'} md:flex w-full md:w-auto flex-col md:flex-row md:items-center gap-3 md:gap-6 mt-3 md:mt-0`}>
           <ul className="flex flex-col md:flex-row md:items-center gap-3 md:gap-6">
@@ -80,7 +104,12 @@ const Navbar = () => {
             {visibleAdminLinks.length > 0 && (
               <li className="relative group">
                 <span className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1">
-                  Admin <span aria-hidden="true">▾</span>
+                  Admin
+                  <span className="inline-flex items-center" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </span>
                 </span>
                 <ul className="mt-1 md:mt-0 md:absolute md:left-0 block md:hidden group-hover:block bg-white shadow-md z-50">
                   {visibleAdminLinks.map((link) => (

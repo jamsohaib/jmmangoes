@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
-import api from '../lib/api';
+import api, { toPublicAssetUrl } from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const OrderManagement = () => {
@@ -17,6 +17,7 @@ const OrderManagement = () => {
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
   const [products, setProducts] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState([]);
   const [newItem, setNewItem] = useState({ productId: '', quantity: 1 });
 
   const load = async () => {
@@ -25,6 +26,12 @@ const OrderManagement = () => {
     setCouriers(c.data || []);
   };
   useEffect(() => { if (canView) load().catch(console.error); }, [canView]);
+  useEffect(() => {
+    if (!canView) return;
+    api.get('/payment-methods')
+      .then((res) => setPaymentMethods(res.data || []))
+      .catch(() => {});
+  }, [canView]);
   useEffect(() => {
     if (!canView) return;
     api.get('/getProductsForPublic')
@@ -48,10 +55,24 @@ const OrderManagement = () => {
   }), [orders]);
 
   const amount = (o) => Number(o.finalAmount || o.totalCost || 0).toFixed(2);
+  const paymentLabel = (o) => o?.paymentDetails?.methodName || o?.paymentMode || '-';
+  const isCodOrder = (o) => o?.paymentMode === 'cod' || o?.paymentDetails?.methodCode === 'cash-on-delivery';
   const modifySubtotal = modifyModal.items.reduce((sum, it) => sum + (Number(it.price || 0) * Number(it.quantity || 0)), 0);
   const modifyShipping = Number(modifyModal.order?.shippingCost || 0);
   const modifyDiscount = Number(modifyModal.discountAmount || 0);
-  const modifyFinal = Math.max(0, modifySubtotal + modifyShipping - modifyDiscount);
+  const modifyBase = Math.max(0, modifySubtotal + modifyShipping - modifyDiscount);
+  const selectedModifyPaymentMethod = paymentMethods.find((m) => String(m._id) === String(modifyModal.paymentMethodId));
+  const modifyPaymentDiscount = selectedModifyPaymentMethod?.discountType === 'fixed'
+    ? Number(selectedModifyPaymentMethod.discountValue || 0)
+    : selectedModifyPaymentMethod?.discountType === 'percentage'
+      ? (modifyBase * Number(selectedModifyPaymentMethod.discountValue || 0)) / 100
+      : 0;
+  const modifyPaymentCharge = selectedModifyPaymentMethod?.chargeType === 'fixed'
+    ? Number(selectedModifyPaymentMethod.chargeValue || 0)
+    : selectedModifyPaymentMethod?.chargeType === 'percentage'
+      ? (modifyBase * Number(selectedModifyPaymentMethod.chargeValue || 0)) / 100
+      : 0;
+  const modifyFinal = Math.max(0, modifyBase - modifyPaymentDiscount + modifyPaymentCharge);
 
   const confirmOrder = async (id) => {
     if (!window.confirm('Confirm this order?')) return;
@@ -61,10 +82,12 @@ const OrderManagement = () => {
   };
 
   const dispatch = async (id) => {
+    const order = orders.find((o) => String(o._id) === String(id));
     const f = dispatchForm[id] || {};
     if (!f.courierId) return toast.warn('Select courier.');
+    const payload = { ...f, paymentMode: f.paymentMode || order?.paymentMode || 'cod' };
     if (!window.confirm('Dispatch this order?')) return;
-    await api.put(`/orders/${id}/dispatch`, f);
+    await api.put(`/orders/${id}/dispatch`, payload);
     toast.success('Order dispatched.');
     await load();
   };
@@ -76,24 +99,40 @@ const OrderManagement = () => {
     await load();
   };
 
+  const verifyPayment = async (id) => {
+    if (!window.confirm('Mark this payment as verified?')) return;
+    try {
+      await api.put(`/orders/${id}/verify-payment`, {});
+      toast.success('Payment verified.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to verify payment.');
+    }
+  };
+
   const openModify = (order) => {
     setModifyModal({
       open: true,
       order,
       discountAmount: String(order.discountAmount || 0),
+      paymentMethodId: order?.paymentDetails?.methodId ? String(order.paymentDetails.methodId) : '',
       items: (order.items || []).map((i) => ({ ...i, quantity: Number(i.quantity || 1) })),
     });
     setNewItem({ productId: '', quantity: 1 });
   };
 
   const saveModify = async () => {
-    const { order, items, discountAmount } = modifyModal;
+    const { order, items, discountAmount, paymentMethodId } = modifyModal;
     if (!order) return;
     if (!window.confirm('Save modified order and send email?')) return;
     try {
-      await api.put(`/orders/${order._id}/modify`, { items, discountAmount: Number(discountAmount || 0) });
+      await api.put(`/orders/${order._id}/modify`, {
+        items,
+        discountAmount: Number(discountAmount || 0),
+        paymentMethodId: paymentMethodId || undefined,
+      });
       toast.success('Order modified.');
-      setModifyModal({ open: false, order: null, discountAmount: '0', items: [] });
+      setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [] });
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to modify order.');
@@ -164,18 +203,26 @@ const OrderManagement = () => {
     <div className="bg-white rounded shadow mb-5 overflow-x-auto">
       <div className="px-4 py-3 border-b font-semibold">{title}</div>
       <table className="min-w-full text-sm">
-        <thead><tr><th className="border px-3 py-2">Order #</th><th className="border px-3 py-2">Customer</th><th className="border px-3 py-2">Amount</th><th className="border px-3 py-2">Mode</th><th className="border px-3 py-2">Actions</th></tr></thead>
+        <thead><tr><th className="border px-3 py-2">Order #</th><th className="border px-3 py-2">Customer</th><th className="border px-3 py-2">Amount</th><th className="border px-3 py-2">Payment</th><th className="border px-3 py-2">Receipt</th><th className="border px-3 py-2">Actions</th></tr></thead>
         <tbody>
           {rows.map((o) => (
             <tr key={o._id}>
               <td className="border px-3 py-2">{o.orderNumber}</td>
               <td className="border px-3 py-2">{o.customer?.name}<br />{o.customer?.email}</td>
               <td className="border px-3 py-2">PKR {amount(o)}</td>
-              <td className="border px-3 py-2">{o.paymentMode}</td>
+              <td className="border px-3 py-2">{paymentLabel(o)}</td>
+              <td className="border px-3 py-2">
+                {o?.paymentDetails?.receiptUrl ? (
+                  <a className="text-blue-700 hover:underline" href={toPublicAssetUrl(o.paymentDetails.receiptUrl)} target="_blank" rel="noreferrer">View</a>
+                ) : '-'}
+                <div className="text-xs text-gray-600 mt-1">
+                  {o?.paymentDetails?.isVerified ? `Verified${o?.paymentDetails?.verifiedByName ? ` by ${o.paymentDetails.verifiedByName}` : ''}` : 'Not Verified'}
+                </div>
+              </td>
               <td className="border px-3 py-2">{actions(o)}</td>
             </tr>
           ))}
-          {rows.length === 0 && <tr><td colSpan={5} className="border px-3 py-3 text-center text-gray-500">No orders</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={6} className="border px-3 py-3 text-center text-gray-500">No orders</td></tr>}
         </tbody>
       </table>
     </div>
@@ -189,6 +236,7 @@ const OrderManagement = () => {
       {renderTable('Pending For Confirmation', grouped.pending, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
           <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
           <button onClick={() => setRejectModal({ open: true, orderId: o._id, reason: 'Order cancelled due to stock unavailability' })} className="text-red-600 hover:underline">Cancel Order</button>
           <button onClick={() => openModify(o)} className="text-blue-600 hover:underline">Modify</button>
@@ -207,12 +255,17 @@ const OrderManagement = () => {
             </select>
             <input className="border p-1 rounded" placeholder="Tracking #" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
             <input className="border p-1 rounded" placeholder="Courier helpline" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierHelpline: e.target.value } }))} />
-            <select className="border p-1 rounded" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), paymentMode: e.target.value } }))}>
+            <select
+              className="border p-1 rounded"
+              value={dispatchForm[o._id]?.paymentMode ?? o.paymentMode ?? 'cod'}
+              onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), paymentMode: e.target.value } }))}
+            >
               <option value="cod">Cash On Delivery</option><option value="prepaid">Prepaid</option><option value="free">Free</option>
             </select>
           </div>
           <div className="flex gap-2">
             <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
+            {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
             <button onClick={() => setCancelModal({ open: true, orderId: o._id, reason: '' })} className="text-red-600 hover:underline">Cancel Order</button>
           </div>
         </div>
@@ -221,6 +274,7 @@ const OrderManagement = () => {
       {renderTable('Dispatched Orders', grouped.dispatched, (o) => (
         <div className="flex gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
           <button onClick={() => markDelivered(o._id)} className="text-green-700 hover:underline">Mark Delivered</button>
           <button onClick={() => setReturnModal({ open: true, orderId: o._id, reason: 'Customer return request' })} className="text-red-600 hover:underline">Mark Returned</button>
         </div>
@@ -311,16 +365,31 @@ const OrderManagement = () => {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
                 <label className="flex items-center gap-2">Discount Amount<input type="number" min={0} value={modifyModal.discountAmount} onChange={(e) => setModifyModal((p) => ({ ...p, discountAmount: e.target.value }))} className="border p-2 rounded w-full" /></label>
+                <label className="flex items-center gap-2">
+                  Payment Method
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={modifyModal.paymentMethodId || ''}
+                    onChange={(e) => setModifyModal((p) => ({ ...p, paymentMethodId: e.target.value }))}
+                  >
+                    <option value="">Keep current</option>
+                    {paymentMethods.map((m) => (
+                      <option key={m._id} value={m._id}>{m.name}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
               <div className="mt-3 border rounded p-3 bg-gray-50 text-sm space-y-1">
                 <div><strong>Products Subtotal:</strong> PKR {modifySubtotal.toFixed(2)}</div>
                 <div><strong>Delivery Cost:</strong> PKR {modifyShipping.toFixed(2)}</div>
                 <div><strong>Discount:</strong> PKR {modifyDiscount.toFixed(2)}</div>
+                <div><strong>Payment Discount:</strong> PKR {modifyPaymentDiscount.toFixed(2)}</div>
+                <div><strong>Payment Charge:</strong> PKR {modifyPaymentCharge.toFixed(2)}</div>
                 <div className="pt-1 border-t"><strong>Total Payable:</strong> PKR {modifyFinal.toFixed(2)}</div>
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button className="border px-3 py-2 rounded" onClick={() => setModifyModal({ open: false, order: null, discountAmount: '0', items: [] })}>Cancel</button>
+              <button className="border px-3 py-2 rounded" onClick={() => setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [] })}>Cancel</button>
               <button className="bg-green-600 text-white px-3 py-2 rounded" onClick={saveModify}>Save</button>
             </div>
           </div>
@@ -338,6 +407,16 @@ const OrderManagement = () => {
               <div><strong>Mobile:</strong> {viewOrderModal.order.customer?.mobile || '-'}</div>
               <div><strong>Status:</strong> {viewOrderModal.order.status}</div>
               <div><strong>Payment Mode:</strong> {viewOrderModal.order.paymentMode}</div>
+              <div><strong>Payment Method:</strong> {viewOrderModal.order.paymentDetails?.methodName || '-'}</div>
+              {viewOrderModal.order.paymentDetails?.receiptUrl ? (
+                <div>
+                  <strong>Receipt:</strong>{' '}
+                  <a className="text-blue-700 hover:underline" href={toPublicAssetUrl(viewOrderModal.order.paymentDetails.receiptUrl)} target="_blank" rel="noreferrer">
+                    View receipt
+                  </a>
+                </div>
+              ) : null}
+              <div><strong>Payment Verified:</strong> {viewOrderModal.order.paymentDetails?.isVerified ? 'Yes' : 'No'}</div>
             </div>
 
             <div className="overflow-x-auto border rounded">
@@ -366,8 +445,11 @@ const OrderManagement = () => {
             <div className="mt-3 text-sm">
               <div><strong>Subtotal:</strong> PKR {Number(viewOrderModal.order.subtotal || 0).toFixed(2)}</div>
               <div><strong>Shipping:</strong> PKR {Number(viewOrderModal.order.shippingCost || 0).toFixed(2)}</div>
+              <div><strong>Payment Discount:</strong> PKR {Number(viewOrderModal.order.paymentDetails?.paymentDiscount || 0).toFixed(2)}</div>
+              <div><strong>Payment Charge:</strong> PKR {Number(viewOrderModal.order.paymentDetails?.paymentCharge || 0).toFixed(2)}</div>
               <div><strong>Discount:</strong> PKR {Number(viewOrderModal.order.discountAmount || 0).toFixed(2)}</div>
               <div><strong>Final Amount:</strong> PKR {Number(viewOrderModal.order.finalAmount || viewOrderModal.order.totalCost || 0).toFixed(2)}</div>
+              <div><strong>Payable Amount:</strong> PKR {Number(viewOrderModal.order.paymentDetails?.payableAmount || viewOrderModal.order.finalAmount || viewOrderModal.order.totalCost || 0).toFixed(2)}</div>
             </div>
 
             <div className="flex justify-end mt-4">

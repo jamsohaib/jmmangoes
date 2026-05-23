@@ -1,303 +1,306 @@
-// src/components/Checkout.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import useCartStore from '../store/cartStore';
-import api from '../lib/api';
+import api, { toPublicAssetUrl } from '../lib/api';
 import DEFAULT_CITIES from '../constants/defaultCities';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 
-
 function Checkout() {
   const navigate = useNavigate();
   const { cart, totalItems, incrementQuantity, decrementQuantity, clearCart } = useCartStore();
+  const [step, setStep] = useState('details');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     address: '',
     city: '',
     postalCode: '',
-    otherCity:'',
-    mobile:'',
+    otherCity: '',
+    mobile: '',
   });
-
-
-  // const [unitShipping, setUnitShipping] = useState(0)
-  // const itemsCount = totalItems();
-  // const [shippingCost, setShippingCost] = useState(0);
-  // const [totalCost, setTotalCost] = useState(0);
-
   const [settings, setSettings] = useState({ zoneAUnitCost: 0, cityOverrides: [], allowedCities: [] });
-  const [unitShipping, setUnitShipping] = useState(0);
+  const [paymentMethods, setPaymentMethods] = useState([]);
+  const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState('');
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
+  const [receiptUrl, setReceiptUrl] = useState('');
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
+  const [otherFiled, setOtherFiled] = useState(false);
+  const [qrPreviewUrl, setQrPreviewUrl] = useState('');
   const itemsCount = totalItems();
-  
-  const safeUnitShipping = Number(unitShipping || 0);
-  const subtotal = cart.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
-  const shippingCost = safeUnitShipping * Number(itemsCount || 0);
-  const totalCost = subtotal + shippingCost;
 
-   const [otherFiled, setOtherFiled] = useState(false);
-
-    // Fetch admin shipping settings once on component mount
   useEffect(() => {
     api.get('/shippingCosts/public')
-      .then(res => setSettings(res.data || { zoneAUnitCost: 0, cityOverrides: [], allowedCities: [] }))
-      .catch(err => console.error('Error loading shipping settings:', err));
+      .then((res) => setSettings(res.data || { zoneAUnitCost: 0, cityOverrides: [], allowedCities: [] }))
+      .catch(() => {});
+
+    api.get('/payment-methods/public')
+      .then((res) => {
+        const rows = res.data || [];
+        setPaymentMethods(rows);
+      })
+      .catch(() => {});
   }, []);
 
-  const availableCities = settings.allowedCities?.length ? settings.allowedCities : DEFAULT_CITIES;
-  
-  // Recompute shipping rates whenever city input, settings, or cart changes
   useEffect(() => {
+    const found = paymentMethods.find((m) => String(m._id) === String(selectedPaymentMethodId));
+    setSelectedPaymentMethod(found || null);
+    if (!found) setReceiptUrl('');
+  }, [paymentMethods, selectedPaymentMethodId]);
+
+  const availableCities = settings.allowedCities?.length ? settings.allowedCities : DEFAULT_CITIES;
+
+  const safeUnitShipping = useMemo(() => {
     const city = formData.city.trim().toLowerCase();
-    const override = settings.cityOverrides?.find(o => o.city.toLowerCase() === city);
+    const override = settings.cityOverrides?.find((o) => o.city.toLowerCase() === city);
     const nextUnit = override ? Number(override.cost || 0) : Number(settings.zoneAUnitCost || 0);
-    setUnitShipping(Number.isFinite(nextUnit) ? nextUnit : 0);
+    return Number.isFinite(nextUnit) ? nextUnit : 0;
   }, [formData.city, settings]);
 
-   const handleChange = e => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-    if(e.target.name==='city'){
-      if(e.target.value==='Other'){
-            setOtherFiled(true);
-        }
-        else{
-            setOtherFiled(false);
+  const subtotal = useMemo(
+    () => cart.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0),
+    [cart]
+  );
+  const shippingCost = safeUnitShipping * Number(itemsCount || 0);
+  const baseTotal = subtotal + shippingCost;
 
-        }
-
+  const paymentDiscount = useMemo(() => {
+    if (!selectedPaymentMethod) return 0;
+    if (selectedPaymentMethod.discountType === 'fixed') return Number(selectedPaymentMethod.discountValue || 0);
+    if (selectedPaymentMethod.discountType === 'percentage') {
+      return (Number(baseTotal || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
     }
-     
-   }
-  
-   async function handleSubmit(e) {
-    e.preventDefault();
-    console.log('Checkout data:', formData);
-    console.log('Cart items:', cart);
-    console.log('Shipping rate per item:', unitShipping);
-    console.log('Shipping cost total:', shippingCost);
-    console.log('Total cost:', totalCost);
+    return 0;
+  }, [selectedPaymentMethod, baseTotal]);
 
+  const paymentCharge = useMemo(() => {
+    if (!selectedPaymentMethod) return 0;
+    if (selectedPaymentMethod.chargeType === 'fixed') return Number(selectedPaymentMethod.chargeValue || 0);
+    if (selectedPaymentMethod.chargeType === 'percentage') {
+      return (Number(baseTotal || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    }
+    return 0;
+  }, [selectedPaymentMethod, baseTotal]);
+
+  const payableAmount = Math.max(0, Number(baseTotal || 0) - Number(paymentDiscount || 0) + Number(paymentCharge || 0));
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+    if (name === 'city') setOtherFiled(value === 'Other');
+  };
+
+  const uploadReceipt = async (file) => {
+    if (!file) return;
+    setUploadingReceipt(true);
     try {
-      const res = await api.post('/checkout', {
-          customer: formData,
-          items: cart.map(i => ({
-            productId: i._id,
-            name: i.name,
-            price: i.price,
-            quantity: i.quantity
-          }))
-        });
-      clearCart();
-      toast.success('Order placed successfully.');
-      navigate('/order-success', { state: { orderNumber: res?.data?.orderNumber || '' } });
+      const fd = new FormData();
+      fd.append('receipt', file);
+      const res = await api.post('/upload-payment-receipt', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setReceiptUrl(res.data?.receiptUrl || '');
+      toast.success('Receipt uploaded.');
     } catch (err) {
-      toast.error(err?.response?.data?.message || 'Failed to place order. Please try again.');
+      toast.error(err?.response?.data?.message || 'Failed to upload receipt.');
+    } finally {
+      setUploadingReceipt(false);
     }
   };
 
+  const proceedToPayment = (e) => {
+    e.preventDefault();
+    if (!cart.length) return toast.warn('Your cart is empty.');
+    if (!selectedPaymentMethodId) return toast.warn('Please select a payment method before proceeding.');
+    if (!formData.name || !formData.address || !formData.city || !formData.mobile) {
+      return toast.warn('Please complete required delivery fields.');
+    }
+    setStep('payment');
+  };
 
-  
+  const handlePlaceOrder = async () => {
+    if (isSubmitting) return;
+    if (!selectedPaymentMethodId) return toast.warn('Please select a payment option.');
+    if (selectedPaymentMethod?.requiresReceipt && !receiptUrl) return toast.warn('Receipt upload is required for selected payment option.');
+    if (!window.confirm('Please confirm. Do you want to place this order?')) return;
 
-
-  // useEffect(() => {
-  //   // Calculate shipping cost based on city
-  //   const city = formData.city.trim().toLowerCase();
-  //   const shipping = city === 'lahore' ? 100 : 200;
-  //   setShippingCost(shipping);
-
-  //    // Totals
-  //   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
-  //   setShippingCost(perItem * itemsCount)
-  //   setTotalCost(subtotal + perItem * itemsCount)
-
-  //   // Calculate total cost
-  //   // const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  //   // setTotalCost(subtotal + shipping);
-  // }, [formData.city, cart, itemsCount]);
-
-  //  useEffect(() => {
-  //   // Determine unit cost by city:
-  //   const city = formData.city.trim().toLowerCase()
-  //   const perItem = city === 'lahore' ? 50 : 370
-  //   setUnitShipping(perItem)
-
-  //   // Totals
-  // const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
-  //   setShippingCost(perItem * itemsCount)
-  //   setTotalCost(subtotal + perItem * itemsCount)
-  // }, [formData.city, cart, itemsCount])
-
-  // const handleChange = (e) => {
-  //   setFormData({ ...formData, [e.target.name]: e.target.value });
-  // };
-
-  // const handleSubmit = (e) => {
-  //   e.preventDefault();
-  //   // Implement checkout logic here (e.g., send data to backend)
-  //   console.log('Checkout data:', formData);
-  //   console.log('Cart items:', cart);
-  //   console.log('Total cost:', totalCost);
-  //   // After successful checkout
-  //   clearCart();
-  // };
+    setIsSubmitting(true);
+    try {
+      const res = await api.post('/checkout', {
+        customer: formData,
+        paymentMethodId: selectedPaymentMethodId,
+        receiptUrl,
+        items: cart.map((i) => ({
+          productId: i._id,
+          name: i.name,
+          price: i.price,
+          quantity: i.quantity,
+        })),
+      });
+      clearCart();
+      navigate('/order-success', { state: { orderNumber: res?.data?.orderNumber || '' } });
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to place order. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
+    <>
     <div className="max-w-4xl mx-auto p-4 md:p-6 bg-white shadow-md mt-6 md:mt-10">
-      <h2 className="text-2xl font-bold mb-6 text-green-700">Checkout</h2>
+      <h2 className="text-2xl font-bold mb-6 text-green-700">{step === 'details' ? 'Checkout' : 'Payment'}</h2>
 
-   
-
-       {/* Cart & Shipping Summary */}
-    <div className="mb-6 text-green-700">
-      <h3 className="text-xl font-semibold mb-4">Order Summary</h3>
-      <ul>
-        {cart.map(item => (
-          <li key={item._id} className="flex flex-col md:flex-row md:justify-between md:items-center gap-2 mb-3">
-            <div>
-              <span>{item.name}</span>
-              <div className="flex items-center mt-2">
-                <button onClick={() => decrementQuantity(item._id)} className="bg-gray-200 px-2 py-1 rounded-l">-</button>
-                <span className="px-4">{item.quantity}</span>
-                <button onClick={() => incrementQuantity(item._id)} className="bg-gray-200 px-2 py-1 rounded-r">+</button>
+      <div className="mb-6 text-green-700">
+        <h3 className="text-xl font-semibold mb-4">Order Summary</h3>
+        <ul>
+          {cart.map((item) => (
+            <li key={item._id} className="flex flex-col md:flex-row md:justify-between md:items-center gap-2 mb-3">
+              <div>
+                <span>{item.name}</span>
+                <div className="flex items-center mt-2">
+                  <button type="button" onClick={() => decrementQuantity(item._id)} className="bg-gray-200 px-2 py-1 rounded-l">-</button>
+                  <span className="px-4">{item.quantity}</span>
+                  <button type="button" onClick={() => incrementQuantity(item._id)} className="bg-gray-200 px-2 py-1 rounded-r">+</button>
+                </div>
               </div>
-            </div>
-            <span>PKR {item.price * item.quantity}</span>
-          </li>
-        ))}
-      </ul>
+              <span>PKR {Number(item.price || 0) * Number(item.quantity || 0)}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="flex justify-between gap-3 mt-4 text-sm md:text-base"><span>Shipping:</span><span>PKR {shippingCost.toFixed(2)}</span></div>
+        <div className="flex justify-between gap-3 text-sm md:text-base"><span>Payment Discount:</span><span>- PKR {selectedPaymentMethodId ? Number(paymentDiscount || 0).toFixed(2) : '0.00'}</span></div>
+        <div className="flex justify-between gap-3 text-sm md:text-base"><span>Additional Charges:</span><span>PKR {selectedPaymentMethodId ? Number(paymentCharge || 0).toFixed(2) : '0.00'}</span></div>
+        <div className="flex justify-between gap-3 font-bold mt-2 text-sm md:text-base"><span>Total Payable:</span><span>PKR {payableAmount.toFixed(2)}</span></div>
+      </div>
 
-      <div className="flex justify-between gap-3 mt-4 text-sm md:text-base">
-        <span>Unit Shipping Rate for {formData.city===''?"Standard (May Update with City selection)": formData.city} : </span> <span>PKR {safeUnitShipping.toFixed(2)}</span>
-      </div>
-      <div className="flex justify-between gap-3 text-sm md:text-base">
-        <span>Shipping (×{itemsCount} items):</span> <span>PKR {shippingCost.toFixed(2)}</span>
-      </div>
-      <div className="flex justify-between gap-3 font-bold mt-2 text-sm md:text-base">
-        <span>Total:</span> <span>PKR {totalCost.toFixed(2)}</span>
-      </div>
-    </div>
-
-      {/* Checkout Form */}
-      <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6 text-black">
-        <div>
-          <label className="block mb-2 text-sm font-medium text-gray-700">Full Name</label>
-          <input
-            type="text"
-            name="name"
-            className="w-full border border-gray-300 p-2 rounded"
-            value={formData.name}
-            onChange={handleChange}
-            required
-          />
-        </div>
-        <div>
-          <label className="block mb-2 text-sm font-medium text-gray-700">Email (To get updates of order placement)</label>
-          <input
-            type="email"
-            name="email"
-            className="w-full border border-gray-300 p-2 rounded"
-            value={formData.email}
-            onChange={handleChange}
-            required
-          />
-        </div>
-        <div className="md:col-span-2">
-          <label className="block mb-2 text-sm font-medium text-gray-700">Address</label>
-          <input
-            type="text"
-            name="address"
-            className="w-full border border-gray-300 p-2 rounded"
-            value={formData.address}
-            onChange={handleChange}
-            required
-          />
-        </div>
-        {/* <div>
-          <label className="block mb-2 text-sm font-medium text-gray-700">City</label>
-          <input
-            type="text"
-            name="city"
-            className="w-full border border-gray-300 p-2 rounded"
-            value={formData.city}
-            onChange={handleChange}
-            required
-          />
-        </div> */}
-         <div>
+      {step === 'details' ? (
+        <form onSubmit={proceedToPayment} className="grid grid-cols-1 md:grid-cols-2 gap-6 text-black">
+          <div><label className="block mb-2 text-sm font-medium text-gray-700">Full Name</label><input type="text" name="name" className="w-full border border-gray-300 p-2 rounded" value={formData.name} onChange={handleChange} required /></div>
+          <div><label className="block mb-2 text-sm font-medium text-gray-700">Email (To get updates of order placement)</label><input type="email" name="email" className="w-full border border-gray-300 p-2 rounded" value={formData.email} onChange={handleChange} /></div>
+          <div className="md:col-span-2"><label className="block mb-2 text-sm font-medium text-gray-700">Address</label><input type="text" name="address" className="w-full border border-gray-300 p-2 rounded" value={formData.address} onChange={handleChange} required /></div>
+          <div>
             <label className="block mb-2 text-sm font-medium text-gray-700">City</label>
-              <div className="relative">
-                <select
-                  name="city"
-                  id="city"
-                  value={formData.city}
-                  onChange={handleChange}
-                  className="w-full border border-gray-300 rounded px-3 py-3 text-base bg-white appearance-none pr-10"
-                >
-                  <option value="">Select City</option>
-                  {availableCities.map((city) => (
-                    <option key={city} value={city}>{city}</option>
-                  ))}
-                </select>
-                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-gray-500" aria-hidden="true">▾</span>
-              </div>
-             
+            <div className="relative">
+              <select name="city" id="city" value={formData.city} onChange={handleChange} className="w-full border border-gray-300 rounded px-3 py-3 text-base bg-white appearance-none pr-10" required>
+                <option value="">Select City</option>
+                {availableCities.map((city) => <option key={city} value={city}>{city}</option>)}
+              </select>
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-gray-500" aria-hidden="true">▾</span>
+            </div>
           </div>
-            {otherFiled && (
+          {otherFiled ? <div><label className="block mb-2 text-sm font-medium text-gray-700">Other City</label><input type="text" id="otherCity" name="otherCity" className="w-full border border-gray-300 p-2 rounded" value={formData.otherCity} onChange={handleChange} placeholder="Enter city name" /></div> : null}
+          <div><label className="block mb-2 text-sm font-medium text-gray-700">Mobile Number (Preferable WhatsApp)</label><input type="text" name="mobile" className="w-full border border-gray-300 p-2 rounded" value={formData.mobile} onChange={handleChange} placeholder="Enter mobile number preferably WhatsApp" required /></div>
+          <div className="md:col-span-2 border rounded p-4">
+            <label className="block mb-3 text-sm font-medium text-gray-700">Select Payment Method</label>
+            <div className="space-y-2">
+              {paymentMethods.map((m) => (
+                <label key={m._id} className="flex items-center gap-2 border rounded px-3 py-2">
+                  <input
+                    type="radio"
+                    name="paymentMethod"
+                    value={m._id}
+                    checked={String(selectedPaymentMethodId) === String(m._id)}
+                    onChange={(e) => {
+                      setSelectedPaymentMethodId(e.target.value);
+                      setReceiptUrl('');
+                    }}
+                  />
+                  <span className="font-medium">{m.name}</span>
+                  <span className="text-xs text-gray-600">
+                    {m.discountType !== 'none' ? `Discount: ${m.discountType === 'percentage' ? `${m.discountValue}%` : `PKR ${m.discountValue}`}` : 'No discount'}
+                    {m.chargeType !== 'none' ? ` | Charge: ${m.chargeType === 'percentage' ? `${m.chargeValue}%` : `PKR ${m.chargeValue}`}` : ''}
+                  </span>
+                </label>
+              ))}
+              {paymentMethods.length === 0 ? <div className="text-sm text-gray-500">No payment method available.</div> : null}
+            </div>
+          </div>
+          <div className="md:col-span-2">
+            <button type="submit" className="w-full bg-green-600 text-white p-3 rounded hover:bg-green-700 transition">Proceed To Payment</button>
+          </div>
+        </form>
+      ) : (
+        <div className="text-black">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {paymentMethods.map((m) => {
+              const selected = String(m._id) === String(selectedPaymentMethodId);
+              return (
+                <div
+                  key={m._id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    setSelectedPaymentMethodId(String(m._id));
+                    setReceiptUrl('');
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedPaymentMethodId(String(m._id));
+                      setReceiptUrl('');
+                    }
+                  }}
+                  className={`text-left border rounded p-3 cursor-pointer ${selected ? 'border-green-600 ring-1 ring-green-600' : 'border-gray-300'}`}
+                >
+                  <div className="font-semibold">{m.name}</div>
+                  {m.details ? <div className="text-xs text-gray-700 mt-1 whitespace-pre-line">{m.details}</div> : null}
+                  {m.methodImageUrl ? <img src={toPublicAssetUrl(m.methodImageUrl)} alt={m.name} className="mt-2 h-16 object-contain" /> : null}
+                  {m.qrImageUrl ? (
+                    <button
+                      type="button"
+                      className="mt-2 block"
+                      onClick={() => setQrPreviewUrl(toPublicAssetUrl(m.qrImageUrl))}
+                    >
+                      <img src={toPublicAssetUrl(m.qrImageUrl)} alt={`${m.name} QR`} className="w-72 h-72 md:w-80 md:h-80 object-contain border rounded bg-white p-1" />
+                      <span className="mt-1 inline-block text-xs text-blue-700 underline">Tap to zoom QR</span>
+                    </button>
+                  ) : null}
+                  <div className="text-xs text-gray-600 mt-2">
+                    {m.requiresReceipt ? 'Receipt required' : m.allowReceiptUpload ? 'Receipt optional' : 'No receipt needed'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
 
-                        <div>
+          {(selectedPaymentMethod?.requiresReceipt || selectedPaymentMethod?.allowReceiptUpload) ? (
+            <div className="mt-4 border rounded p-3">
+              <label className="block mb-2 text-sm font-medium text-gray-700">Upload Receipt {selectedPaymentMethod?.requiresReceipt ? '(Required)' : '(Optional)'}</label>
+              <input type="file" accept="image/*" onChange={(e) => uploadReceipt(e.target.files?.[0])} className="w-full border border-gray-300 p-2 rounded" />
+              {uploadingReceipt ? <div className="text-xs text-gray-500 mt-1">Uploading...</div> : null}
+              {receiptUrl ? <a href={toPublicAssetUrl(receiptUrl)} target="_blank" rel="noreferrer" className="text-blue-700 text-sm mt-1 inline-block">View uploaded receipt</a> : null}
+            </div>
+          ) : null}
 
-                           <label className="block mb-2 text-sm font-medium text-gray-700">Other City</label>
-           
+          {selectedPaymentMethod?.details ? (
+            <div className="mt-4 border rounded p-3 bg-gray-50">
+              <div className="text-sm font-medium text-gray-800 mb-1">Payment Details</div>
+              <div className="text-sm text-gray-700 whitespace-pre-line">{selectedPaymentMethod.details}</div>
+            </div>
+          ) : null}
 
-
-                            {/* <label
-                                htmlFor="District"
-                                className="block text-xl font-medium text-gray-700 undefined "
-                            >
-                                District
-                            </label>  */}
-                            <div className="flex flex-col items-start">
-                                <input
-                                    type="text"
-                                    id="otherCity"
-                                    name="otherCity"
-                                    className=" w-full border border-gray-300 p-2 rounded"
-                                    value={formData.otherCity}
-                                    onChange={handleChange}
-                                    // ref={tehsilRef} 
-                                    placeholder="Enter City Name "
-                                
-                                />
-                            </div>
-                        </div>
-
-                            )}
-      
-         <div>
-            <label className="block mb-2 text-sm font-medium text-gray-700">Mobile Number (Preferable WhatsApp)</label>
-            
-          
-              <input
-                  type="text"
-                  name="mobile"
-                  className="w-full border border-gray-300 p-2 rounded"
-                  value={formData.mobile}
-                  onChange={handleChange}
-                  placeholder="Enter Mobile Number Preferably (WhatsApp)"
-                  required
-              />
-      
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button type="button" onClick={() => setStep('details')} className="w-full border border-gray-400 text-gray-700 p-3 rounded">Back To Checkout</button>
+            <button type="button" disabled={isSubmitting} onClick={handlePlaceOrder} className="w-full bg-green-600 text-white p-3 rounded hover:bg-green-700 transition disabled:opacity-60">
+              {isSubmitting ? 'Placing Order...' : 'Place Order'}
+            </button>
+          </div>
         </div>
-        <div className="md:col-span-2">
-          <button
-            type="submit"
-            className="w-full bg-green-600 text-white p-3 rounded hover:bg-green-700 transition"
-          >
-            Place Order
-          </button>
-        </div>
-      </form>
+      )}
     </div>
+    {qrPreviewUrl ? (
+      <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+        <div className="bg-white rounded shadow-lg p-3 max-w-[95vw] max-h-[95vh]">
+          <div className="flex justify-between items-center mb-2">
+            <div className="text-sm font-medium text-gray-800">Scan QR</div>
+            <button type="button" onClick={() => setQrPreviewUrl('')} className="text-gray-700 border px-2 py-1 rounded">Close</button>
+          </div>
+          <img src={qrPreviewUrl} alt="QR preview" className="w-[88vw] h-[88vw] max-w-[700px] max-h-[700px] object-contain" />
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
 

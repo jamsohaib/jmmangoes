@@ -6,6 +6,15 @@ const api = axios.create({
   withCredentials: true,
 });
 
+export const toPublicAssetUrl = (url) => {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+  const origin = apiBase.replace(/\/api\/?$/, '');
+  const path = String(url).startsWith('/') ? url : `/${url}`;
+  return `${origin}${path}`;
+};
+
 let isRedirectingToLogin = false;
 
 api.interceptors.response.use(

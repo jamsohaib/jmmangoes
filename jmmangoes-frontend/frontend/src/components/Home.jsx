@@ -22,7 +22,7 @@ const Home = () => {
   // useEffect(() => {
   //   axios.get('http://localhost:5000/api/getProductsForPublic')
   //     .then((res) => setProducts(res.data))
-  //     .catch((err) => console.error('Error fetching products:', err));
+  //        .catch(() => {});
   // }, []);
 
     useEffect(() => {
@@ -35,7 +35,7 @@ const Home = () => {
           });
           setQuantities(initialQuantities);
         })
-        .catch((err) => console.error('Error fetching products:', err));
+        .catch(() => {});
     }, []);
 
   const getDisplayPrice = (product) => product.price;

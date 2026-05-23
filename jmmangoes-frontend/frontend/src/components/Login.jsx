@@ -20,14 +20,14 @@ const Login = () => {
     try {
 //      const res = await axios.post('http://localhost:5000/api/login',formData);
       const res = await api.post('/login', formData);
-      console.log(res.data.message);
+      
 
     //  // Usage:
     //   const token = getCookie('token');
     //   console.log('Token from cookie:', token);
-      console.log('user info:', res.data.user.role);
+
        setUser(res.data.user); // Update the auth store
-      console.log("url : ",res.data.url);
+
       setMessage(res.data.message||'Login successful!');
 
       navigate('/');

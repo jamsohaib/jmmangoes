@@ -27,6 +27,18 @@ const orderSchema = new mongoose.Schema({
   discountAmount: { type: Number, default: 0 },
   finalAmount: { type: Number, default: 0 },
   paymentMode: { type: String, enum: ['prepaid', 'cod', 'free'], default: 'cod' },
+  paymentDetails: {
+    methodId: { type: mongoose.Schema.Types.ObjectId, ref: 'PaymentMethod', default: null },
+    methodName: { type: String, default: '' },
+    methodCode: { type: String, default: '' },
+    receiptUrl: { type: String, default: '' },
+    paymentDiscount: { type: Number, default: 0 },
+    paymentCharge: { type: Number, default: 0 },
+    payableAmount: { type: Number, default: 0 },
+    isVerified: { type: Boolean, default: false },
+    verifiedAt: { type: Date, default: null },
+    verifiedByName: { type: String, default: '' },
+  },
   status: {
     type: String,
     enum: ['pending_confirmation', 'confirmed', 'rejected', 'dispatched', 'delivered', 'returned', 'cancelled'],
