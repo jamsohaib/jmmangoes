@@ -200,6 +200,7 @@ jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates'
 
 jmm_route.get('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'view'), jmm_controller.handleFetchingShippingCosts);
 jmm_route.get('/shippingCosts/public', jmm_controller.handleFetchingShippingCosts);
+jmm_route.post('/contact-query', jmm_controller.handleContactQuery);
 
 jmm_route.post('/checkout', jmm_controller.handleCheckout);
 jmm_route.get('/orders/feedback/:orderNumber', jmm_controller.handleGetOrderFeedbackMeta);

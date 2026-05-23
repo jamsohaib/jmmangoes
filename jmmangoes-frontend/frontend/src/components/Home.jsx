@@ -245,8 +245,8 @@ const Home = () => {
           <p className="text-gray-600 mb-4">
             Have questions or need assistance? Reach out to us!
           </p>
-          <a href="mailto:info@jmmangoes.pk" className="text-green-600 underline">
-            info@jmmangoes.pk
+          <a href="mailto:info@csittec.com" className="text-green-600 underline">
+            info@csittec.com
           </a>
         </div>
       </section>

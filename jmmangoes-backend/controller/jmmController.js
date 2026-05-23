@@ -507,13 +507,22 @@ async function handleGetPublicSites(req, res) {
 
 async function handleCreateSite(req, res) {
   try {
-    const { name, contactNumber, contactPersonName, address, city, isActive = true } = req.body;
+    const { name, contactNumber, contactPersonName, address, city, latitude = null, longitude = null, isActive = true } = req.body;
     if (name?.trim().toLowerCase() === 'online') {
       return res.status(400).json({ message: 'Online site is system-managed and cannot be created manually' });
     }
     const exists = await Site.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } });
     if (exists) return res.status(400).json({ message: 'Site already exists' });
-    const site = await Site.create({ name, contactNumber, contactPersonName, address, city, isActive });
+    const site = await Site.create({
+      name,
+      contactNumber,
+      contactPersonName,
+      address,
+      city,
+      latitude: latitude === '' || latitude === null ? null : Number(latitude),
+      longitude: longitude === '' || longitude === null ? null : Number(longitude),
+      isActive,
+    });
     return res.status(201).json({ success: true, site });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -1946,6 +1955,70 @@ async function handleFetchingShippingCosts(req,res){
   }
 }
 
+async function handleContactQuery(req, res) {
+  try {
+    const {
+      name = '',
+      email = '',
+      phone = '',
+      siteName = '',
+      message = '',
+      hpField = '',
+      captchaA,
+      captchaB,
+      captchaAnswer,
+      formStartedAt,
+    } = req.body || {};
+    if (!String(name).trim() || !String(message).trim()) {
+      return res.status(400).json({ success: false, message: 'Name and message are required' });
+    }
+    if (String(hpField || '').trim()) {
+      return res.status(400).json({ success: false, message: 'Bot verification failed' });
+    }
+    const a = Number(captchaA);
+    const b = Number(captchaB);
+    const ans = Number(captchaAnswer);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(ans) || ans !== a + b) {
+      return res.status(400).json({ success: false, message: 'Human verification answer is incorrect' });
+    }
+    const started = Number(formStartedAt || 0);
+    if (!Number.isFinite(started) || started <= 0 || Date.now() - started < 3000) {
+      return res.status(400).json({ success: false, message: 'Please take a moment before submitting the form' });
+    }
+
+    const to = process.env.CONTACT_QUERY_TO || 'info@csittec.com';
+    const safeName = String(name).trim();
+    const safeEmail = String(email || '').trim();
+    const safePhone = String(phone || '').trim();
+    const safeSite = String(siteName || '').trim();
+    const safeMessage = String(message || '').trim();
+
+    const subject = `JM Mangoes Contact Query - ${safeName}`;
+    const text = `New contact query received:
+Name: ${safeName}
+Email: ${safeEmail || '-'}
+Phone: ${safePhone || '-'}
+Site: ${safeSite || '-'}
+Message:
+${safeMessage}`;
+
+    const html = `
+      <h3>New contact query received</h3>
+      <p><strong>Name:</strong> ${safeName}</p>
+      <p><strong>Email:</strong> ${safeEmail || '-'}</p>
+      <p><strong>Phone:</strong> ${safePhone || '-'}</p>
+      <p><strong>Site:</strong> ${safeSite || '-'}</p>
+      <p><strong>Message:</strong><br/>${safeMessage.replace(/\n/g, '<br/>')}</p>
+    `;
+
+    await sendMail({ to, subject, text, html });
+    return res.status(200).json({ success: true, message: 'Your query has been sent.' });
+  } catch (err) {
+    logger.error('Contact query email failed', { error: err?.message || String(err) });
+    return res.status(500).json({ success: false, message: 'Failed to send query right now' });
+  }
+}
+
 
 async function handleCheckout(req,res){ 
   logger.debug("In handleCheckout");
@@ -2135,6 +2208,7 @@ module.exports = {
     handleStockAdjustments,
     handleUpdateShippingCosts,
     handleFetchingShippingCosts,
+    handleContactQuery,
     handleCheckout,
     
 }

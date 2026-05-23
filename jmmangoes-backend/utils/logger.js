@@ -31,6 +31,9 @@ function write(filePath, line) {
 function baseLog(level, message, meta) {
   if ((LEVELS[level] ?? LEVELS.info) > CURRENT_LEVEL) return;
   const line = `${new Date().toISOString()} [${level.toUpperCase()}] ${message}${stringifyMeta(meta)}`;
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
   write(appLogPath(), line);
   if (level === 'error') write(errorLogPath(), line);
 }
@@ -45,4 +48,3 @@ module.exports = {
     write(accessLogPath(), line);
   },
 };
-

@@ -153,7 +153,7 @@ const SalePoint = () => {
     const buildCopy = (title) => `
       <div class="receipt-copy">
         <div class="center">
-          <img src="/images/favicons_jm_mangoes-removebg-preview.png" alt="JM Mangoes Logo" class="logo" />
+          <img src="/images/JM_Mangoes_Logo.png?v=20260523" alt="JM Mangoes Logo" class="logo" />
           <h2>JM Mangoes</h2>
           <div>Phone: 03218869344</div>
           <div>Website: jmmangoes.pk</div>

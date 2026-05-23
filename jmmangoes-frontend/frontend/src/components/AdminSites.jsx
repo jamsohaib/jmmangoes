@@ -9,6 +9,8 @@ const initialForm = {
   contactPersonName: '',
   address: '',
   city: '',
+  latitude: '',
+  longitude: '',
   isActive: true,
 };
 
@@ -61,6 +63,8 @@ const AdminSites = () => {
       contactPersonName: site.contactPersonName || '',
       address: site.address || '',
       city: site.city || '',
+      latitude: site.latitude ?? '',
+      longitude: site.longitude ?? '',
       isActive: site.isActive !== false,
     });
   };
@@ -110,6 +114,8 @@ const AdminSites = () => {
         <input className="w-full border p-2 rounded" placeholder="Contact person name (optional)" value={form.contactPersonName} onChange={(e) => setForm({ ...form, contactPersonName: e.target.value })} />
         <input className="w-full border p-2 rounded" placeholder="Address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} required />
         <input className="w-full border p-2 rounded" placeholder="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} required />
+        <input className="w-full border p-2 rounded" placeholder="Latitude (optional)" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} />
+        <input className="w-full border p-2 rounded" placeholder="Longitude (optional)" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} />
         <button className="bg-green-600 text-white px-4 py-2 rounded">{editing ? 'Update Site' : 'Add Site'}</button>
       </form>
 
@@ -122,6 +128,8 @@ const AdminSites = () => {
               <th className="border px-3 py-2">Person</th>
               <th className="border px-3 py-2">Address</th>
               <th className="border px-3 py-2">City</th>
+              <th className="border px-3 py-2">Latitude</th>
+              <th className="border px-3 py-2">Longitude</th>
               <th className="border px-3 py-2">Status</th>
               <th className="border px-3 py-2">Actions</th>
             </tr>
@@ -134,6 +142,8 @@ const AdminSites = () => {
                 <td className="border px-3 py-2">{site.contactPersonName || '-'}</td>
                 <td className="border px-3 py-2">{site.address}</td>
                 <td className="border px-3 py-2">{site.city}</td>
+                <td className="border px-3 py-2">{site.latitude ?? '-'}</td>
+                <td className="border px-3 py-2">{site.longitude ?? '-'}</td>
                 <td className="border px-3 py-2">{site.isActive ? 'Active' : 'Disabled'}</td>
                 <td className="border px-3 py-2">
                   <div className="flex gap-2">

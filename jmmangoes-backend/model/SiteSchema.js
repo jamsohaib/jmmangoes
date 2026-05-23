@@ -7,6 +7,8 @@ const siteSchema = new mongoose.Schema(
     contactPersonName: { type: String, trim: true, default: '' },
     address: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }

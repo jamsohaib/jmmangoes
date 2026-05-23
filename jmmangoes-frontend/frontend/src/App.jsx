@@ -41,6 +41,7 @@ import OrderManagement from './components/OrderManagement';
 import OrderFeedback from './components/OrderFeedback';
 import FeedbackReport from './components/FeedbackReport';
 import PaymentManager from './components/PaymentManager';
+import ContactPage from './components/ContactPage';
 
 function App() {
   return (
@@ -86,6 +87,7 @@ function App() {
              <Route path="/order-management" element={<OrderManagement />} />
              <Route path="/feedback-report" element={<FeedbackReport />} />
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
+             <Route path="/contact" element={<ContactPage />} />
              <Route path="/login" element={<Login />} />
              <Route path="/register" element={<Register />} /> 
              <Route path="*" element={<NotFound />} />

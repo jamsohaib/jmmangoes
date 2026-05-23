@@ -61,7 +61,7 @@ const Navbar = () => {
     <nav className="bg-white shadow">
       <div className="w-full pl-0 pr-4 py-3 md:py-4 flex flex-wrap justify-between items-center">
         <Link to="/" className="flex items-center ml-2 md:ml-3" onClick={() => setMenuOpen(false)}>
-          <img src="/images/favicons_jm_mangoes-removebg-preview.png" alt="JM Mangoes Logo" className="h-16 md:h-28 w-auto object-contain cursor-pointer" />
+          <img src="/images/JM_Mangoes_Logo.png?v=20260523" alt="JM Mangoes Logo" className="h-20 md:h-36 w-auto object-contain cursor-pointer" />
         </Link>
 
         <div className="md:hidden flex items-center gap-2">
@@ -98,7 +98,7 @@ const Navbar = () => {
           <ul className="flex flex-col md:flex-row md:items-center gap-3 md:gap-6">
             <li><a href="#features" onClick={() => handleNavClick('features')} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Features</a></li>
             <li><a href="#pricing" onClick={() => handleNavClick('pricing')} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Pricing</a></li>
-            <li><a href="#contact" onClick={() => handleNavClick('contact')} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Contact</a></li>
+            <li><Link to="/contact" onClick={() => setMenuOpen(false)} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Contact</Link></li>
             <li><Link to="/checkout" onClick={() => setMenuOpen(false)} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Checkout</Link></li>
 
             {visibleAdminLinks.length > 0 && (
