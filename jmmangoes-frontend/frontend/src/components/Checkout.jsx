@@ -222,9 +222,20 @@ function Checkout() {
         </form>
       ) : (
         <div className="text-black">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             {paymentMethods.map((m) => {
               const selected = String(m._id) === String(selectedPaymentMethodId);
+              const optionDiscount = m.discountType === 'fixed'
+                ? Number(m.discountValue || 0)
+                : m.discountType === 'percentage'
+                  ? (Number(baseTotal || 0) * Number(m.discountValue || 0)) / 100
+                  : 0;
+              const optionCharge = m.chargeType === 'fixed'
+                ? Number(m.chargeValue || 0)
+                : m.chargeType === 'percentage'
+                  ? (Number(baseTotal || 0) * Number(m.chargeValue || 0)) / 100
+                  : 0;
+              const optionPayable = Math.max(0, Number(baseTotal || 0) - Number(optionDiscount || 0) + Number(optionCharge || 0));
               return (
                 <div
                   key={m._id}
@@ -241,42 +252,87 @@ function Checkout() {
                       setReceiptUrl('');
                     }
                   }}
-                  className={`text-left border rounded p-3 cursor-pointer ${selected ? 'border-green-600 ring-1 ring-green-600' : 'border-gray-300'}`}
+                  className={`text-left border rounded p-3 cursor-pointer transition ${
+                    selected
+                      ? 'border-green-700 ring-4 ring-green-300 bg-green-50 shadow-md'
+                      : 'border-gray-300 bg-white hover:border-green-300'
+                  }`}
                 >
-                  <div className="font-semibold">{m.name}</div>
-                  {m.details ? <div className="text-xs text-gray-700 mt-1 whitespace-pre-line">{m.details}</div> : null}
-                  {m.methodImageUrl ? <img src={toPublicAssetUrl(m.methodImageUrl)} alt={m.name} className="mt-2 h-16 object-contain" /> : null}
-                  {m.qrImageUrl ? (
-                    <button
-                      type="button"
-                      className="mt-2 block"
-                      onClick={() => setQrPreviewUrl(toPublicAssetUrl(m.qrImageUrl))}
-                    >
-                      <img src={toPublicAssetUrl(m.qrImageUrl)} alt={`${m.name} QR`} className="w-72 h-72 md:w-80 md:h-80 object-contain border rounded bg-white p-1" />
-                      <span className="mt-1 inline-block text-xs text-blue-700 underline">Tap to zoom QR</span>
-                    </button>
-                  ) : null}
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{m.name}</div>
+                    {selected ? <span className="text-xs font-bold text-green-700">Selected</span> : null}
+                  </div>
                   <div className="text-xs text-gray-600 mt-2">
                     {m.requiresReceipt ? 'Receipt required' : m.allowReceiptUpload ? 'Receipt optional' : 'No receipt needed'}
                   </div>
+                  <div className="text-xs text-gray-700 mt-1">
+                    {m.discountType !== 'none'
+                      ? `Discount: ${m.discountType === 'percentage' ? `${m.discountValue}%` : `PKR ${m.discountValue}`}`
+                      : 'No discount'}
+                    {m.chargeType !== 'none'
+                      ? ` | Charge: ${m.chargeType === 'percentage' ? `${m.chargeValue}%` : `PKR ${m.chargeValue}`}`
+                      : ''}
+                  </div>
+                  {selected ? (
+                    <div className="text-sm font-semibold text-green-800 mt-2">
+                      Total discount offered: PKR {Number(optionDiscount || 0).toFixed(2)}
+                    </div>
+                  ) : null}
+                  {selected ? (
+                    <div className="mt-2 text-base font-bold text-green-900 border border-green-300 bg-white rounded px-3 py-2">
+                      Total payable amount: PKR {Number(optionPayable || 0).toFixed(2)}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
           </div>
 
-          {(selectedPaymentMethod?.requiresReceipt || selectedPaymentMethod?.allowReceiptUpload) ? (
-            <div className="mt-4 border rounded p-3">
-              <label className="block mb-2 text-sm font-medium text-gray-700">Upload Receipt {selectedPaymentMethod?.requiresReceipt ? '(Required)' : '(Optional)'}</label>
-              <input type="file" accept="image/*" onChange={(e) => uploadReceipt(e.target.files?.[0])} className="w-full border border-gray-300 p-2 rounded" />
-              {uploadingReceipt ? <div className="text-xs text-gray-500 mt-1">Uploading...</div> : null}
-              {receiptUrl ? <a href={toPublicAssetUrl(receiptUrl)} target="_blank" rel="noreferrer" className="text-blue-700 text-sm mt-1 inline-block">View uploaded receipt</a> : null}
+          {selectedPaymentMethod ? (
+            <div className="mt-4 border rounded p-3 bg-gray-50">
+              <div className="text-sm font-semibold text-gray-800 mb-2">Payment Details</div>
+              {selectedPaymentMethod.details ? (
+                <div className="text-sm text-gray-700 whitespace-pre-line">{selectedPaymentMethod.details}</div>
+              ) : (
+                <div className="text-sm text-gray-500">No additional payment details.</div>
+              )}
+              {selectedPaymentMethod.methodImageUrl ? (
+                <img
+                  src={toPublicAssetUrl(selectedPaymentMethod.methodImageUrl)}
+                  alt={selectedPaymentMethod.name}
+                  className="mt-3 h-16 object-contain"
+                />
+              ) : null}
+              {selectedPaymentMethod.qrImageUrl ? (
+                <button
+                  type="button"
+                  className="mt-3 block"
+                  onClick={() => setQrPreviewUrl(toPublicAssetUrl(selectedPaymentMethod.qrImageUrl))}
+                >
+                  <img
+                    src={toPublicAssetUrl(selectedPaymentMethod.qrImageUrl)}
+                    alt={`${selectedPaymentMethod.name} QR`}
+                    className="w-56 h-56 md:w-64 md:h-64 object-contain border rounded bg-white p-1"
+                  />
+                  <span className="mt-1 inline-block text-xs text-blue-700 underline">Tap to zoom QR</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
 
-          {selectedPaymentMethod?.details ? (
-            <div className="mt-4 border rounded p-3 bg-gray-50">
-              <div className="text-sm font-medium text-gray-800 mb-1">Payment Details</div>
-              <div className="text-sm text-gray-700 whitespace-pre-line">{selectedPaymentMethod.details}</div>
+          {(selectedPaymentMethod?.requiresReceipt || selectedPaymentMethod?.allowReceiptUpload) ? (
+            <div className="mt-4 border-2 border-amber-500 rounded-lg p-4 bg-amber-50 shadow-sm">
+              <label className="block mb-2 text-base font-semibold text-amber-800">
+                Upload Receipt {selectedPaymentMethod?.requiresReceipt ? '(Required)' : '(Optional)'}
+              </label>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => uploadReceipt(e.target.files?.[0])}
+                className="w-full border-2 border-amber-500 bg-white p-3 rounded-md file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-amber-600 file:text-white hover:file:bg-amber-700"
+              />
+              {uploadingReceipt ? <div className="text-xs text-gray-500 mt-1">Uploading...</div> : null}
+              {receiptUrl ? <a href={toPublicAssetUrl(receiptUrl)} target="_blank" rel="noreferrer" className="text-blue-700 font-medium text-sm mt-2 inline-block underline">View uploaded receipt</a> : null}
             </div>
           ) : null}
 
