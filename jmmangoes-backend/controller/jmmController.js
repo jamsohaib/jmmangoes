@@ -2,6 +2,9 @@ const { request } = require('https');
 const LocalStorage = require('node-localstorage').LocalStorage;
 localStorage = new LocalStorage('./scratch');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 
 
@@ -22,6 +25,10 @@ const ExpenseEntry = require('../model/ExpenseEntrySchema');
 const OrderAlertEmail = require('../model/OrderAlertEmailSchema');
 const Courier = require('../model/CourierSchema');
 const PaymentMethod = require('../model/PaymentMethodSchema');
+const FarmBlock = require('../model/FarmBlockSchema');
+const FarmCluster = require('../model/FarmClusterSchema');
+const FarmTree = require('../model/FarmTreeSchema');
+const FarmTreeLog = require('../model/FarmTreeLogSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -59,6 +66,108 @@ function normalizePaymentCode(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function userAllowedFarmBlocks(req) {
+  if (req.user?.role === 'admin') return null;
+  return new Set((req.user?.farmBlockAccess || []).map(String));
+}
+
+function canAccessFarmBlock(req, blockId) {
+  if (req.user?.role === 'admin') return true;
+  const allowed = userAllowedFarmBlocks(req);
+  return allowed?.has(String(blockId));
+}
+
+function toPositiveInt(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.floor(n);
+  return i > 0 ? i : fallback;
+}
+
+function buildTreeIdentifier(blockCode, rowNumber, rowTreeNumber) {
+  return `${String(blockCode || '').toUpperCase()}-R${String(rowNumber).padStart(2, '0')}-T${String(rowTreeNumber).padStart(3, '0')}`;
+}
+
+function updateEnvKey(key, value) {
+  const envPath = path.join(process.cwd(), '.env');
+  let content = '';
+  if (fs.existsSync(envPath)) {
+    content = fs.readFileSync(envPath, 'utf8');
+  }
+  const escapedValue = String(value).replace(/\r?\n/g, '');
+  const line = `${key}=${escapedValue}`;
+  const re = new RegExp(`^${key}=.*$`, 'm');
+  if (re.test(content)) {
+    content = content.replace(re, line);
+  } else {
+    content = `${content.trimEnd()}\n${line}\n`;
+  }
+  fs.writeFileSync(envPath, content, 'utf8');
+}
+
+function createHumanChallengeToken(a, b) {
+  const secret = process.env.JWT_SECRET || 'fallback_secret';
+  return jwt.sign({ kind: 'human-challenge', a, b }, secret, { expiresIn: '10m' });
+}
+
+function verifyHumanChallenge(token, answer) {
+  const secret = process.env.JWT_SECRET || 'fallback_secret';
+  const decoded = jwt.verify(String(token || ''), secret);
+  if (decoded?.kind !== 'human-challenge') return false;
+  return Number(answer) === Number(decoded.a) + Number(decoded.b);
+}
+
+async function getNextGlobalTreeCode() {
+  const rows = await FarmTree.find({ treeCode: { $regex: '^[0-9]+$' } })
+    .sort({ treeCode: -1 })
+    .limit(1)
+    .select('treeCode');
+  const latest = Number(rows?.[0]?.treeCode || 0);
+  const next = Number.isFinite(latest) ? latest + 1 : 1;
+  return String(next).padStart(6, '0');
+}
+
+async function rebuildBlockTreeIdentifiers(blockId) {
+  const block = await FarmBlock.findById(blockId).select('code');
+  if (!block) return;
+  const rows = await FarmTree.find({ blockId }).select('_id treeCode rowNumber rowTreeNumber');
+  const targetRows = rows
+    .filter((t) => t.rowNumber && t.rowTreeNumber)
+    .map((t) => ({
+      id: t._id,
+      treeCode: t.treeCode,
+      rowNumber: t.rowNumber,
+      rowTreeNumber: t.rowTreeNumber,
+    }));
+
+  if (!targetRows.length) return;
+
+  // Phase 1: assign temporary unique IDs to avoid unique-index collisions
+  const tempOps = targetRows.map((t) => {
+    const tempTreeId = `TMP-${String(t.id)}`;
+    return {
+      updateOne: {
+        filter: { _id: t.id },
+        update: { $set: { treeId: tempTreeId, qrCodeData: `${t.treeCode}|${tempTreeId}` } },
+      },
+    };
+  });
+  await FarmTree.bulkWrite(tempOps, { ordered: true });
+
+  // Phase 2: assign final deterministic IDs
+  const finalOps = targetRows.map((t) => {
+      const treeId = buildTreeIdentifier(block.code, t.rowNumber, t.rowTreeNumber);
+      return {
+        updateOne: {
+          filter: { _id: t.id },
+          update: { $set: { blockCode: block.code, treeId, qrCodeData: `${t.treeCode}|${treeId}` } },
+        },
+      };
+    });
+  await FarmTree.bulkWrite(finalOps, { ordered: true });
 }
 
 async function getNextOrderNumber() {
@@ -170,6 +279,9 @@ async function handleLogin(req, res) {
         username: user.username,
         permissions: user.permissions || {},
         siteAccess: (user.siteAccess || []).map((s) => String(s)),
+        farmBlockAccess: (user.farmBlockAccess || []).map((b) => String(b)),
+        isFarmUser: !!user.isFarmUser,
+        isSalesUser: !!user.isSalesUser,
       },
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
@@ -197,6 +309,9 @@ async function handleLogin(req, res) {
         name : user.name,
         permissions: user.permissions || {},
         siteAccess: (user.siteAccess || []).map((s) => String(s)),
+        farmBlockAccess: (user.farmBlockAccess || []).map((b) => String(b)),
+        isFarmUser: !!user.isFarmUser,
+        isSalesUser: !!user.isSalesUser,
       }
     });
   } catch (err) {
@@ -346,6 +461,148 @@ async function handleUpdateProductPrice(req, res) {
   } catch (err) {
     logger.error('Error updating product quantity', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetHumanChallenge(req, res) {
+  try {
+    const a = Math.floor(Math.random() * 9) + 1;
+    const b = Math.floor(Math.random() * 9) + 1;
+    const challengeToken = createHumanChallengeToken(a, b);
+    return res.status(200).json({
+      success: true,
+      question: `What is ${a} + ${b}?`,
+      challengeToken,
+    });
+  } catch (err) {
+    logger.error('Human challenge generation failed', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error' });
+  }
+}
+
+async function handleForgotPassword(req, res) {
+  const fallbackEmail = 'engr.dr.ahmed.sohaib@gmail.com';
+  try {
+    const username = String(req.body?.username || '').trim();
+    const challengeToken = String(req.body?.challengeToken || '').trim();
+    const challengeAnswer = req.body?.challengeAnswer;
+    const hpField = String(req.body?.hpField || '').trim();
+    if (!username) {
+      return res.status(400).json({ message: 'Username is required' });
+    }
+    if (hpField) {
+      return res.status(400).json({ message: 'Verification failed' });
+    }
+    let humanOk = false;
+    try {
+      humanOk = verifyHumanChallenge(challengeToken, challengeAnswer);
+    } catch (_) {
+      humanOk = false;
+    }
+    if (!humanOk) {
+      return res.status(400).json({ message: 'Human verification failed. Please try again.' });
+    }
+
+    const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'admin';
+    if (username === superAdminUsername) {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const resetSecret = process.env.JWT_SECRET || 'fallback_secret';
+      const adminResetToken = jwt.sign(
+        { kind: 'super-admin-reset', username: superAdminUsername, token: rawToken },
+        resetSecret,
+        { expiresIn: '15m' }
+      );
+      const appOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+      const resetLink = `${appOrigin}/reset-password?token=${encodeURIComponent(adminResetToken)}`;
+      const subject = 'JM Mangoes - Super Admin Password Reset';
+      const text = `Super admin password reset requested.\n\nUse this link to reset password:\n${resetLink}\n\nThis link will expire in 15 minutes.`;
+      const html = `<p>Super admin password reset requested.</p><p><a href="${resetLink}">Click here to reset password</a></p><p>This link will expire in 15 minutes.</p>`;
+      await sendMail({ to: fallbackEmail, subject, text, html });
+      return res.status(200).json({ success: true, message: 'If username exists, reset instructions have been sent.' });
+    }
+
+    const user = await userDetails.findOne({ username });
+    if (!user || user.isActive === false) {
+      return res.status(200).json({ success: true, message: 'If username exists, reset instructions have been sent.' });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    user.resetPasswordTokenHash = tokenHash;
+    user.resetPasswordExpiresAt = expiresAt;
+    await user.save();
+
+    const appOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+    const resetLink = `${appOrigin}/reset-password?token=${encodeURIComponent(rawToken)}`;
+    const userEmail = String(user.email || '').trim();
+    const recipients = Array.from(new Set([userEmail, fallbackEmail].filter(Boolean)));
+    const subject = 'JM Mangoes - Password Reset';
+    const text = `Hello ${user.name || user.username},\n\nUse this link to reset your password:\n${resetLink}\n\nThis link will expire in 15 minutes.\n\nIf you did not request this, you can ignore this email.`;
+    const html = `<p>Hello ${user.name || user.username},</p><p>Use this link to reset your password:</p><p><a href="${resetLink}">Click here to reset password</a></p><p>This link will expire in 15 minutes.</p><p>If you did not request this, you can ignore this email.</p>`;
+
+    await sendMail({ to: recipients.join(','), subject, text, html });
+    return res.status(200).json({ success: true, message: 'If username exists, reset instructions have been sent.' });
+  } catch (err) {
+    logger.error('Forgot password failed', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error' });
+  }
+}
+
+async function handleResetPassword(req, res) {
+  try {
+    const token = String(req.body?.token || '').trim();
+    const password = String(req.body?.password || '');
+    const confirmPassword = String(req.body?.confirmPassword || '');
+
+    if (!token || !password || !confirmPassword) {
+      return res.status(400).json({ message: 'Token, password and confirm password are required' });
+    }
+    if (password !== confirmPassword) {
+      return res.status(400).json({ message: 'Passwords do not match' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // First, try super-admin reset token (JWT style token)
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+      if (decoded?.kind === 'super-admin-reset') {
+        const superAdminUsername = process.env.SUPERADMIN_USERNAME || 'admin';
+        if (decoded.username !== superAdminUsername) {
+          return res.status(400).json({ message: 'Invalid or expired reset token' });
+        }
+        process.env.SUPERADMIN_PASSWORD = password;
+        updateEnvKey('SUPERADMIN_PASSWORD', password);
+        return res.status(200).json({ success: true, message: 'Super admin password reset successful. Please login.' });
+      }
+    } catch (_) {
+      // Ignore and continue with normal user token flow.
+    }
+
+    const user = await userDetails.findOne({
+      resetPasswordTokenHash: tokenHash,
+      resetPasswordExpiresAt: { $gt: new Date() },
+      isActive: true,
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired reset token' });
+    }
+
+    user.password = password;
+    user.resetPasswordTokenHash = null;
+    user.resetPasswordExpiresAt = null;
+    await user.save();
+
+    return res.status(200).json({ success: true, message: 'Password reset successful. Please login.' });
+  } catch (err) {
+    logger.error('Reset password failed', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error' });
   }
 }
 
@@ -1213,6 +1470,7 @@ async function handleGetUsers(req, res) {
       .find({})
       .select('-password')
       .populate('siteAccess', 'name city isActive')
+      .populate('farmBlockAccess', 'name code acreage isActive')
       .sort({ createdAt: -1 });
     return res.status(200).json(users);
   } catch (err) {
@@ -1233,6 +1491,9 @@ async function handleCreateUser(req, res) {
       confirmPassword,
       role = 'user',
       siteAccess = [],
+      farmBlockAccess = [],
+      isFarmUser = false,
+      isSalesUser = true,
       permissions = {},
     } = req.body;
 
@@ -1244,8 +1505,9 @@ async function handleCreateUser(req, res) {
     }
     const existing = await userDetails.findOne({ username });
     if (existing) return res.status(400).json({ message: 'Username already exists' });
-    if (email) {
-      const emailExists = await userDetails.findOne({ email });
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (normalizedEmail) {
+      const emailExists = await userDetails.findOne({ email: normalizedEmail });
       if (emailExists) return res.status(400).json({ message: 'Email already exists' });
     }
 
@@ -1255,10 +1517,13 @@ async function handleCreateUser(req, res) {
       contactNumber,
       cnic: cnic || '',
       username,
-      email: email || undefined,
+      email: normalizedEmail || undefined,
       password,
       role,
       siteAccess,
+      farmBlockAccess,
+      isFarmUser: Boolean(isFarmUser),
+      isSalesUser: Boolean(isSalesUser),
       permissions,
       isActive: true,
     });
@@ -1280,6 +1545,9 @@ async function handleUpdateUser(req, res) {
       email,
       role,
       siteAccess,
+      farmBlockAccess,
+      isFarmUser,
+      isSalesUser,
       permissions,
       isActive,
       password,
@@ -1304,6 +1572,9 @@ async function handleUpdateUser(req, res) {
     }
     user.role = role ?? user.role;
     user.siteAccess = Array.isArray(siteAccess) ? siteAccess : user.siteAccess;
+    user.farmBlockAccess = Array.isArray(farmBlockAccess) ? farmBlockAccess : user.farmBlockAccess;
+    if (typeof isFarmUser === 'boolean') user.isFarmUser = isFarmUser;
+    if (typeof isSalesUser === 'boolean') user.isSalesUser = isSalesUser;
     user.permissions = permissions ?? user.permissions;
     if (typeof isActive === 'boolean') user.isActive = isActive;
 
@@ -1941,6 +2212,916 @@ async function handleFeedbackReport(req, res) {
   }
 }
 
+async function handleGetFarmBlocks(req, res) {
+  try {
+    let rows = await FarmBlock.find({}).sort({ createdAt: -1 });
+    if (req.user.role !== 'admin') {
+      const allowed = userAllowedFarmBlocks(req);
+      rows = rows.filter((b) => allowed.has(String(b._id)));
+    }
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmBlock(req, res) {
+  try {
+    const { name, code, acreage = 1, description = '', isActive = true, gridRows = 1, gridCols = 1 } = req.body || {};
+    if (!String(name || '').trim() || !String(code || '').trim()) {
+      return res.status(400).json({ message: 'Name and code are required' });
+    }
+    const row = await FarmBlock.create({
+      name: String(name).trim(),
+      code: String(code).trim().toUpperCase(),
+      acreage: Number(acreage || 0),
+      description: String(description || '').trim(),
+      isActive: Boolean(isActive),
+      gridRows: Math.max(1, Number(gridRows || 1)),
+      gridCols: Math.max(1, Number(gridCols || 1)),
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmBlock(req, res) {
+  try {
+    const { id } = req.params;
+    const payload = { ...req.body };
+    if (payload.code) payload.code = String(payload.code).trim().toUpperCase();
+    if (payload.acreage !== undefined) payload.acreage = Number(payload.acreage || 0);
+    const row = await FarmBlock.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    if (!row) return res.status(404).json({ message: 'Farm block not found' });
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmBlock(req, res) {
+  try {
+    const { id } = req.params;
+    const treeCount = await FarmTree.countDocuments({ blockId: id });
+    if (treeCount > 0) return res.status(400).json({ message: 'Cannot delete block with assigned trees' });
+    const row = await FarmBlock.findByIdAndDelete(id);
+    if (!row) return res.status(404).json({ message: 'Farm block not found' });
+    await userDetails.updateMany({}, { $pull: { farmBlockAccess: row._id } });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmClusters(req, res) {
+  try {
+    const rows = await FarmCluster.find({}).sort({ createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmCluster(req, res) {
+  try {
+    const { name, code, description = '', isActive = true, gridRows = 1, gridCols = 1 } = req.body || {};
+    if (!String(name || '').trim() || !String(code || '').trim()) {
+      return res.status(400).json({ message: 'Name and code are required' });
+    }
+    const row = await FarmCluster.create({
+      name: String(name).trim(),
+      code: String(code).trim().toUpperCase(),
+      description: String(description || '').trim(),
+      isActive: Boolean(isActive),
+      gridRows: Math.max(1, Number(gridRows || 1)),
+      gridCols: Math.max(1, Number(gridCols || 1)),
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmCluster(req, res) {
+  try {
+    const { id } = req.params;
+    const payload = { ...req.body };
+    if (payload.code) payload.code = String(payload.code).trim().toUpperCase();
+    if (payload.gridRows !== undefined) payload.gridRows = Math.max(1, Number(payload.gridRows || 1));
+    if (payload.gridCols !== undefined) payload.gridCols = Math.max(1, Number(payload.gridCols || 1));
+    const row = await FarmCluster.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    if (!row) return res.status(404).json({ message: 'Cluster not found' });
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmCluster(req, res) {
+  try {
+    const { id } = req.params;
+    const cluster = await FarmCluster.findByIdAndDelete(id);
+    if (!cluster) return res.status(404).json({ message: 'Cluster not found' });
+    await FarmBlock.updateMany(
+      { clusterId: id },
+      { $set: { clusterId: null, clusterName: '', clusterCode: '', clusterRow: null, clusterCol: null } }
+    );
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmBlocksByCluster(req, res) {
+  try {
+    const { clusterId } = req.params;
+    const query = { clusterId };
+    let rows = await FarmBlock.find(query).sort({ clusterRow: 1, clusterCol: 1, code: 1 });
+    if (req.user.role !== 'admin') {
+      const allowed = userAllowedFarmBlocks(req);
+      rows = rows.filter((b) => allowed.has(String(b._id)));
+    }
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleAssignFarmBlockToCluster(req, res) {
+  try {
+    const { id } = req.params;
+    const { clusterId = null, clusterRow = null, clusterCol = null } = req.body || {};
+    const block = await FarmBlock.findById(id);
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+    if (!canAccessFarmBlock(req, block._id)) return res.status(403).json({ message: 'Access denied for this block' });
+
+    if (!clusterId) {
+      block.clusterId = null;
+      block.clusterName = '';
+      block.clusterCode = '';
+      block.clusterRow = null;
+      block.clusterCol = null;
+      await block.save();
+      return res.status(200).json({ success: true, row: block });
+    }
+
+    const cluster = await FarmCluster.findById(clusterId);
+    if (!cluster) return res.status(404).json({ message: 'Cluster not found' });
+    const row = toPositiveInt(clusterRow, null);
+    const col = toPositiveInt(clusterCol, null);
+    if (!row || !col) return res.status(400).json({ message: 'Cluster row/col are required' });
+
+    const occupied = await FarmBlock.findOne({
+      _id: { $ne: block._id },
+      clusterId,
+      clusterRow: row,
+      clusterCol: col,
+    });
+    if (occupied) return res.status(400).json({ message: 'Target cluster position is occupied' });
+
+    block.clusterId = cluster._id;
+    block.clusterName = cluster.name;
+    block.clusterCode = cluster.code;
+    block.clusterRow = row;
+    block.clusterCol = col;
+    await block.save();
+    await FarmCluster.findByIdAndUpdate(cluster._id, { $max: { gridRows: row, gridCols: col } });
+    return res.status(200).json({ success: true, row: block });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleMoveFarmBlockInCluster(req, res) {
+  try {
+    const { id } = req.params;
+    const { clusterId, clusterRow, clusterCol, allowSwap = false } = req.body || {};
+    const row = toPositiveInt(clusterRow, null);
+    const col = toPositiveInt(clusterCol, null);
+    if (!clusterId || !row || !col) return res.status(400).json({ message: 'Cluster and target row/col are required' });
+    const block = await FarmBlock.findById(id);
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+    if (!canAccessFarmBlock(req, block._id)) return res.status(403).json({ message: 'Access denied for this block' });
+
+    const cluster = await FarmCluster.findById(clusterId);
+    if (!cluster) return res.status(404).json({ message: 'Cluster not found' });
+    const occupied = await FarmBlock.findOne({
+      _id: { $ne: block._id },
+      clusterId,
+      clusterRow: row,
+      clusterCol: col,
+    });
+    if (occupied && !allowSwap) return res.status(400).json({ message: 'Target position occupied' });
+
+    const old = {
+      clusterId: block.clusterId,
+      clusterName: block.clusterName,
+      clusterCode: block.clusterCode,
+      clusterRow: block.clusterRow,
+      clusterCol: block.clusterCol,
+    };
+    block.clusterId = cluster._id;
+    block.clusterName = cluster.name;
+    block.clusterCode = cluster.code;
+    block.clusterRow = row;
+    block.clusterCol = col;
+    await block.save();
+
+    if (occupied && allowSwap) {
+      occupied.clusterId = old.clusterId;
+      occupied.clusterName = old.clusterName;
+      occupied.clusterCode = old.clusterCode;
+      occupied.clusterRow = old.clusterRow;
+      occupied.clusterCol = old.clusterCol;
+      await occupied.save();
+    }
+
+    await FarmCluster.findByIdAndUpdate(cluster._id, { $max: { gridRows: row, gridCols: col } });
+    return res.status(200).json({ success: true, swapped: Boolean(occupied && allowSwap), row: block });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleAdjustFarmClusterGrid(req, res) {
+  try {
+    const { clusterId, operation, index } = req.body || {};
+    const idx = toPositiveInt(index, null);
+    if (!clusterId || !operation || !idx) return res.status(400).json({ message: 'Cluster, operation and index are required' });
+    const cluster = await FarmCluster.findById(clusterId);
+    if (!cluster) return res.status(404).json({ message: 'Cluster not found' });
+    let gridRows = Math.max(1, Number(cluster.gridRows || 1));
+    let gridCols = Math.max(1, Number(cluster.gridCols || 1));
+    const SHIFT = 100000;
+
+    if (operation === 'append_row') {
+      cluster.gridRows = gridRows + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Row added at bottom' });
+    }
+    if (operation === 'append_col') {
+      cluster.gridCols = gridCols + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Column added at right' });
+    }
+
+    if (operation === 'add_row_top') {
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gte: idx } }, { $inc: { clusterRow: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gte: idx + SHIFT } }, { $inc: { clusterRow: -(SHIFT - 1) } });
+      cluster.gridRows = gridRows + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Row inserted' });
+    }
+    if (operation === 'add_row_bottom') {
+      if (idx === gridRows) {
+        cluster.gridRows = gridRows + 1;
+        await cluster.save();
+        return res.status(200).json({ success: true, message: 'Row added at bottom' });
+      }
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gt: idx } }, { $inc: { clusterRow: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gt: idx + SHIFT } }, { $inc: { clusterRow: -(SHIFT - 1) } });
+      cluster.gridRows = gridRows + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Row inserted' });
+    }
+    if (operation === 'delete_row') {
+      if (gridRows <= 1) return res.status(400).json({ message: 'Cannot delete the only row' });
+      await FarmBlock.updateMany({ clusterId, clusterRow: idx }, { $set: { clusterId: null, clusterName: '', clusterCode: '', clusterRow: null, clusterCol: null } });
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gt: idx } }, { $inc: { clusterRow: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterRow: { $gt: idx + SHIFT } }, { $inc: { clusterRow: -(SHIFT + 1) } });
+      cluster.gridRows = Math.max(1, gridRows - 1);
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Row deleted' });
+    }
+
+    if (operation === 'add_col_left') {
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gte: idx } }, { $inc: { clusterCol: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gte: idx + SHIFT } }, { $inc: { clusterCol: -(SHIFT - 1) } });
+      cluster.gridCols = gridCols + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Column inserted' });
+    }
+    if (operation === 'add_col_right') {
+      if (idx === gridCols) {
+        cluster.gridCols = gridCols + 1;
+        await cluster.save();
+        return res.status(200).json({ success: true, message: 'Column added at right' });
+      }
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gt: idx } }, { $inc: { clusterCol: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gt: idx + SHIFT } }, { $inc: { clusterCol: -(SHIFT - 1) } });
+      cluster.gridCols = gridCols + 1;
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Column inserted' });
+    }
+    if (operation === 'delete_col') {
+      if (gridCols <= 1) return res.status(400).json({ message: 'Cannot delete the only column' });
+      await FarmBlock.updateMany({ clusterId, clusterCol: idx }, { $set: { clusterId: null, clusterName: '', clusterCode: '', clusterRow: null, clusterCol: null } });
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gt: idx } }, { $inc: { clusterCol: SHIFT } });
+      await FarmBlock.updateMany({ clusterId, clusterCol: { $gt: idx + SHIFT } }, { $inc: { clusterCol: -(SHIFT + 1) } });
+      cluster.gridCols = Math.max(1, gridCols - 1);
+      await cluster.save();
+      return res.status(200).json({ success: true, message: 'Column deleted' });
+    }
+
+    return res.status(400).json({ message: 'Unsupported operation' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmTrees(req, res) {
+  try {
+    const { blockId = '' } = req.query;
+    const query = {};
+    if (blockId) query.blockId = blockId;
+    if (req.user.role !== 'admin') {
+      const allowed = userAllowedFarmBlocks(req);
+      query.blockId = blockId ? blockId : { $in: Array.from(allowed) };
+      if (blockId && !allowed.has(String(blockId))) return res.status(403).json({ message: 'Access denied for this block' });
+    }
+    const rows = await FarmTree.find(query).sort({ createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmTreeById(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmTree.findById(id);
+    if (!row) return res.status(404).json({ message: 'Tree not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this tree' });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmTree(req, res) {
+  try {
+    const {
+      blockId,
+      treeCode,
+      treeId,
+      qrCodeData = '',
+      serialInBlock = 0,
+      rowNumber = null,
+      rowTreeNumber = null,
+      latitude = null,
+      longitude = null,
+      ageYears = 0,
+      varieties = [],
+      plantingDate = null,
+      isActive = true,
+    } = req.body || {};
+    if (!blockId || !treeCode || !treeId) return res.status(400).json({ message: 'Block, tree code and tree id are required' });
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const block = await FarmBlock.findById(blockId);
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+    const normalizedRow = toPositiveInt(rowNumber, null);
+    const normalizedRowTree = toPositiveInt(rowTreeNumber, null);
+    if ((normalizedRow && !normalizedRowTree) || (!normalizedRow && normalizedRowTree)) {
+      return res.status(400).json({ message: 'Both row number and row tree number are required together' });
+    }
+    if (normalizedRow && normalizedRowTree) {
+      const duplicateSlot = await FarmTree.findOne({
+        blockId: block._id,
+        rowNumber: normalizedRow,
+        rowTreeNumber: normalizedRowTree,
+      });
+      if (duplicateSlot) return res.status(400).json({ message: 'Another tree already exists in this row position' });
+    }
+    const row = await FarmTree.create({
+      blockId: block._id,
+      blockName: block.name,
+      blockCode: block.code,
+      treeCode: String(treeCode).trim().toUpperCase(),
+      treeId: String(treeId).trim(),
+      qrCodeData: String(qrCodeData || `${treeCode}|${treeId}`).trim(),
+      serialInBlock: Number(serialInBlock || 0),
+      rowNumber: normalizedRow,
+      rowTreeNumber: normalizedRowTree,
+      latitude: latitude === '' || latitude === null ? null : Number(latitude),
+      longitude: longitude === '' || longitude === null ? null : Number(longitude),
+      ageYears: Number(ageYears || 0),
+      varieties: Array.isArray(varieties) ? varieties.map((v) => String(v).trim()).filter(Boolean) : [],
+      plantingDate: plantingDate ? new Date(plantingDate) : null,
+      isActive: Boolean(isActive),
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmTree(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmTree.findById(id);
+    if (!row) return res.status(404).json({ message: 'Tree not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this tree' });
+    const payload = { ...req.body };
+    if (payload.blockId && String(payload.blockId) !== String(row.blockId)) {
+      if (!canAccessFarmBlock(req, payload.blockId)) return res.status(403).json({ message: 'Access denied for target block' });
+      const block = await FarmBlock.findById(payload.blockId);
+      if (!block) return res.status(404).json({ message: 'Target block not found' });
+      payload.blockName = block.name;
+      payload.blockCode = block.code;
+    }
+    if (payload.treeCode) payload.treeCode = String(payload.treeCode).trim().toUpperCase();
+    if (payload.ageYears !== undefined) payload.ageYears = Number(payload.ageYears || 0);
+    if (payload.latitude !== undefined) payload.latitude = payload.latitude === '' || payload.latitude === null ? null : Number(payload.latitude);
+    if (payload.longitude !== undefined) payload.longitude = payload.longitude === '' || payload.longitude === null ? null : Number(payload.longitude);
+    if (payload.varieties !== undefined) payload.varieties = Array.isArray(payload.varieties) ? payload.varieties.map((v) => String(v).trim()).filter(Boolean) : [];
+    if (payload.plantingDate !== undefined) payload.plantingDate = payload.plantingDate ? new Date(payload.plantingDate) : null;
+    if (payload.rowNumber !== undefined || payload.rowTreeNumber !== undefined) {
+      const targetRow = toPositiveInt(payload.rowNumber !== undefined ? payload.rowNumber : row.rowNumber, null);
+      const targetRowTree = toPositiveInt(payload.rowTreeNumber !== undefined ? payload.rowTreeNumber : row.rowTreeNumber, null);
+      if ((targetRow && !targetRowTree) || (!targetRow && targetRowTree)) {
+        return res.status(400).json({ message: 'Both row number and row tree number are required together' });
+      }
+      if (targetRow && targetRowTree) {
+        const duplicate = await FarmTree.findOne({
+          _id: { $ne: row._id },
+          blockId: payload.blockId || row.blockId,
+          rowNumber: targetRow,
+          rowTreeNumber: targetRowTree,
+        });
+        if (duplicate) return res.status(400).json({ message: 'Target row position is already occupied' });
+      }
+      payload.rowNumber = targetRow;
+      payload.rowTreeNumber = targetRowTree;
+    }
+    const updated = await FarmTree.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    return res.status(200).json({ success: true, row: updated });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGenerateFarmTrees(req, res) {
+  try {
+    const { blockId, rows = 0, treesPerRow = 0 } = req.body || {};
+    const totalRows = toPositiveInt(rows, 0);
+    const totalTreesPerRow = toPositiveInt(treesPerRow, 0);
+    if (!blockId || !totalRows || !totalTreesPerRow) {
+      return res.status(400).json({ message: 'Block, rows, and trees per row are required' });
+    }
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const block = await FarmBlock.findById(blockId);
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+
+    const existing = await FarmTree.find({ blockId }).select('serialInBlock rowNumber rowTreeNumber');
+    const latestGlobalCodeRow = await FarmTree.find({ treeCode: { $regex: '^[0-9]+$' } })
+      .sort({ treeCode: -1 })
+      .limit(1)
+      .select('treeCode');
+    let globalCode = Number(latestGlobalCodeRow?.[0]?.treeCode || 0);
+    const occupied = new Set(existing.map((t) => `${t.rowNumber || 0}-${t.rowTreeNumber || 0}`));
+    let serial = existing.reduce((m, t) => Math.max(m, Number(t.serialInBlock || 0)), 0);
+    const batch = [];
+
+    for (let rowNumber = 1; rowNumber <= totalRows; rowNumber += 1) {
+      for (let rowTreeNumber = 1; rowTreeNumber <= totalTreesPerRow; rowTreeNumber += 1) {
+        const key = `${rowNumber}-${rowTreeNumber}`;
+        if (occupied.has(key)) continue;
+        serial += 1;
+        globalCode += 1;
+        const treeCode = String(globalCode).padStart(6, '0');
+        const treeId = buildTreeIdentifier(block.code, rowNumber, rowTreeNumber);
+        const qrCodeData = `${treeCode}|${treeId}`;
+        batch.push({
+          blockId: block._id,
+          blockName: block.name,
+          blockCode: block.code,
+          treeCode,
+          treeId,
+          serialInBlock: serial,
+          rowNumber,
+          rowTreeNumber,
+          qrCodeData,
+          isActive: true,
+        });
+      }
+    }
+
+    if (!batch.length) return res.status(200).json({ success: true, created: 0, message: 'All requested row slots already have trees' });
+    await FarmTree.insertMany(batch, { ordered: true });
+    await FarmBlock.findByIdAndUpdate(blockId, {
+      $max: { gridRows: totalRows, gridCols: totalTreesPerRow },
+    });
+    return res.status(201).json({ success: true, created: batch.length });
+  } catch (err) {
+    logger.error('Failed generating farm trees', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleMoveFarmTree(req, res) {
+  try {
+    const { id } = req.params;
+    const { blockId, rowNumber, rowTreeNumber, allowSwap = false } = req.body || {};
+    const targetRow = toPositiveInt(rowNumber, null);
+    const targetRowTree = toPositiveInt(rowTreeNumber, null);
+    if (!targetRow || !targetRowTree) return res.status(400).json({ message: 'Target row and tree number are required' });
+
+    const row = await FarmTree.findById(id);
+    if (!row) return res.status(404).json({ message: 'Tree not found' });
+    const targetBlockId = blockId || row.blockId;
+    if (!canAccessFarmBlock(req, row.blockId) || !canAccessFarmBlock(req, targetBlockId)) {
+      return res.status(403).json({ message: 'Access denied for this block' });
+    }
+
+    const duplicate = await FarmTree.findOne({
+      _id: { $ne: row._id },
+      blockId: targetBlockId,
+      rowNumber: targetRow,
+      rowTreeNumber: targetRowTree,
+    });
+
+    if (duplicate && !allowSwap) return res.status(400).json({ message: 'Target slot is already occupied' });
+
+    const payload = { rowNumber: targetRow, rowTreeNumber: targetRowTree };
+    if (String(targetBlockId) !== String(row.blockId)) {
+      const block = await FarmBlock.findById(targetBlockId);
+      if (!block) return res.status(404).json({ message: 'Target block not found' });
+      payload.blockId = block._id;
+      payload.blockName = block.name;
+      payload.blockCode = block.code;
+      payload.treeId = buildTreeIdentifier(block.code, targetRow, targetRowTree);
+      payload.qrCodeData = `${row.treeCode}|${payload.treeId}`;
+    } else if (row.blockCode) {
+      payload.treeId = buildTreeIdentifier(row.blockCode, targetRow, targetRowTree);
+      payload.qrCodeData = `${row.treeCode}|${payload.treeId}`;
+    }
+
+    if (duplicate && allowSwap) {
+      const sourcePayload = {
+        rowNumber: row.rowNumber,
+        rowTreeNumber: row.rowTreeNumber,
+      };
+      if (String(targetBlockId) !== String(row.blockId)) {
+        const sourceBlock = await FarmBlock.findById(row.blockId);
+        if (!sourceBlock) return res.status(404).json({ message: 'Source block not found for swap' });
+        sourcePayload.blockId = sourceBlock._id;
+        sourcePayload.blockName = sourceBlock.name;
+        sourcePayload.blockCode = sourceBlock.code;
+        sourcePayload.treeId = buildTreeIdentifier(sourceBlock.code, sourcePayload.rowNumber, sourcePayload.rowTreeNumber);
+        sourcePayload.qrCodeData = `${duplicate.treeCode}|${sourcePayload.treeId}`;
+      } else if (row.blockCode) {
+        sourcePayload.treeId = buildTreeIdentifier(row.blockCode, sourcePayload.rowNumber, sourcePayload.rowTreeNumber);
+        sourcePayload.qrCodeData = `${duplicate.treeCode}|${sourcePayload.treeId}`;
+      }
+
+      await FarmTree.findByIdAndUpdate(duplicate._id, sourcePayload, { runValidators: true });
+    }
+
+    const updated = await FarmTree.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    return res.status(200).json({ success: true, row: updated, swapped: Boolean(duplicate && allowSwap) });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleAutoCreateFarmTreeAtSlot(req, res) {
+  try {
+    const { blockId, rowNumber, rowTreeNumber } = req.body || {};
+    const targetRow = toPositiveInt(rowNumber, null);
+    const targetPos = toPositiveInt(rowTreeNumber, null);
+    if (!blockId || !targetRow || !targetPos) {
+      return res.status(400).json({ message: 'Block, row number and tree position are required' });
+    }
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const block = await FarmBlock.findById(blockId);
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+    const occupied = await FarmTree.findOne({ blockId, rowNumber: targetRow, rowTreeNumber: targetPos });
+    if (occupied) return res.status(400).json({ message: 'Target slot is already occupied' });
+
+    const maxSerialInBlock = await FarmTree.find({ blockId }).sort({ serialInBlock: -1 }).limit(1).select('serialInBlock');
+    const serialInBlock = Number(maxSerialInBlock?.[0]?.serialInBlock || 0) + 1;
+    const treeCode = await getNextGlobalTreeCode();
+    const treeId = buildTreeIdentifier(block.code, targetRow, targetPos);
+    const qrCodeData = `${treeCode}|${treeId}`;
+
+    const row = await FarmTree.create({
+      blockId: block._id,
+      blockName: block.name,
+      blockCode: block.code,
+      treeCode,
+      treeId,
+      serialInBlock,
+      rowNumber: targetRow,
+      rowTreeNumber: targetPos,
+      qrCodeData,
+      isActive: true,
+    });
+
+    await FarmBlock.findByIdAndUpdate(blockId, {
+      $max: { gridRows: targetRow, gridCols: targetPos },
+    });
+
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleAdjustFarmTreeGrid(req, res) {
+  try {
+    const { blockId, operation, index } = req.body || {};
+    const idx = toPositiveInt(index, null);
+    if (!blockId || !operation || !idx) return res.status(400).json({ message: 'Block, operation and index are required' });
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const block = await FarmBlock.findById(blockId).select('gridRows gridCols');
+    if (!block) return res.status(404).json({ message: 'Farm block not found' });
+    let gridRows = Math.max(1, Number(block.gridRows || 1));
+    let gridCols = Math.max(1, Number(block.gridCols || 1));
+    if (idx < 1) return res.status(400).json({ message: 'Invalid row/column index' });
+
+    const SHIFT_OFFSET = 100000;
+
+    if (operation === 'add_row_top') {
+      if (idx > gridRows) return res.status(400).json({ message: 'Row index out of range' });
+      await FarmTree.updateMany({ blockId, rowNumber: { $gte: idx } }, { $inc: { rowNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowNumber: { $gte: idx + SHIFT_OFFSET } }, { $inc: { rowNumber: -(SHIFT_OFFSET - 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridRows += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+      return res.status(200).json({ success: true, message: 'Row inserted' });
+    }
+
+    if (operation === 'add_row_bottom') {
+      if (idx > gridRows) return res.status(400).json({ message: 'Row index out of range' });
+      if (idx === gridRows) {
+        gridRows += 1;
+        await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+        return res.status(200).json({ success: true, message: 'Row added at bottom' });
+      }
+      await FarmTree.updateMany({ blockId, rowNumber: { $gt: idx } }, { $inc: { rowNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowNumber: { $gt: idx + SHIFT_OFFSET } }, { $inc: { rowNumber: -(SHIFT_OFFSET - 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridRows += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+      return res.status(200).json({ success: true, message: 'Row inserted' });
+    }
+
+    if (operation === 'delete_row') {
+      if (idx > gridRows) return res.status(400).json({ message: 'Row index out of range' });
+      if (gridRows <= 1) return res.status(400).json({ message: 'Cannot delete the only remaining row' });
+      const rowTreeCount = await FarmTree.countDocuments({ blockId, rowNumber: idx });
+      if (rowTreeCount === 0 && idx === gridRows) {
+        gridRows -= 1;
+        await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+        return res.status(200).json({ success: true, message: 'Empty last row deleted' });
+      }
+      await FarmTree.deleteMany({ blockId, rowNumber: idx });
+      await FarmTree.updateMany({ blockId, rowNumber: { $gt: idx } }, { $inc: { rowNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowNumber: { $gt: idx + SHIFT_OFFSET } }, { $inc: { rowNumber: -(SHIFT_OFFSET + 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridRows = Math.max(1, gridRows - 1);
+      await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+      return res.status(200).json({ success: true, message: 'Row deleted' });
+    }
+
+    if (operation === 'add_col_left') {
+      if (idx > gridCols) return res.status(400).json({ message: 'Column index out of range' });
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gte: idx } }, { $inc: { rowTreeNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gte: idx + SHIFT_OFFSET } }, { $inc: { rowTreeNumber: -(SHIFT_OFFSET - 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridCols += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+      return res.status(200).json({ success: true, message: 'Column inserted' });
+    }
+
+    if (operation === 'add_col_right') {
+      if (idx > gridCols) return res.status(400).json({ message: 'Column index out of range' });
+      if (idx === gridCols) {
+        gridCols += 1;
+        await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+        return res.status(200).json({ success: true, message: 'Column added at right' });
+      }
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gt: idx } }, { $inc: { rowTreeNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gt: idx + SHIFT_OFFSET } }, { $inc: { rowTreeNumber: -(SHIFT_OFFSET - 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridCols += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+      return res.status(200).json({ success: true, message: 'Column inserted' });
+    }
+
+    if (operation === 'delete_col') {
+      if (idx > gridCols) return res.status(400).json({ message: 'Column index out of range' });
+      if (gridCols <= 1) return res.status(400).json({ message: 'Cannot delete the only remaining column' });
+      const colTreeCount = await FarmTree.countDocuments({ blockId, rowTreeNumber: idx });
+      if (colTreeCount === 0 && idx === gridCols) {
+        gridCols -= 1;
+        await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+        return res.status(200).json({ success: true, message: 'Empty last column deleted' });
+      }
+      await FarmTree.deleteMany({ blockId, rowTreeNumber: idx });
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gt: idx } }, { $inc: { rowTreeNumber: SHIFT_OFFSET } });
+      await FarmTree.updateMany({ blockId, rowTreeNumber: { $gt: idx + SHIFT_OFFSET } }, { $inc: { rowTreeNumber: -(SHIFT_OFFSET + 1) } });
+      await rebuildBlockTreeIdentifiers(blockId);
+      gridCols = Math.max(1, gridCols - 1);
+      await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+      return res.status(200).json({ success: true, message: 'Column deleted' });
+    }
+
+    if (operation === 'append_row') {
+      gridRows += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridRows });
+      return res.status(200).json({ success: true, message: 'Row added at bottom' });
+    }
+
+    if (operation === 'append_col') {
+      gridCols += 1;
+      await FarmBlock.findByIdAndUpdate(blockId, { gridCols });
+      return res.status(200).json({ success: true, message: 'Column added at right' });
+    }
+
+    return res.status(400).json({ message: 'Unsupported operation' });
+  } catch (err) {
+    logger.error('Failed adjusting farm tree grid', { error: err?.message || String(err), body: req.body });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmTree(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmTree.findById(id);
+    if (!row) return res.status(404).json({ message: 'Tree not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this tree' });
+    await FarmTree.findByIdAndDelete(id);
+    await FarmTreeLog.deleteMany({ treeId: row._id });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmTreeLogs(req, res) {
+  try {
+    const { treeId = '' } = req.query;
+    if (!treeId) return res.status(400).json({ message: 'treeId is required' });
+    const tree = await FarmTree.findById(treeId);
+    if (!tree) return res.status(404).json({ message: 'Tree not found' });
+    if (!canAccessFarmBlock(req, tree.blockId)) return res.status(403).json({ message: 'Access denied for this tree' });
+    const rows = await FarmTreeLog.find({ treeId }).sort({ logDate: -1, createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmTreeLog(req, res) {
+  try {
+    const {
+      treeId,
+      logType,
+      logDate,
+      year,
+      quantity = 0,
+      quality = '',
+      fertilizerType = '',
+      fertilizerQuantity = 0,
+      diseaseName = '',
+      maintenanceJob = '',
+      gradeA = 0,
+      gradeB = 0,
+      gradeC = 0,
+      gradeD = 0,
+      remarks = '',
+    } = req.body || {};
+    if (!treeId || !logType) return res.status(400).json({ message: 'Tree and log type are required' });
+    const tree = await FarmTree.findById(treeId);
+    if (!tree) return res.status(404).json({ message: 'Tree not found' });
+    if (!canAccessFarmBlock(req, tree.blockId)) return res.status(403).json({ message: 'Access denied for this tree' });
+    const row = await FarmTreeLog.create({
+      treeId: tree._id,
+      treeCode: tree.treeCode,
+      blockId: tree.blockId,
+      blockName: tree.blockName,
+      logType,
+      logDate: logDate ? new Date(logDate) : new Date(),
+      year: Number(year || new Date().getFullYear()),
+      quantity: Number(quantity || 0),
+      quality: String(quality || '').trim(),
+      fertilizerType: String(fertilizerType || '').trim(),
+      fertilizerQuantity: Number(fertilizerQuantity || 0),
+      diseaseName: String(diseaseName || '').trim(),
+      maintenanceJob: String(maintenanceJob || '').trim(),
+      gradeA: Number(gradeA || 0),
+      gradeB: Number(gradeB || 0),
+      gradeC: Number(gradeC || 0),
+      gradeD: Number(gradeD || 0),
+      remarks: String(remarks || '').trim(),
+      createdById: req.user.id !== 'super-admin' ? req.user.id : null,
+      createdByName: req.user.name || req.user.username || 'User',
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmTreeLog(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmTreeLog.findById(id);
+    if (!row) return res.status(404).json({ message: 'Log not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this log' });
+    const payload = { ...req.body };
+    if (payload.logDate !== undefined) payload.logDate = payload.logDate ? new Date(payload.logDate) : row.logDate;
+    ['year', 'quantity', 'fertilizerQuantity', 'gradeA', 'gradeB', 'gradeC', 'gradeD'].forEach((k) => {
+      if (payload[k] !== undefined) payload[k] = Number(payload[k] || 0);
+    });
+    const updated = await FarmTreeLog.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
+    return res.status(200).json({ success: true, row: updated });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmTreeLog(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmTreeLog.findById(id);
+    if (!row) return res.status(404).json({ message: 'Log not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this log' });
+    await FarmTreeLog.findByIdAndDelete(id);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleFarmDashboardSummary(req, res) {
+  try {
+    const treesQuery = {};
+    const logsMatch = {};
+    if (req.user.role !== 'admin') {
+      const allowed = Array.from(userAllowedFarmBlocks(req));
+      treesQuery.blockId = { $in: allowed };
+      logsMatch.blockId = { $in: allowed };
+    }
+
+    const [treesTotal, treesByBlock, productionByYearBlock, gradeTotals] = await Promise.all([
+      FarmTree.countDocuments(treesQuery),
+      FarmTree.aggregate([
+        { $match: treesQuery },
+        { $group: { _id: '$blockId', blockName: { $first: '$blockName' }, treeCount: { $sum: 1 } } },
+        { $sort: { blockName: 1 } },
+      ]),
+      FarmTreeLog.aggregate([
+        { $match: { ...logsMatch, logType: { $in: ['production', 'harvest'] } } },
+        {
+          $group: {
+            _id: { year: '$year', blockId: '$blockId', blockName: '$blockName' },
+            quantity: { $sum: { $ifNull: ['$quantity', 0] } },
+            gradeA: { $sum: { $ifNull: ['$gradeA', 0] } },
+            gradeB: { $sum: { $ifNull: ['$gradeB', 0] } },
+            gradeC: { $sum: { $ifNull: ['$gradeC', 0] } },
+            gradeD: { $sum: { $ifNull: ['$gradeD', 0] } },
+          },
+        },
+        { $sort: { '_id.year': -1, '_id.blockName': 1 } },
+      ]),
+      FarmTreeLog.aggregate([
+        { $match: logsMatch },
+        {
+          $group: {
+            _id: null,
+            gradeA: { $sum: { $ifNull: ['$gradeA', 0] } },
+            gradeB: { $sum: { $ifNull: ['$gradeB', 0] } },
+            gradeC: { $sum: { $ifNull: ['$gradeC', 0] } },
+            gradeD: { $sum: { $ifNull: ['$gradeD', 0] } },
+          },
+        },
+      ]),
+    ]);
+
+    return res.status(200).json({
+      treesTotal,
+      treesByBlock,
+      productionByYearBlock: productionByYearBlock.map((r) => ({
+        year: r._id.year,
+        blockId: r._id.blockId,
+        blockName: r._id.blockName,
+        quantity: r.quantity || 0,
+        gradeA: r.gradeA || 0,
+        gradeB: r.gradeB || 0,
+        gradeC: r.gradeC || 0,
+        gradeD: r.gradeD || 0,
+      })),
+      gradeTotals: gradeTotals?.[0] || { gradeA: 0, gradeB: 0, gradeC: 0, gradeD: 0 },
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleFetchingShippingCosts(req,res){ 
   logger.debug("In handleGetShippingCosts");
 
@@ -2139,6 +3320,9 @@ module.exports = {
     handleRegister,
     handleLogin,
     handleLogout,
+    handleGetHumanChallenge,
+    handleForgotPassword,
+    handleResetPassword,
     handleAddProducts,
     handleGetProducts,
     handleUpdateProductQuantity,
@@ -2199,6 +3383,32 @@ module.exports = {
     handleSendFeedbackReminder,
     handleReturnOrder,
     handleVerifyOrderPayment,
+    handleGetFarmBlocks,
+    handleCreateFarmBlock,
+    handleUpdateFarmBlock,
+    handleDeleteFarmBlock,
+    handleGetFarmClusters,
+    handleCreateFarmCluster,
+    handleUpdateFarmCluster,
+    handleDeleteFarmCluster,
+    handleGetFarmBlocksByCluster,
+    handleAssignFarmBlockToCluster,
+    handleMoveFarmBlockInCluster,
+    handleAdjustFarmClusterGrid,
+    handleGetFarmTrees,
+    handleGetFarmTreeById,
+    handleCreateFarmTree,
+    handleUpdateFarmTree,
+    handleDeleteFarmTree,
+    handleGenerateFarmTrees,
+    handleMoveFarmTree,
+    handleAutoCreateFarmTreeAtSlot,
+    handleAdjustFarmTreeGrid,
+    handleGetFarmTreeLogs,
+    handleCreateFarmTreeLog,
+    handleUpdateFarmTreeLog,
+    handleDeleteFarmTreeLog,
+    handleFarmDashboardSummary,
     handleGetOrderFeedbackMeta,
     handleSubmitOrderFeedback,
     handleFeedbackReport,

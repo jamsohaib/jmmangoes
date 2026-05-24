@@ -42,6 +42,11 @@ import OrderFeedback from './components/OrderFeedback';
 import FeedbackReport from './components/FeedbackReport';
 import PaymentManager from './components/PaymentManager';
 import ContactPage from './components/ContactPage';
+import FarmBlocks from './components/FarmBlocks';
+import FarmTrees from './components/FarmTrees';
+import FarmTreeLogs from './components/FarmTreeLogs';
+import FarmDashboard from './components/FarmDashboard';
+import ResetPassword from './components/ResetPassword';
 
 function App() {
   return (
@@ -88,7 +93,12 @@ function App() {
              <Route path="/feedback-report" element={<FeedbackReport />} />
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
              <Route path="/contact" element={<ContactPage />} />
+             <Route path="/farm-blocks" element={<FarmBlocks />} />
+             <Route path="/farm-trees" element={<FarmTrees />} />
+             <Route path="/farm-logs" element={<FarmTreeLogs />} />
+             <Route path="/farm-dashboard" element={<FarmDashboard />} />
              <Route path="/login" element={<Login />} />
+             <Route path="/reset-password" element={<ResetPassword />} />
              <Route path="/register" element={<Register />} /> 
              <Route path="*" element={<NotFound />} />
             {/* Add other routes as needed */}

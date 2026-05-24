@@ -20,6 +20,9 @@ const permissionKeys = [
   { key: 'orderManagement', label: 'Order Management' },
   { key: 'feedbackReport', label: 'Feedback Report' },
   { key: 'userManagement', label: 'User Management' },
+  { key: 'farmBlocks', label: 'Farm Blocks' },
+  { key: 'farmTrees', label: 'Farm Trees' },
+  { key: 'farmLogs', label: 'Farm Logs' },
 ];
 
 const blankPermissions = permissionKeys.reduce((acc, p) => {
@@ -38,6 +41,9 @@ const createEmptyForm = () => ({
   password: '',
   confirmPassword: '',
   siteAccess: [],
+  farmBlockAccess: [],
+  isFarmUser: false,
+  isSalesUser: true,
   permissions: JSON.parse(JSON.stringify(blankPermissions)),
   isActive: true,
 });
@@ -48,14 +54,16 @@ const AdminUsers = () => {
   const canManage = authUser?.role === 'admin' || authUser?.permissions?.userManagement?.manage;
   const [users, setUsers] = useState([]);
   const [sites, setSites] = useState([]);
+  const [farmBlocks, setFarmBlocks] = useState([]);
   const [form, setForm] = useState(createEmptyForm());
   const [editingId, setEditingId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
 
   const loadData = async () => {
-    const [usersRes, sitesRes] = await Promise.all([api.get('/users'), api.get('/sites')]);
+    const [usersRes, sitesRes, blocksRes] = await Promise.all([api.get('/users'), api.get('/sites'), api.get('/farm/blocks/assignable')]);
     setUsers(usersRes.data || []);
     setSites((sitesRes.data || []).filter((s) => s.isActive));
+    setFarmBlocks((blocksRes.data || []).filter((b) => b.isActive !== false));
   };
 
   useEffect(() => {
@@ -87,6 +95,9 @@ const AdminUsers = () => {
       email: u.email || '',
       role: u.role || 'user',
       siteAccess: (u.siteAccess || []).map((s) => (typeof s === 'string' ? s : s._id)),
+      farmBlockAccess: (u.farmBlockAccess || []).map((b) => (typeof b === 'string' ? b : b._id)),
+      isFarmUser: !!u.isFarmUser,
+      isSalesUser: !!u.isSalesUser,
       permissions: { ...blankPermissions, ...(u.permissions || {}) },
       isActive: u.isActive !== false,
       password: '',
@@ -149,6 +160,15 @@ const AdminUsers = () => {
     }));
   };
 
+  const toggleFarmBlockAccess = (blockId) => {
+    setForm((prev) => ({
+      ...prev,
+      farmBlockAccess: prev.farmBlockAccess.includes(blockId)
+        ? prev.farmBlockAccess.filter((id) => id !== blockId)
+        : [...prev.farmBlockAccess, blockId],
+    }));
+  };
+
   const setPermission = (key, field, value) => {
     setForm((prev) => ({
       ...prev,
@@ -174,8 +194,12 @@ const AdminUsers = () => {
             <tr>
               <th className="border px-3 py-2">Name</th>
               <th className="border px-3 py-2">Username</th>
+              <th className="border px-3 py-2">Email</th>
               <th className="border px-3 py-2">Contact</th>
               <th className="border px-3 py-2">Role</th>
+              <th className="border px-3 py-2">Farm Access</th>
+              <th className="border px-3 py-2">Sales Access</th>
+              <th className="border px-3 py-2">Farm Blocks</th>
               <th className="border px-3 py-2">Status</th>
               <th className="border px-3 py-2">Actions</th>
             </tr>
@@ -185,8 +209,12 @@ const AdminUsers = () => {
               <tr key={u._id}>
                 <td className="border px-3 py-2">{u.name}</td>
                 <td className="border px-3 py-2">{u.username}</td>
+                <td className="border px-3 py-2">{u.email || '-'}</td>
                 <td className="border px-3 py-2">{u.contactNumber || '-'}</td>
                 <td className="border px-3 py-2">{u.role}</td>
+                <td className="border px-3 py-2">{u.isFarmUser ? 'Yes' : 'No'}</td>
+                <td className="border px-3 py-2">{u.isSalesUser ? 'Yes' : 'No'}</td>
+                <td className="border px-3 py-2">{(u.farmBlockAccess || []).length}</td>
                 <td className="border px-3 py-2">{u.isActive ? 'Active' : 'Disabled'}</td>
                 <td className="border px-3 py-2">
                   <div className="flex gap-2">
@@ -208,9 +236,24 @@ const AdminUsers = () => {
         <input className="w-full border p-2 rounded" placeholder="Contact Number" value={form.contactNumber} onChange={(e) => setForm({ ...form, contactNumber: e.target.value })} required />
         <input className="w-full border p-2 rounded" placeholder="CNIC (optional)" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
         <input className="w-full border p-2 rounded" placeholder="Username (cannot be changed later)" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
+        <select className="w-full border p-2 rounded" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+          <option value="user">User</option>
+          <option value="sales">Sales</option>
+          <option value="admin">Admin</option>
+        </select>
         <input type="text" autoComplete="off" className="w-full border p-2 rounded" placeholder="Email (optional)" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
         <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
         <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Confirm Password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} required />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!form.isFarmUser} onChange={(e) => setForm({ ...form, isFarmUser: e.target.checked })} />
+            Farm User Access
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!form.isSalesUser} onChange={(e) => setForm({ ...form, isSalesUser: e.target.checked })} />
+            Sales User Access
+          </label>
+        </div>
         <div>
           <div className="font-semibold mb-1">Site Access</div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -218,6 +261,17 @@ const AdminUsers = () => {
               <label key={s._id} className="inline-flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={form.siteAccess.includes(s._id)} onChange={() => toggleSiteAccess(s._id)} />
                 {s.name}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Farm Block Access</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {farmBlocks.map((b) => (
+              <label key={b._id} className="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.farmBlockAccess.includes(b._id)} onChange={() => toggleFarmBlockAccess(b._id)} />
+                {b.code} - {b.name}
               </label>
             ))}
           </div>
@@ -273,6 +327,14 @@ const AdminUsers = () => {
                 <input type="text" autoComplete="off" className="w-full border p-2 rounded" placeholder="Enter email (optional)" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               </div>
               <div>
+                <label className="block mb-1 text-sm font-medium text-gray-700">Role</label>
+                <select className="w-full border p-2 rounded" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+                  <option value="user">User</option>
+                  <option value="sales">Sales</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              <div>
                 <label className="block mb-1 text-sm font-medium text-gray-700">Reset Password</label>
                 <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Enter new password (optional)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
                 <p className="text-xs text-gray-500 mt-1">Leave blank to keep current password unchanged.</p>
@@ -280,6 +342,16 @@ const AdminUsers = () => {
               <div>
                 <label className="block mb-1 text-sm font-medium text-gray-700">Confirm Reset Password</label>
                 <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Confirm new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <label className="inline-flex items-center gap-2">
+                  <input type="checkbox" checked={!!form.isFarmUser} onChange={(e) => setForm({ ...form, isFarmUser: e.target.checked })} />
+                  Farm User Access
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input type="checkbox" checked={!!form.isSalesUser} onChange={(e) => setForm({ ...form, isSalesUser: e.target.checked })} />
+                  Sales User Access
+                </label>
               </div>
 
               <div>
@@ -289,6 +361,17 @@ const AdminUsers = () => {
                     <label key={s._id} className="inline-flex items-center gap-2 text-sm">
                       <input type="checkbox" checked={form.siteAccess.includes(s._id)} onChange={() => toggleSiteAccess(s._id)} />
                       {s.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold mb-1">Farm Block Access</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {farmBlocks.map((b) => (
+                    <label key={b._id} className="inline-flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={form.farmBlockAccess.includes(b._id)} onChange={() => toggleFarmBlockAccess(b._id)} />
+                      {b.code} - {b.name}
                     </label>
                   ))}
                 </div>

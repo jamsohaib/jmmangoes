@@ -33,6 +33,14 @@ const Navbar = () => {
     { to: '/admin-users', label: 'User Management', key: 'userManagement' },
   ];
   const visibleAdminLinks = adminLinks.filter((link) => canView(link.key));
+  const farmLinks = [
+    { to: '/farm-dashboard', label: 'Dashboard', key: 'farmLogs' },
+    { to: '/farm-blocks', label: 'Manage Land Blocks', key: 'farmBlocks' },
+    { to: '/farm-trees', label: 'Manage Trees', key: 'farmTrees' },
+    { to: '/farm-logs', label: 'Tree Logs', key: 'farmLogs' },
+  ];
+  const visibleFarmLinks = farmLinks.filter((link) => canView(link.key));
+  const showFarmMenu = visibleFarmLinks.length > 0;
 
   const handleLogout = async () => {
     try {
@@ -113,6 +121,27 @@ const Navbar = () => {
                 </span>
                 <ul className="mt-1 md:mt-0 md:absolute md:left-0 block md:hidden group-hover:block bg-white shadow-md z-50">
                   {visibleAdminLinks.map((link) => (
+                    <li key={link.to}>
+                      <Link to={link.to} onClick={() => setMenuOpen(false)} className="block px-4 py-2 text-gray-700 hover:bg-gray-100">
+                        {link.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
+            {showFarmMenu && (
+              <li className="relative group">
+                <span className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1">
+                  Farm
+                  <span className="inline-flex items-center" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                </span>
+                <ul className="mt-1 md:mt-0 md:absolute md:left-0 block md:hidden group-hover:block bg-white shadow-md z-50">
+                  {visibleFarmLinks.map((link) => (
                     <li key={link.to}>
                       <Link to={link.to} onClick={() => setMenuOpen(false)} className="block px-4 py-2 text-gray-700 hover:bg-gray-100">
                         {link.label}

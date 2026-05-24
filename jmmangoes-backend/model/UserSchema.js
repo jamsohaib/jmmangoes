@@ -40,9 +40,20 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  resetPasswordTokenHash: {
+    type: String,
+    default: null,
+  },
+  resetPasswordExpiresAt: {
+    type: Date,
+    default: null,
+  },
   role: { type: String, enum: ['user', 'admin','sales'], default: 'user' },
+  isFarmUser: { type: Boolean, default: false },
+  isSalesUser: { type: Boolean, default: true },
   isActive: { type: Boolean, default: true },
   siteAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Site' }],
+  farmBlockAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'FarmBlock' }],
   permissions: {
     type: mongoose.Schema.Types.Mixed,
     default: {
@@ -62,6 +73,9 @@ const userSchema = new mongoose.Schema({
       orderManagement: { view: false, manage: false },
       courierManagement: { view: false, manage: false },
       feedbackReport: { view: false, manage: false },
+      farmBlocks: { view: false, manage: false },
+      farmTrees: { view: false, manage: false },
+      farmLogs: { view: false, manage: false },
     }
   },
   orders: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Order' }],

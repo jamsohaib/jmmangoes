@@ -94,6 +94,9 @@ jmm_route.post('/register',jmm_controller.handleRegister );
 
 jmm_route.post('/login',jmm_controller.handleLogin );
 jmm_route.post('/logout',jmm_controller.handleLogout );
+jmm_route.get('/auth/human-challenge', jmm_controller.handleGetHumanChallenge);
+jmm_route.post('/auth/forgot-password', jmm_controller.handleForgotPassword);
+jmm_route.post('/auth/reset-password', jmm_controller.handleResetPassword);
 
 
 jmm_route.post('/addProducts', authenticateUser, authorizePage('productsPage', 'manage'), jmm_controller.handleAddProducts);
@@ -195,6 +198,33 @@ jmm_route.get('/users', authenticateUser, authorizePage('userManagement', 'view'
 jmm_route.post('/users', authenticateUser, authorizePage('userManagement', 'manage'), jmm_controller.handleCreateUser);
 jmm_route.put('/users/:id', authenticateUser, authorizePage('userManagement', 'manage'), jmm_controller.handleUpdateUser);
 jmm_route.delete('/users/:id', authenticateUser, authorizePage('userManagement', 'manage'), jmm_controller.handleDeleteUser);
+jmm_route.get('/farm/blocks/assignable', authenticateUser, authorizePage('userManagement', 'view'), jmm_controller.handleGetFarmBlocks);
+jmm_route.get('/farm/blocks', authenticateUser, authorizePage('farmBlocks', 'view'), jmm_controller.handleGetFarmBlocks);
+jmm_route.post('/farm/blocks', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleCreateFarmBlock);
+jmm_route.put('/farm/blocks/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleUpdateFarmBlock);
+jmm_route.delete('/farm/blocks/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleDeleteFarmBlock);
+jmm_route.get('/farm/clusters', authenticateUser, authorizePage('farmBlocks', 'view'), jmm_controller.handleGetFarmClusters);
+jmm_route.post('/farm/clusters', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleCreateFarmCluster);
+jmm_route.put('/farm/clusters/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleUpdateFarmCluster);
+jmm_route.delete('/farm/clusters/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleDeleteFarmCluster);
+jmm_route.get('/farm/clusters/:clusterId/blocks', authenticateUser, authorizePage('farmBlocks', 'view'), jmm_controller.handleGetFarmBlocksByCluster);
+jmm_route.put('/farm/blocks/:id/cluster', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleAssignFarmBlockToCluster);
+jmm_route.put('/farm/blocks/:id/cluster-move', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleMoveFarmBlockInCluster);
+jmm_route.post('/farm/clusters/grid-adjust', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleAdjustFarmClusterGrid);
+jmm_route.get('/farm/trees', authenticateUser, authorizePage('farmTrees', 'view'), jmm_controller.handleGetFarmTrees);
+jmm_route.get('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'view'), jmm_controller.handleGetFarmTreeById);
+jmm_route.post('/farm/trees', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleCreateFarmTree);
+jmm_route.post('/farm/trees/generate', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleGenerateFarmTrees);
+jmm_route.post('/farm/trees/auto-create-slot', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleAutoCreateFarmTreeAtSlot);
+jmm_route.post('/farm/trees/grid-adjust', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleAdjustFarmTreeGrid);
+jmm_route.put('/farm/trees/:id/move', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleMoveFarmTree);
+jmm_route.put('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleUpdateFarmTree);
+jmm_route.delete('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleDeleteFarmTree);
+jmm_route.get('/farm/tree-logs', authenticateUser, authorizePage('farmLogs', 'view'), jmm_controller.handleGetFarmTreeLogs);
+jmm_route.post('/farm/tree-logs', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleCreateFarmTreeLog);
+jmm_route.put('/farm/tree-logs/:id', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleUpdateFarmTreeLog);
+jmm_route.delete('/farm/tree-logs/:id', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleDeleteFarmTreeLog);
+jmm_route.get('/farm/dashboard-summary', authenticateUser, authorizePage('farmLogs', 'view'), jmm_controller.handleFarmDashboardSummary);
 
 jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'manage'), jmm_controller.handleUpdateShippingCosts);
 
