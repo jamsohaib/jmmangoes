@@ -297,6 +297,76 @@ const FarmTrees = () => {
     if (!rowTrees.length) return toast.warn(`No trees found in row ${rowNumber}`);
     printLabels(rowTrees, `Row ${rowNumber} QR Labels`);
   };
+  const printAllTreesInBlock = () => {
+    if (!selectedBlockObj) return toast.warn('Select a block first.');
+    const rows = orderedTrees
+      .map((t) => ({ ...t, qrValue: t.qrCodeData || `${t.treeCode || ''}|${t.treeId || ''}` }))
+      .filter((t) => String(t.qrValue || '').trim());
+    if (!rows.length) return toast.warn('No tree QR data available in this block.');
+
+    const chunked = [];
+    for (let i = 0; i < rows.length; i += 4) chunked.push(rows.slice(i, i + 4));
+
+    const html = `<!doctype html><html><head><title>All Tree QR Labels</title>
+      <style>
+        @page { size: A4 portrait; margin: 10mm; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        .page { page-break-after: always; break-after: page; }
+        .page:last-child { page-break-after: auto; break-after: auto; }
+        .title { font-size: 16px; font-weight: 700; margin-bottom: 4mm; }
+        .subtitle { font-size: 12px; margin-bottom: 6mm; color: #333; }
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(2, 1fr);
+          column-gap: 16mm;
+          row-gap: 20mm;
+        }
+        .card {
+          border: 1px solid #222;
+          text-align: center;
+          padding: 4mm;
+          min-height: 84mm;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          break-inside: avoid;
+          page-break-inside: avoid;
+        }
+        .qr {
+          width: 60mm;
+          height: 60mm;
+          object-fit: contain;
+        }
+        .txt {
+          margin-top: 5mm;
+          font-size: 12px;
+          font-weight: 700;
+        }
+      </style></head><body>
+      ${chunked.map((pageRows, pageIndex) => `
+        <section class="page">
+          <div class="title">JM Mangoes Farm - Block Tree QR Labels</div>
+          <div class="subtitle">Block: ${selectedBlockObj.code || ''} - ${selectedBlockObj.name || ''} | Page ${pageIndex + 1} of ${chunked.length}</div>
+          <div class="grid">
+            ${pageRows.map((t) => `
+              <div class="card">
+                <img class="qr" src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(t.qrValue)}" />
+                <div class="txt">${t.treeCode} (${t.treeId})</div>
+              </div>
+            `).join('')}
+          </div>
+        </section>
+      `).join('')}
+      <script>window.onload=function(){window.print();}</script>
+      </body></html>`;
+
+    const win = window.open('', '_blank');
+    if (!win) return toast.error('Popup blocked. Please allow popups to print labels.');
+    win.document.write(html);
+    win.document.close();
+  };
 
   const runSearch = () => {
     const code = String(searchTreeCode || '').trim().toLowerCase();
@@ -494,9 +564,18 @@ const FarmTrees = () => {
         <div className="bg-white rounded shadow p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-lg font-semibold">Block Tree Map ({selectedBlockObj?.code || ''})</h3>
-            <button type="button" className="px-3 py-1 rounded border border-green-700 text-green-700 text-sm" onClick={() => loadData()}>
-              Refresh Map
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="px-3 py-1 rounded border border-emerald-700 text-emerald-700 text-sm"
+                onClick={printAllTreesInBlock}
+              >
+                Print All Tree QRs
+              </button>
+              <button type="button" className="px-3 py-1 rounded border border-green-700 text-green-700 text-sm" onClick={() => loadData()}>
+                Refresh Map
+              </button>
+            </div>
           </div>
           <p className="text-sm text-gray-700 mb-3">Drag and drop to move/swap. Each slot supports add/edit/log/print actions.</p>
           <div className="overflow-auto">
