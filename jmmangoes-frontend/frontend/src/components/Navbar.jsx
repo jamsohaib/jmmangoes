@@ -13,7 +13,19 @@ const Navbar = () => {
   const cartCount = useCartStore((state) => state.totalItems());
 
   const isAdmin = user?.role === 'admin';
-  const canView = (key) => isAdmin || !!user?.permissions?.[key]?.view;
+  const canView = (key) => {
+    if (isAdmin) return true;
+    if (user?.permissions?.[key]?.view) return true;
+    const farmFallback = {
+      farmDashboard: 'farmLogs',
+      farmTreeLogs: 'farmLogs',
+      farmMaintenanceTasks: 'farmLogs',
+      farmBlockDetails: 'farmBlocks',
+      farmBlockLogs: 'farmBlocks',
+    };
+    const fallbackKey = farmFallback[key];
+    return fallbackKey ? !!user?.permissions?.[fallbackKey]?.view : false;
+  };
   const adminLinks = [
     { to: '/productspage', label: 'Products', key: 'productsPage' },
     { to: '/shipping-rates', label: 'Shipping Rates', key: 'shippingRates' },
@@ -34,10 +46,14 @@ const Navbar = () => {
   ];
   const visibleAdminLinks = adminLinks.filter((link) => canView(link.key));
   const farmLinks = [
-    { to: '/farm-dashboard', label: 'Dashboard', key: 'farmLogs' },
+    { to: '/farm-dashboard', label: 'Dashboard', key: 'farmDashboard' },
     { to: '/farm-blocks', label: 'Manage Land Blocks', key: 'farmBlocks' },
+    { to: '/farm-block-details', label: 'Block Details', key: 'farmBlockDetails' },
+    { to: '/farm-block-logs', label: 'Block Logs', key: 'farmBlockLogs' },
+    { to: '/farm-varieties', label: 'Mango Varieties', key: 'farmVarieties' },
     { to: '/farm-trees', label: 'Manage Trees', key: 'farmTrees' },
-    { to: '/farm-logs', label: 'Tree Logs', key: 'farmLogs' },
+    { to: '/farm-maintenance-tasks', label: 'Maintenance Tasks', key: 'farmMaintenanceTasks' },
+    { to: '/farm-logs', label: 'Tree Logs', key: 'farmTreeLogs' },
   ];
   const visibleFarmLinks = farmLinks.filter((link) => canView(link.key));
   const showFarmMenu = visibleFarmLinks.length > 0;

@@ -74,7 +74,13 @@ const userSchema = new mongoose.Schema({
       courierManagement: { view: false, manage: false },
       feedbackReport: { view: false, manage: false },
       farmBlocks: { view: false, manage: false },
+      farmBlockDetails: { view: false, manage: false },
+      farmBlockLogs: { view: false, manage: false },
+      farmDashboard: { view: false, manage: false },
+      farmVarieties: { view: false, manage: false },
       farmTrees: { view: false, manage: false },
+      farmTreeLogs: { view: false, manage: false },
+      farmMaintenanceTasks: { view: false, manage: false },
       farmLogs: { view: false, manage: false },
     }
   },

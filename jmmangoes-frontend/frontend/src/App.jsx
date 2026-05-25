@@ -43,9 +43,13 @@ import FeedbackReport from './components/FeedbackReport';
 import PaymentManager from './components/PaymentManager';
 import ContactPage from './components/ContactPage';
 import FarmBlocks from './components/FarmBlocks';
+import FarmVarieties from './components/FarmVarieties';
 import FarmTrees from './components/FarmTrees';
 import FarmTreeLogs from './components/FarmTreeLogs';
 import FarmDashboard from './components/FarmDashboard';
+import FarmMaintenanceTasks from './components/FarmMaintenanceTasks';
+import FarmBlockDetails from './components/FarmBlockDetails';
+import FarmBlockLogs from './components/FarmBlockLogs';
 import ResetPassword from './components/ResetPassword';
 
 function App() {
@@ -94,8 +98,12 @@ function App() {
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
              <Route path="/contact" element={<ContactPage />} />
              <Route path="/farm-blocks" element={<FarmBlocks />} />
+             <Route path="/farm-block-details" element={<FarmBlockDetails />} />
+             <Route path="/farm-block-logs" element={<FarmBlockLogs />} />
+             <Route path="/farm-varieties" element={<FarmVarieties />} />
              <Route path="/farm-trees" element={<FarmTrees />} />
              <Route path="/farm-logs" element={<FarmTreeLogs />} />
+             <Route path="/farm-maintenance-tasks" element={<FarmMaintenanceTasks />} />
              <Route path="/farm-dashboard" element={<FarmDashboard />} />
              <Route path="/login" element={<Login />} />
              <Route path="/reset-password" element={<ResetPassword />} />

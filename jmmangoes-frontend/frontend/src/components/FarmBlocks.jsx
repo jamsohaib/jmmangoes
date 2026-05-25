@@ -198,6 +198,48 @@ const FarmBlocks = () => {
     }
   };
 
+  const printBlockQr = (block) => {
+    if (!block) return;
+    const qrData = String(block.code || block.name || block._id || '').trim();
+    if (!qrData) return toast.warn('No block data to print QR.');
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=1200x1200&data=${encodeURIComponent(qrData)}`;
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Block QR - ${block.code || block.name || ''}</title>
+    <style>
+      @page { size: A4 portrait; margin: 12mm; }
+      body { margin: 0; font-family: Arial, sans-serif; color: #111; }
+      .page { width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+      .card { text-align: center; width: 100%; }
+      .title { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+      .subtitle { font-size: 20px; margin-bottom: 14px; color: #333; }
+      .qr-wrap { display: flex; justify-content: center; }
+      .qr { width: 72vh; max-width: 88vw; max-height: 72vh; border: 2px solid #111; padding: 12px; box-sizing: border-box; }
+      .code { margin-top: 12px; font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="card">
+        <div class="title">JM Mangoes Farm</div>
+        <div class="subtitle">Block QR Code</div>
+        <div class="qr-wrap">
+          <img class="qr" src="${qrUrl}" alt="Block QR" />
+        </div>
+        <div class="code">${(block.code || '-')}${block.name ? ` - ${block.name}` : ''}</div>
+      </div>
+    </div>
+    <script>window.onload=function(){window.print();}</script>
+  </body>
+</html>`;
+    const win = window.open('', '_blank');
+    if (!win) return toast.error('Popup blocked. Please allow popups.');
+    win.document.write(html);
+    win.document.close();
+  };
+
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
@@ -246,18 +288,6 @@ const FarmBlocks = () => {
           </table>
         </div>
       </div>
-
-      <form id="create-block-form" onSubmit={saveBlock} className="bg-white rounded shadow p-4 grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        <input className="border p-2 rounded" placeholder="Block Name" value={blockForm.name} onChange={(e) => setBlockForm({ ...blockForm, name: e.target.value })} required />
-        <input className="border p-2 rounded" placeholder="Block Code" value={blockForm.code} onChange={(e) => setBlockForm({ ...blockForm, code: e.target.value })} required />
-        <input type="number" min="0" step="0.1" className="border p-2 rounded" placeholder="Acreage" value={blockForm.acreage} onChange={(e) => setBlockForm({ ...blockForm, acreage: e.target.value })} />
-        <label className="inline-flex items-center gap-2"><input type="checkbox" checked={!!blockForm.isActive} onChange={(e) => setBlockForm({ ...blockForm, isActive: e.target.checked })} />Active</label>
-        <textarea className="border p-2 rounded md:col-span-2" placeholder="Description" value={blockForm.description} onChange={(e) => setBlockForm({ ...blockForm, description: e.target.value })} />
-        <div className="md:col-span-2 flex gap-2">
-          <button className="bg-green-600 text-white px-4 py-2 rounded">{editingBlockId ? 'Update Block' : 'Create Block'}</button>
-          {editingBlockId ? <button type="button" className="px-4 py-2 rounded border" onClick={() => { setEditingBlockId(''); setBlockForm(emptyBlockForm); }}>Cancel Edit</button> : null}
-        </div>
-      </form>
 
       <div className="bg-white rounded shadow p-4 mb-4">
         <h3 className="text-lg font-semibold mb-2">Blocks Map by Cluster</h3>
@@ -347,6 +377,13 @@ const FarmBlocks = () => {
                                 </button>
                                 <button
                                   type="button"
+                                  className="text-[9px] text-emerald-700 hover:underline"
+                                  onClick={() => printBlockQr(block)}
+                                >
+                                  Print QR
+                                </button>
+                                <button
+                                  type="button"
                                   className="text-[9px] text-amber-700 hover:underline"
                                   onClick={() => placeBlockAt(block._id, null, null, null)}
                                 >
@@ -393,6 +430,18 @@ const FarmBlocks = () => {
           <p className="text-sm text-gray-600">Select a cluster to view/manage block map.</p>
         )}
       </div>
+
+      <form id="create-block-form" onSubmit={saveBlock} className="bg-white rounded shadow p-4 grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+        <input className="border p-2 rounded" placeholder="Block Name" value={blockForm.name} onChange={(e) => setBlockForm({ ...blockForm, name: e.target.value })} required />
+        <input className="border p-2 rounded" placeholder="Block Code" value={blockForm.code} onChange={(e) => setBlockForm({ ...blockForm, code: e.target.value })} required />
+        <input type="number" min="0" step="0.1" className="border p-2 rounded" placeholder="Acreage" value={blockForm.acreage} onChange={(e) => setBlockForm({ ...blockForm, acreage: e.target.value })} />
+        <label className="inline-flex items-center gap-2"><input type="checkbox" checked={!!blockForm.isActive} onChange={(e) => setBlockForm({ ...blockForm, isActive: e.target.checked })} />Active</label>
+        <textarea className="border p-2 rounded md:col-span-2" placeholder="Description" value={blockForm.description} onChange={(e) => setBlockForm({ ...blockForm, description: e.target.value })} />
+        <div className="md:col-span-2 flex gap-2">
+          <button className="bg-green-600 text-white px-4 py-2 rounded">{editingBlockId ? 'Update Block' : 'Create Block'}</button>
+          {editingBlockId ? <button type="button" className="px-4 py-2 rounded border" onClick={() => { setEditingBlockId(''); setBlockForm(emptyBlockForm); }}>Cancel Edit</button> : null}
+        </div>
+      </form>
 
       <div className="overflow-x-auto bg-white rounded shadow">
         <table className="min-w-full text-sm">

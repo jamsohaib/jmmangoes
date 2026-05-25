@@ -27,8 +27,10 @@ const Courier = require('../model/CourierSchema');
 const PaymentMethod = require('../model/PaymentMethodSchema');
 const FarmBlock = require('../model/FarmBlockSchema');
 const FarmCluster = require('../model/FarmClusterSchema');
+const FarmVariety = require('../model/FarmVarietySchema');
 const FarmTree = require('../model/FarmTreeSchema');
 const FarmTreeLog = require('../model/FarmTreeLogSchema');
+const FarmBlockLog = require('../model/FarmBlockLogSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -85,6 +87,18 @@ function toPositiveInt(value, fallback = null) {
   if (!Number.isFinite(n)) return fallback;
   const i = Math.floor(n);
   return i > 0 ? i : fallback;
+}
+
+function calculateTreeAgeYearsFromDate(plantingDate) {
+  if (!plantingDate) return 0;
+  const d = new Date(plantingDate);
+  if (Number.isNaN(d.getTime())) return 0;
+  const now = new Date();
+  let years = now.getFullYear() - d.getFullYear();
+  const monthDiff = now.getMonth() - d.getMonth();
+  const dayDiff = now.getDate() - d.getDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) years -= 1;
+  return years < 0 ? 0 : years;
 }
 
 function buildTreeIdentifier(blockCode, rowNumber, rowTreeNumber) {
@@ -1875,6 +1889,11 @@ async function handleConfirmOrder(req, res) {
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     order.status = 'confirmed';
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      confirmedAt: new Date(),
+    };
     await order.save();
     await sendOrderAlertEmails(`Order Confirmed - ${order.orderNumber}`, `Your order ${order.orderNumber} has been confirmed.`, order.customer?.email);
     return res.status(200).json({ success: true, order });
@@ -1892,6 +1911,11 @@ async function handleRejectOrder(req, res) {
     order.status = 'cancelled';
     order.adminRemarks = reason;
     order.rejectionReason = '';
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      cancelledAt: new Date(),
+    };
     await order.save();
     await sendOrderAlertEmails(
       `Order Cancelled - ${order.orderNumber}`,
@@ -2000,18 +2024,24 @@ async function handleModifyOrder(req, res) {
 async function handleDispatchOrder(req, res) {
   try {
     const { id } = req.params;
-    const { courierId, trackingNumber = '', courierHelpline = '', paymentMode = 'cod' } = req.body;
+    const { courierId, trackingNumber = '', paymentMode = 'cod' } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const courier = await Courier.findById(courierId);
     if (!courier) return res.status(404).json({ message: 'Courier not found' });
     order.status = 'dispatched';
     order.paymentMode = paymentMode;
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      confirmedAt: order?.statusTimeline?.confirmedAt || null,
+      dispatchedAt: new Date(),
+    };
     order.courier = {
       courierId: courier._id,
       courierName: courier.name,
       trackingNumber,
-      courierHelpline: courierHelpline || courier.contactNumber || '',
+      courierHelpline: courier.contactNumber || '',
       jmmContactPersonName: courier.jmmContactPersonName || '',
       jmmContactNumber: courier.jmmContactNumber || '',
     };
@@ -2035,6 +2065,11 @@ async function handleCancelOrder(req, res) {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     order.status = 'cancelled';
     order.adminRemarks = reason;
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      cancelledAt: new Date(),
+    };
     await order.save();
     await sendOrderAlertEmails(`Order Cancelled - ${order.orderNumber}`, `Order ${order.orderNumber} was cancelled. Reason: ${reason}`, order.customer?.email);
     return res.status(200).json({ success: true, order });
@@ -2049,6 +2084,11 @@ async function handleDeliverOrder(req, res) {
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     order.status = 'delivered';
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      deliveredAt: new Date(),
+    };
     await order.save();
     const feedbackUrl =
       process.env.FEEDBACK_URL?.includes('{orderNumber}')
@@ -2112,6 +2152,11 @@ async function handleReturnOrder(req, res) {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     order.status = 'returned';
     order.adminRemarks = reason;
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      returnedAt: new Date(),
+    };
     await order.save();
     await sendOrderAlertEmails(`Order Returned - ${order.orderNumber}`, `Order ${order.orderNumber} was marked returned. Reason: ${reason}`, order.customer?.email);
     return res.status(200).json({ success: true, order });
@@ -2530,6 +2575,70 @@ async function handleAdjustFarmClusterGrid(req, res) {
   }
 }
 
+async function handleGetFarmVarieties(req, res) {
+  try {
+    const includeInactive = String(req.query?.includeInactive || '').toLowerCase() === 'true';
+    const query = includeInactive ? {} : { isActive: true };
+    const rows = await FarmVariety.find(query).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmVariety(req, res) {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const description = String(req.body?.description || '').trim();
+    if (!name) return res.status(400).json({ message: 'Variety name is required' });
+    const exists = await FarmVariety.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    if (exists) return res.status(400).json({ message: 'Variety already exists' });
+    const row = await FarmVariety.create({ name, description, isActive: true });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    if (err?.code === 11000) return res.status(400).json({ message: 'Variety already exists' });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmVariety(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmVariety.findById(id);
+    if (!row) return res.status(404).json({ message: 'Variety not found' });
+
+    if (req.body?.name !== undefined) {
+      const name = String(req.body.name || '').trim();
+      if (!name) return res.status(400).json({ message: 'Variety name is required' });
+      const conflict = await FarmVariety.findOne({
+        _id: { $ne: id },
+        name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      });
+      if (conflict) return res.status(400).json({ message: 'Variety already exists' });
+      row.name = name;
+    }
+    if (req.body?.description !== undefined) row.description = String(req.body.description || '').trim();
+    if (typeof req.body?.isActive === 'boolean') row.isActive = req.body.isActive;
+
+    await row.save();
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    if (err?.code === 11000) return res.status(400).json({ message: 'Variety already exists' });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmVariety(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await FarmVariety.findByIdAndDelete(id);
+    if (!row) return res.status(404).json({ message: 'Variety not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetFarmTrees(req, res) {
   try {
     const { blockId = '' } = req.query;
@@ -2593,6 +2702,16 @@ async function handleCreateFarmTree(req, res) {
       });
       if (duplicateSlot) return res.status(400).json({ message: 'Another tree already exists in this row position' });
     }
+    const activeVarieties = await FarmVariety.find({ isActive: true }).select('name');
+    const allowedVarieties = new Set(activeVarieties.map((v) => String(v.name || '').trim().toLowerCase()));
+    const normalizedVarieties = Array.isArray(varieties)
+      ? varieties
+          .map((v) => String(v).trim())
+          .filter(Boolean)
+          .filter((v) => allowedVarieties.has(v.toLowerCase()))
+      : [];
+    const normalizedPlantingDate = plantingDate ? new Date(plantingDate) : null;
+    const calculatedAgeYears = calculateTreeAgeYearsFromDate(normalizedPlantingDate);
     const row = await FarmTree.create({
       blockId: block._id,
       blockName: block.name,
@@ -2605,9 +2724,9 @@ async function handleCreateFarmTree(req, res) {
       rowTreeNumber: normalizedRowTree,
       latitude: latitude === '' || latitude === null ? null : Number(latitude),
       longitude: longitude === '' || longitude === null ? null : Number(longitude),
-      ageYears: Number(ageYears || 0),
-      varieties: Array.isArray(varieties) ? varieties.map((v) => String(v).trim()).filter(Boolean) : [],
-      plantingDate: plantingDate ? new Date(plantingDate) : null,
+      ageYears: calculatedAgeYears,
+      varieties: normalizedVarieties,
+      plantingDate: normalizedPlantingDate,
       isActive: Boolean(isActive),
     });
     return res.status(201).json({ success: true, row });
@@ -2631,11 +2750,22 @@ async function handleUpdateFarmTree(req, res) {
       payload.blockCode = block.code;
     }
     if (payload.treeCode) payload.treeCode = String(payload.treeCode).trim().toUpperCase();
-    if (payload.ageYears !== undefined) payload.ageYears = Number(payload.ageYears || 0);
+    if (payload.ageYears !== undefined) delete payload.ageYears;
     if (payload.latitude !== undefined) payload.latitude = payload.latitude === '' || payload.latitude === null ? null : Number(payload.latitude);
     if (payload.longitude !== undefined) payload.longitude = payload.longitude === '' || payload.longitude === null ? null : Number(payload.longitude);
-    if (payload.varieties !== undefined) payload.varieties = Array.isArray(payload.varieties) ? payload.varieties.map((v) => String(v).trim()).filter(Boolean) : [];
+    if (payload.varieties !== undefined) {
+      const activeVarieties = await FarmVariety.find({ isActive: true }).select('name');
+      const allowedVarieties = new Set(activeVarieties.map((v) => String(v.name || '').trim().toLowerCase()));
+      payload.varieties = Array.isArray(payload.varieties)
+        ? payload.varieties
+            .map((v) => String(v).trim())
+            .filter(Boolean)
+            .filter((v) => allowedVarieties.has(v.toLowerCase()))
+        : [];
+    }
     if (payload.plantingDate !== undefined) payload.plantingDate = payload.plantingDate ? new Date(payload.plantingDate) : null;
+    const effectivePlantingDate = payload.plantingDate !== undefined ? payload.plantingDate : row.plantingDate;
+    payload.ageYears = calculateTreeAgeYearsFromDate(effectivePlantingDate);
     if (payload.rowNumber !== undefined || payload.rowTreeNumber !== undefined) {
       const targetRow = toPositiveInt(payload.rowNumber !== undefined ? payload.rowNumber : row.rowNumber, null);
       const targetRowTree = toPositiveInt(payload.rowTreeNumber !== undefined ? payload.rowTreeNumber : row.rowTreeNumber, null);
@@ -2993,6 +3123,7 @@ async function handleCreateFarmTreeLog(req, res) {
       gradeC = 0,
       gradeD = 0,
       remarks = '',
+      maintenanceStatus = 'pending',
     } = req.body || {};
     if (!treeId || !logType) return res.status(400).json({ message: 'Tree and log type are required' });
     const tree = await FarmTree.findById(treeId);
@@ -3012,6 +3143,10 @@ async function handleCreateFarmTreeLog(req, res) {
       fertilizerQuantity: Number(fertilizerQuantity || 0),
       diseaseName: String(diseaseName || '').trim(),
       maintenanceJob: String(maintenanceJob || '').trim(),
+      maintenanceStatus: logType === 'maintenance' ? (String(maintenanceStatus || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending') : 'pending',
+      maintenanceCompletedAt: logType === 'maintenance' && String(maintenanceStatus || '').toLowerCase() === 'completed' ? new Date() : null,
+      maintenanceCompletedById: logType === 'maintenance' && String(maintenanceStatus || '').toLowerCase() === 'completed' && req.user.id !== 'super-admin' ? req.user.id : null,
+      maintenanceCompletedByName: logType === 'maintenance' && String(maintenanceStatus || '').toLowerCase() === 'completed' ? (req.user.name || req.user.username || 'User') : '',
       gradeA: Number(gradeA || 0),
       gradeB: Number(gradeB || 0),
       gradeC: Number(gradeC || 0),
@@ -3037,8 +3172,76 @@ async function handleUpdateFarmTreeLog(req, res) {
     ['year', 'quantity', 'fertilizerQuantity', 'gradeA', 'gradeB', 'gradeC', 'gradeD'].forEach((k) => {
       if (payload[k] !== undefined) payload[k] = Number(payload[k] || 0);
     });
+    if (payload.logType && payload.logType !== 'maintenance') {
+      payload.maintenanceStatus = 'pending';
+      payload.maintenanceCompletedAt = null;
+      payload.maintenanceCompletedById = null;
+      payload.maintenanceCompletedByName = '';
+    }
+    if (payload.maintenanceStatus !== undefined) {
+      const nextStatus = String(payload.maintenanceStatus || 'pending').toLowerCase() === 'completed' ? 'completed' : 'pending';
+      payload.maintenanceStatus = nextStatus;
+      if (nextStatus === 'completed') {
+        payload.maintenanceCompletedAt = payload.maintenanceCompletedAt || new Date();
+        payload.maintenanceCompletedById = req.user.id !== 'super-admin' ? req.user.id : null;
+        payload.maintenanceCompletedByName = req.user.name || req.user.username || 'User';
+      } else {
+        payload.maintenanceCompletedAt = null;
+        payload.maintenanceCompletedById = null;
+        payload.maintenanceCompletedByName = '';
+      }
+    }
     const updated = await FarmTreeLog.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
     return res.status(200).json({ success: true, row: updated });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetMaintenanceTasks(req, res) {
+  try {
+    const query = { logType: 'maintenance' };
+    if (req.user.role !== 'admin') {
+      const allowed = Array.from(userAllowedFarmBlocks(req));
+      query.blockId = { $in: allowed };
+    }
+    const [treeRows, blockRows] = await Promise.all([
+      FarmTreeLog.find(query).sort({ createdAt: -1 }),
+      FarmBlockLog.find(query).sort({ createdAt: -1 }),
+    ]);
+    const rows = [
+      ...treeRows.map((r) => ({ ...r.toObject(), sourceType: 'tree' })),
+      ...blockRows.map((r) => ({
+        ...r.toObject(),
+        sourceType: 'block',
+        treeCode: '',
+        treeId: '',
+        maintenanceJob: r.details || 'Block maintenance',
+      })),
+    ].sort((a, b) => new Date(a.createdAt || a.logDate) - new Date(b.createdAt || b.logDate));
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCompleteMaintenanceTask(req, res) {
+  try {
+    const { id } = req.params;
+    let row = await FarmTreeLog.findById(id);
+    let modelType = 'tree';
+    if (!row) {
+      row = await FarmBlockLog.findById(id);
+      modelType = 'block';
+    }
+    if (!row) return res.status(404).json({ message: 'Task not found' });
+    if (!canAccessFarmBlock(req, row.blockId)) return res.status(403).json({ message: 'Access denied for this task' });
+    row.maintenanceStatus = 'completed';
+    row.maintenanceCompletedAt = new Date();
+    row.maintenanceCompletedById = req.user.id !== 'super-admin' ? req.user.id : null;
+    row.maintenanceCompletedByName = req.user.name || req.user.username || 'User';
+    await row.save();
+    return res.status(200).json({ success: true, row, modelType });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -3057,6 +3260,169 @@ async function handleDeleteFarmTreeLog(req, res) {
   }
 }
 
+async function handleGetFarmBlockLogs(req, res) {
+  try {
+    const { blockId } = req.query;
+    if (!blockId) return res.status(400).json({ message: 'blockId is required' });
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const rows = await FarmBlockLog.find({ blockId }).sort({ logDate: -1, createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmBlockLog(req, res) {
+  try {
+    const { blockId, logType, logDate, quantity = 0, unit = '', details = '' } = req.body || {};
+    if (!blockId || !logType) return res.status(400).json({ message: 'Block and log type are required' });
+    if (!canAccessFarmBlock(req, blockId)) return res.status(403).json({ message: 'Access denied for this block' });
+    const block = await FarmBlock.findById(blockId);
+    if (!block) return res.status(404).json({ message: 'Block not found' });
+    const row = await FarmBlockLog.create({
+      blockId: block._id,
+      blockName: block.name,
+      blockCode: block.code,
+      logType: String(logType).trim().toLowerCase(),
+      logDate: logDate ? new Date(logDate) : new Date(),
+      year: Number(String(logDate || new Date().toISOString().slice(0, 10)).slice(0, 4)),
+      quantity: Number(quantity || 0),
+      unit: String(unit || '').trim(),
+      details: String(details || '').trim(),
+      maintenanceStatus: String(logType).toLowerCase() === 'maintenance' ? 'pending' : 'completed',
+      createdById: req.user.id !== 'super-admin' ? req.user.id : null,
+      createdByName: req.user.name || req.user.username || 'User',
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmBlockDetails(req, res) {
+  try {
+    const { blockId, blockName, blockQr } = req.query || {};
+    let block = null;
+    if (blockId) block = await FarmBlock.findById(blockId);
+    if (!block && blockName) block = await FarmBlock.findOne({ name: new RegExp(`^${String(blockName).trim()}$`, 'i') });
+    if (!block && blockQr) {
+      const qr = String(blockQr).trim().toUpperCase();
+      block = await FarmBlock.findOne({ $or: [{ code: qr }, { name: new RegExp(`^${qr}$`, 'i') }] });
+    }
+    if (!block) return res.status(404).json({ message: 'Block not found' });
+    if (!canAccessFarmBlock(req, block._id)) return res.status(403).json({ message: 'Access denied for this block' });
+
+    const [trees, treeLogs, blockLogs] = await Promise.all([
+      FarmTree.find({ blockId: block._id }).sort({ rowNumber: 1, rowTreeNumber: 1, treeCode: 1 }),
+      FarmTreeLog.find({ blockId: block._id }).sort({ logDate: -1 }),
+      FarmBlockLog.find({ blockId: block._id }).sort({ logDate: -1 }),
+    ]);
+
+    const annualTreeProduction = {};
+    const annualTreeFertilizer = {};
+    const annualTreeIrrigation = {};
+    const annualTreePesticide = {};
+    const annualTreeMaintenancePending = {};
+    const annualTreeMaintenanceCompleted = {};
+    treeLogs.forEach((l) => {
+      const y = String(l.year || new Date(l.logDate || l.createdAt).getFullYear());
+      if (!annualTreeProduction[y]) annualTreeProduction[y] = 0;
+      if (!annualTreeFertilizer[y]) annualTreeFertilizer[y] = 0;
+      if (!annualTreeIrrigation[y]) annualTreeIrrigation[y] = 0;
+      if (!annualTreePesticide[y]) annualTreePesticide[y] = 0;
+      if (!annualTreeMaintenancePending[y]) annualTreeMaintenancePending[y] = 0;
+      if (!annualTreeMaintenanceCompleted[y]) annualTreeMaintenanceCompleted[y] = 0;
+      if (['production', 'harvest'].includes(l.logType)) annualTreeProduction[y] += Number(l.quantity || 0);
+      if (l.logType === 'fertilizer') annualTreeFertilizer[y] += Number(l.fertilizerQuantity || l.quantity || 0);
+      if (['irrigation', 'watering'].includes(l.logType)) annualTreeIrrigation[y] += 1;
+      if (l.logType === 'disease') annualTreePesticide[y] += 1;
+      if (l.logType === 'maintenance') {
+        if ((l.maintenanceStatus || 'pending') === 'completed') annualTreeMaintenanceCompleted[y] += 1;
+        else annualTreeMaintenancePending[y] += 1;
+      }
+    });
+
+    const annualBlockProduction = {};
+    const annualBlockFertilizer = {};
+    const annualBlockIrrigation = {};
+    const annualBlockPesticide = {};
+    const annualBlockMaintenancePending = {};
+    const annualBlockMaintenanceCompleted = {};
+    blockLogs.forEach((l) => {
+      const y = String(l.year || new Date(l.logDate || l.createdAt).getFullYear());
+      if (!annualBlockProduction[y]) annualBlockProduction[y] = 0;
+      if (!annualBlockFertilizer[y]) annualBlockFertilizer[y] = 0;
+      if (!annualBlockIrrigation[y]) annualBlockIrrigation[y] = 0;
+      if (!annualBlockPesticide[y]) annualBlockPesticide[y] = 0;
+      if (!annualBlockMaintenancePending[y]) annualBlockMaintenancePending[y] = 0;
+      if (!annualBlockMaintenanceCompleted[y]) annualBlockMaintenanceCompleted[y] = 0;
+      if (l.logType === 'production') annualBlockProduction[y] += Number(l.quantity || 0);
+      if (l.logType === 'fertilizer') annualBlockFertilizer[y] += Number(l.quantity || 0);
+      if (l.logType === 'irrigation') annualBlockIrrigation[y] += 1;
+      if (l.logType === 'pesticide') annualBlockPesticide[y] += 1;
+      if (l.logType === 'maintenance') {
+        if ((l.maintenanceStatus || 'pending') === 'completed') annualBlockMaintenanceCompleted[y] += 1;
+        else annualBlockMaintenancePending[y] += 1;
+      }
+    });
+
+    const years = [...new Set([
+      ...Object.keys(annualTreeProduction),
+      ...Object.keys(annualBlockProduction),
+      ...Object.keys(annualTreeFertilizer),
+      ...Object.keys(annualBlockFertilizer),
+    ])].sort((a, b) => Number(b) - Number(a));
+
+    const annualSummary = years.map((year) => ({
+      year: Number(year),
+      productionQty: Number((annualTreeProduction[year] || 0) + (annualBlockProduction[year] || 0)),
+      fertilizerApplied: Number((annualTreeFertilizer[year] || 0) + (annualBlockFertilizer[year] || 0)),
+      irrigationCycles: Number((annualTreeIrrigation[year] || 0) + (annualBlockIrrigation[year] || 0)),
+      pesticideApplications: Number((annualTreePesticide[year] || 0) + (annualBlockPesticide[year] || 0)),
+      maintenancePending: Number((annualTreeMaintenancePending[year] || 0) + (annualBlockMaintenancePending[year] || 0)),
+      maintenanceCompleted: Number((annualTreeMaintenanceCompleted[year] || 0) + (annualBlockMaintenanceCompleted[year] || 0)),
+    }));
+
+    const treeById = new Map(trees.map((t) => [String(t._id), t]));
+    const treeSummaryMap = {};
+    const treeUpcomingMaintenance = {};
+    treeLogs.forEach((l) => {
+      const tid = String(l.treeId);
+      if (!treeSummaryMap[tid]) treeSummaryMap[tid] = {};
+      const y = String(l.year || new Date(l.logDate || l.createdAt).getFullYear());
+      if (!treeSummaryMap[tid][y]) treeSummaryMap[tid][y] = { productionQty: 0, fertilizerApplied: 0, irrigationCycles: 0, pesticideApplications: 0 };
+      if (['production', 'harvest'].includes(l.logType)) treeSummaryMap[tid][y].productionQty += Number(l.quantity || 0);
+      if (l.logType === 'fertilizer') treeSummaryMap[tid][y].fertilizerApplied += Number(l.fertilizerQuantity || l.quantity || 0);
+      if (['irrigation', 'watering'].includes(l.logType)) treeSummaryMap[tid][y].irrigationCycles += 1;
+      if (l.logType === 'disease') treeSummaryMap[tid][y].pesticideApplications += 1;
+      if (l.logType === 'maintenance' && (l.maintenanceStatus || 'pending') !== 'completed') {
+        if (!treeUpcomingMaintenance[tid]) treeUpcomingMaintenance[tid] = [];
+        treeUpcomingMaintenance[tid].push({
+          _id: l._id,
+          task: l.maintenanceJob || l.remarks || 'Maintenance',
+          logDate: l.logDate,
+          remarks: l.remarks || '',
+        });
+      }
+    });
+
+    const treeCards = trees.map((t) => ({
+      ...t.toObject(),
+      yearlySummary: treeSummaryMap[String(t._id)] || {},
+      upcomingMaintenance: (treeUpcomingMaintenance[String(t._id)] || []).sort((a, b) => new Date(a.logDate) - new Date(b.logDate)),
+    }));
+
+    return res.status(200).json({
+      block,
+      annualSummary,
+      blockLogs,
+      trees: treeCards,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleFarmDashboardSummary(req, res) {
   try {
     const treesQuery = {};
@@ -3067,12 +3433,30 @@ async function handleFarmDashboardSummary(req, res) {
       logsMatch.blockId = { $in: allowed };
     }
 
-    const [treesTotal, treesByBlock, productionByYearBlock, gradeTotals] = await Promise.all([
+    const [treesTotal, treesByBlock, treesByVariety, productionByYearBlock, productionByYearVariety, gradeTotals] = await Promise.all([
       FarmTree.countDocuments(treesQuery),
       FarmTree.aggregate([
         { $match: treesQuery },
         { $group: { _id: '$blockId', blockName: { $first: '$blockName' }, treeCount: { $sum: 1 } } },
         { $sort: { blockName: 1 } },
+      ]),
+      FarmTree.aggregate([
+        { $match: treesQuery },
+        {
+          $project: {
+            varieties: {
+              $cond: [
+                { $gt: [{ $size: { $ifNull: ['$varieties', []] } }, 0] },
+                '$varieties',
+                ['Unspecified'],
+              ],
+            },
+          },
+        },
+        { $unwind: '$varieties' },
+        { $group: { _id: '$varieties', treeCount: { $sum: 1 } } },
+        { $project: { _id: 0, variety: '$_id', treeCount: 1 } },
+        { $sort: { variety: 1 } },
       ]),
       FarmTreeLog.aggregate([
         { $match: { ...logsMatch, logType: { $in: ['production', 'harvest'] } } },
@@ -3087,6 +3471,40 @@ async function handleFarmDashboardSummary(req, res) {
           },
         },
         { $sort: { '_id.year': -1, '_id.blockName': 1 } },
+      ]),
+      FarmTreeLog.aggregate([
+        { $match: { ...logsMatch, logType: { $in: ['production', 'harvest'] } } },
+        {
+          $lookup: {
+            from: 'farmtrees',
+            localField: 'treeId',
+            foreignField: '_id',
+            as: 'tree',
+          },
+        },
+        {
+          $addFields: {
+            treeVarieties: {
+              $cond: [
+                { $gt: [{ $size: { $ifNull: [{ $arrayElemAt: ['$tree.varieties', 0] }, []] } }, 0] },
+                { $arrayElemAt: ['$tree.varieties', 0] },
+                ['Unspecified'],
+              ],
+            },
+          },
+        },
+        { $unwind: '$treeVarieties' },
+        {
+          $group: {
+            _id: { year: '$year', variety: '$treeVarieties' },
+            quantity: { $sum: { $ifNull: ['$quantity', 0] } },
+            gradeA: { $sum: { $ifNull: ['$gradeA', 0] } },
+            gradeB: { $sum: { $ifNull: ['$gradeB', 0] } },
+            gradeC: { $sum: { $ifNull: ['$gradeC', 0] } },
+            gradeD: { $sum: { $ifNull: ['$gradeD', 0] } },
+          },
+        },
+        { $sort: { '_id.year': -1, '_id.variety': 1 } },
       ]),
       FarmTreeLog.aggregate([
         { $match: logsMatch },
@@ -3109,6 +3527,16 @@ async function handleFarmDashboardSummary(req, res) {
         year: r._id.year,
         blockId: r._id.blockId,
         blockName: r._id.blockName,
+        quantity: r.quantity || 0,
+        gradeA: r.gradeA || 0,
+        gradeB: r.gradeB || 0,
+        gradeC: r.gradeC || 0,
+        gradeD: r.gradeD || 0,
+      })),
+      treesByVariety,
+      productionByYearVariety: productionByYearVariety.map((r) => ({
+        year: r._id.year,
+        variety: r._id.variety || 'Unspecified',
         quantity: r.quantity || 0,
         gradeA: r.gradeA || 0,
         gradeB: r.gradeB || 0,
@@ -3276,6 +3704,9 @@ async function handleCheckout(req,res){
         payableAmount,
       },
       status: 'pending_confirmation',
+      statusTimeline: {
+        placedAt: new Date(),
+      },
     });
     await order.save();
 
@@ -3395,6 +3826,10 @@ module.exports = {
     handleAssignFarmBlockToCluster,
     handleMoveFarmBlockInCluster,
     handleAdjustFarmClusterGrid,
+    handleGetFarmVarieties,
+    handleCreateFarmVariety,
+    handleUpdateFarmVariety,
+    handleDeleteFarmVariety,
     handleGetFarmTrees,
     handleGetFarmTreeById,
     handleCreateFarmTree,
@@ -3408,6 +3843,11 @@ module.exports = {
     handleCreateFarmTreeLog,
     handleUpdateFarmTreeLog,
     handleDeleteFarmTreeLog,
+    handleGetMaintenanceTasks,
+    handleCompleteMaintenanceTask,
+    handleGetFarmBlockDetails,
+    handleGetFarmBlockLogs,
+    handleCreateFarmBlockLog,
     handleFarmDashboardSummary,
     handleGetOrderFeedbackMeta,
     handleSubmitOrderFeedback,

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
+import DataTable from 'react-data-table-component';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -31,6 +32,7 @@ const AddExpenses = () => {
   const [editAmount, setEditAmount] = useState('');
   const [editRemarks, setEditRemarks] = useState('');
   const [editDate, setEditDate] = useState(todayISO);
+  const [expenseSearch, setExpenseSearch] = useState('');
 
   const loadMasters = async () => {
     const [sitesRes, headsRes, itemsRes] = await Promise.all([
@@ -91,9 +93,9 @@ const AddExpenses = () => {
     }
   };
 
-  const downloadCsv = () => {
+  const downloadCsv = (rows = entries, suffix = 'all') => {
     const headers = ['Date & Time', 'Site', 'Head', 'Expense Name', 'Amount', 'Remarks', 'Entered By'];
-    const rows = entries.map((e) => [
+    const csvRows = rows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
       `"${String(e.siteName || '').replace(/"/g, '""')}"`,
       `"${String(e.headName || '').replace(/"/g, '""')}"`,
@@ -102,12 +104,12 @@ const AddExpenses = () => {
       `"${String(e.remarks || '').replace(/"/g, '""')}"`,
       `"${String(e.enteredByName || '-').replace(/"/g, '""')}"`,
     ].join(','));
-    const csv = [headers.join(','), ...rows].join('\n');
+    const csv = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `expenses_${dateFrom}_${dateTo}.csv`);
+    link.setAttribute('download', `expenses_${dateFrom}_${dateTo}_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -118,6 +120,53 @@ const AddExpenses = () => {
     () => entries.reduce((sum, e) => sum + Number(e.amount || 0), 0),
     [entries]
   );
+  const filteredExpenseEntries = useMemo(() => {
+    const q = expenseSearch.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) =>
+      String(e.headName || '').toLowerCase().includes(q) ||
+      String(e.itemName || '').toLowerCase().includes(q) ||
+      String(e.remarks || '').toLowerCase().includes(q) ||
+      String(e.enteredByName || '').toLowerCase().includes(q)
+    );
+  }, [entries, expenseSearch]);
+
+  const expenseColumns = useMemo(() => {
+    const cols = [
+      {
+        name: 'Date & Time',
+        selector: (row) => new Date(row.createdAt || row.date).toLocaleString(),
+        sortable: true,
+        wrap: true,
+      },
+      { name: 'Head', selector: (row) => row.headName || '-', sortable: true, wrap: true },
+      { name: 'Expense', selector: (row) => row.itemName || '-', sortable: true, wrap: true },
+      {
+        name: 'Amount',
+        selector: (row) => Number(row.amount || 0),
+        sortable: true,
+        right: true,
+        cell: (row) => `PKR ${Number(row.amount || 0).toFixed(2)}`,
+      },
+      { name: 'Remarks', selector: (row) => row.remarks || '-', wrap: true, grow: 1.4 },
+      { name: 'Entered By', selector: (row) => row.enteredByName || '-', sortable: true, wrap: true },
+    ];
+    if (isSuperUser) {
+      cols.push({
+        name: 'Actions',
+        cell: (row) => (
+          <div className="flex gap-2">
+            <button onClick={() => openEdit(row)} className="text-blue-600 hover:underline">Edit</button>
+            <button onClick={() => removeEntry(row._id)} className="text-red-600 hover:underline">Remove</button>
+          </div>
+        ),
+        ignoreRowClick: true,
+        allowOverflow: true,
+        button: true,
+      });
+    }
+    return cols;
+  }, [isSuperUser]);
 
   const openEdit = (e) => {
     setEditingEntry(e);
@@ -206,54 +255,42 @@ const AddExpenses = () => {
         <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="border p-2 rounded" />
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="border p-2 rounded" />
         <button onClick={() => loadEntries(siteId)} className="bg-blue-600 text-white px-4 py-2 rounded">Apply Range</button>
-        <button onClick={downloadCsv} className="bg-green-600 text-white px-4 py-2 rounded">Download CSV</button>
+        <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-4 py-2 rounded">Download CSV</button>
       </div>
 
       <div className="overflow-x-auto bg-white rounded shadow">
         <div className="px-4 py-3 border-b font-semibold">Expenses History ({dateFrom} to {dateTo})</div>
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Date & Time</th>
-              <th className="border px-3 py-2">Head</th>
-              <th className="border px-3 py-2">Expense</th>
-              <th className="border px-3 py-2">Amount</th>
-              <th className="border px-3 py-2">Remarks</th>
-              <th className="border px-3 py-2">Entered By</th>
-              {isSuperUser && <th className="border px-3 py-2">Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e._id}>
-                <td className="border px-3 py-2">{new Date(e.createdAt || e.date).toLocaleString()}</td>
-                <td className="border px-3 py-2">{e.headName}</td>
-                <td className="border px-3 py-2">{e.itemName}</td>
-                <td className="border px-3 py-2">PKR {Number(e.amount || 0).toFixed(2)}</td>
-                <td className="border px-3 py-2">{e.remarks || '-'}</td>
-                <td className="border px-3 py-2">{e.enteredByName || '-'}</td>
-                {isSuperUser && (
-                  <td className="border px-3 py-2">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(e)} className="text-blue-600 hover:underline">Edit</button>
-                      <button onClick={() => removeEntry(e._id)} className="text-red-600 hover:underline">Remove</button>
-                    </div>
-                  </td>
-                )}
-              </tr>
-            ))}
-            {entries.length === 0 && (
-              <tr><td colSpan={isSuperUser ? 7 : 6} className="border px-3 py-3 text-center text-gray-500">No expense entries found.</td></tr>
-            )}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={isSuperUser ? 6 : 5} className="border px-3 py-2 text-right font-semibold">Total Expense</td>
-              <td className="border px-3 py-2 font-bold">PKR {totalExpense.toFixed(2)}</td>
-              {isSuperUser && <td className="border px-3 py-2" />}
-            </tr>
-          </tfoot>
-        </table>
+        <div className="px-4 py-3 border-b">
+          <label className="block text-sm font-medium mb-1">Search Expenses</label>
+          <input
+            type="text"
+            value={expenseSearch}
+            onChange={(e) => setExpenseSearch(e.target.value)}
+            placeholder="Search by head, expense, remarks, or entered by..."
+            className="border rounded px-3 py-2 text-sm w-full md:max-w-md"
+          />
+        </div>
+        <DataTable
+          columns={expenseColumns}
+          data={filteredExpenseEntries}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex justify-end">
+              <div className="flex gap-2">
+                <button onClick={() => downloadCsv(filteredExpenseEntries, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No expense entries found."
+        />
+        <div className="border-t px-4 py-3 text-right font-semibold">
+          Total Expense: <span className="font-bold">PKR {totalExpense.toFixed(2)}</span>
+        </div>
       </div>
 
       {editingEntry && (

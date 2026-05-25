@@ -211,6 +211,10 @@ jmm_route.get('/farm/clusters/:clusterId/blocks', authenticateUser, authorizePag
 jmm_route.put('/farm/blocks/:id/cluster', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleAssignFarmBlockToCluster);
 jmm_route.put('/farm/blocks/:id/cluster-move', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleMoveFarmBlockInCluster);
 jmm_route.post('/farm/clusters/grid-adjust', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleAdjustFarmClusterGrid);
+jmm_route.get('/farm/varieties', authenticateUser, authorizePage('farmVarieties', 'view'), jmm_controller.handleGetFarmVarieties);
+jmm_route.post('/farm/varieties', authenticateUser, authorizePage('farmVarieties', 'manage'), jmm_controller.handleCreateFarmVariety);
+jmm_route.put('/farm/varieties/:id', authenticateUser, authorizePage('farmVarieties', 'manage'), jmm_controller.handleUpdateFarmVariety);
+jmm_route.delete('/farm/varieties/:id', authenticateUser, authorizePage('farmVarieties', 'manage'), jmm_controller.handleDeleteFarmVariety);
 jmm_route.get('/farm/trees', authenticateUser, authorizePage('farmTrees', 'view'), jmm_controller.handleGetFarmTrees);
 jmm_route.get('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'view'), jmm_controller.handleGetFarmTreeById);
 jmm_route.post('/farm/trees', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleCreateFarmTree);
@@ -220,11 +224,16 @@ jmm_route.post('/farm/trees/grid-adjust', authenticateUser, authorizePage('farmT
 jmm_route.put('/farm/trees/:id/move', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleMoveFarmTree);
 jmm_route.put('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleUpdateFarmTree);
 jmm_route.delete('/farm/trees/:id', authenticateUser, authorizePage('farmTrees', 'manage'), jmm_controller.handleDeleteFarmTree);
-jmm_route.get('/farm/tree-logs', authenticateUser, authorizePage('farmLogs', 'view'), jmm_controller.handleGetFarmTreeLogs);
-jmm_route.post('/farm/tree-logs', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleCreateFarmTreeLog);
-jmm_route.put('/farm/tree-logs/:id', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleUpdateFarmTreeLog);
-jmm_route.delete('/farm/tree-logs/:id', authenticateUser, authorizePage('farmLogs', 'manage'), jmm_controller.handleDeleteFarmTreeLog);
-jmm_route.get('/farm/dashboard-summary', authenticateUser, authorizePage('farmLogs', 'view'), jmm_controller.handleFarmDashboardSummary);
+jmm_route.get('/farm/tree-logs', authenticateUser, authorizePage('farmTreeLogs', 'view'), jmm_controller.handleGetFarmTreeLogs);
+jmm_route.post('/farm/tree-logs', authenticateUser, authorizePage('farmTreeLogs', 'manage'), jmm_controller.handleCreateFarmTreeLog);
+jmm_route.put('/farm/tree-logs/:id', authenticateUser, authorizePage('farmTreeLogs', 'manage'), jmm_controller.handleUpdateFarmTreeLog);
+jmm_route.delete('/farm/tree-logs/:id', authenticateUser, authorizePage('farmTreeLogs', 'manage'), jmm_controller.handleDeleteFarmTreeLog);
+jmm_route.get('/farm/maintenance-tasks', authenticateUser, authorizePage('farmMaintenanceTasks', 'view'), jmm_controller.handleGetMaintenanceTasks);
+jmm_route.put('/farm/maintenance-tasks/:id/complete', authenticateUser, authorizePage('farmMaintenanceTasks', 'manage'), jmm_controller.handleCompleteMaintenanceTask);
+jmm_route.get('/farm/dashboard-summary', authenticateUser, authorizePage('farmDashboard', 'view'), jmm_controller.handleFarmDashboardSummary);
+jmm_route.get('/farm/block-details', authenticateUser, authorizePage('farmBlockDetails', 'view'), jmm_controller.handleGetFarmBlockDetails);
+jmm_route.get('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'view'), jmm_controller.handleGetFarmBlockLogs);
+jmm_route.post('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'manage'), jmm_controller.handleCreateFarmBlockLog);
 
 jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'manage'), jmm_controller.handleUpdateShippingCosts);
 

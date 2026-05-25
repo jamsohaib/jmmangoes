@@ -21,8 +21,14 @@ const permissionKeys = [
   { key: 'feedbackReport', label: 'Feedback Report' },
   { key: 'userManagement', label: 'User Management' },
   { key: 'farmBlocks', label: 'Farm Blocks' },
+  { key: 'farmBlockDetails', label: 'Farm Block Details' },
+  { key: 'farmBlockLogs', label: 'Farm Block Logs' },
+  { key: 'farmDashboard', label: 'Farm Dashboard' },
+  { key: 'farmVarieties', label: 'Farm Varieties' },
   { key: 'farmTrees', label: 'Farm Trees' },
-  { key: 'farmLogs', label: 'Farm Logs' },
+  { key: 'farmTreeLogs', label: 'Farm Tree Logs' },
+  { key: 'farmMaintenanceTasks', label: 'Farm Maintenance Tasks' },
+  { key: 'farmLogs', label: 'Farm Logs (Legacy)' },
 ];
 
 const blankPermissions = permissionKeys.reduce((acc, p) => {

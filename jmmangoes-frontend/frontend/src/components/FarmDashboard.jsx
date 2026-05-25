@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
+import DataTable from 'react-data-table-component';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const FarmDashboard = () => {
   const user = useAuthStore((state) => state.user);
-  const canView = user?.role === 'admin' || user?.permissions?.farmLogs?.view;
+  const canView = user?.role === 'admin' || user?.permissions?.farmDashboard?.view || user?.permissions?.farmLogs?.view;
   const [data, setData] = useState(null);
   const [selectedYear, setSelectedYear] = useState('');
+  const [searchBlockProduction, setSearchBlockProduction] = useState('');
+  const [searchTreesByBlock, setSearchTreesByBlock] = useState('');
+  const [searchTreesByVariety, setSearchTreesByVariety] = useState('');
+  const [searchVarietyProduction, setSearchVarietyProduction] = useState('');
 
   useEffect(() => {
     if (!canView) return;
@@ -26,6 +31,40 @@ const FarmDashboard = () => {
     if (!selectedYear) return source;
     return source.filter((r) => String(r.year) === selectedYear);
   }, [data, selectedYear]);
+  const varietyRows = useMemo(() => {
+    const source = data?.productionByYearVariety || [];
+    if (!selectedYear) return source;
+    return source.filter((r) => String(r.year) === selectedYear);
+  }, [data, selectedYear]);
+  const treesByBlockRows = data?.treesByBlock || [];
+  const treesByVarietyRows = data?.treesByVariety || [];
+
+  const filteredBlockProductionRows = useMemo(() => {
+    const q = searchBlockProduction.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      String(r.year || '').toLowerCase().includes(q) ||
+      String(r.blockName || '').toLowerCase().includes(q)
+    );
+  }, [rows, searchBlockProduction]);
+  const filteredTreesByBlockRows = useMemo(() => {
+    const q = searchTreesByBlock.trim().toLowerCase();
+    if (!q) return treesByBlockRows;
+    return treesByBlockRows.filter((r) => String(r.blockName || '').toLowerCase().includes(q));
+  }, [treesByBlockRows, searchTreesByBlock]);
+  const filteredTreesByVarietyRows = useMemo(() => {
+    const q = searchTreesByVariety.trim().toLowerCase();
+    if (!q) return treesByVarietyRows;
+    return treesByVarietyRows.filter((r) => String(r.variety || '').toLowerCase().includes(q));
+  }, [treesByVarietyRows, searchTreesByVariety]);
+  const filteredVarietyProductionRows = useMemo(() => {
+    const q = searchVarietyProduction.trim().toLowerCase();
+    if (!q) return varietyRows;
+    return varietyRows.filter((r) =>
+      String(r.year || '').toLowerCase().includes(q) ||
+      String(r.variety || '').toLowerCase().includes(q)
+    );
+  }, [varietyRows, searchVarietyProduction]);
 
   const exportDashboardCsv = () => {
     if (!rows.length) return toast.warn('No summary rows to export.');
@@ -48,6 +87,47 @@ const FarmDashboard = () => {
     win.document.write(html);
     win.document.close();
   };
+
+  const exportRowsCsv = (filename, headers, sourceRows, mapper) => {
+    if (!sourceRows.length) return toast.warn('No rows to export.');
+    const lines = sourceRows.map(mapper);
+    const csv = [headers, ...lines]
+      .map((row) => row.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const blockProductionColumns = [
+    { name: 'Year', selector: (r) => r.year, sortable: true },
+    { name: 'Block', selector: (r) => r.blockName || '-', sortable: true, wrap: true },
+    { name: 'Production Qty', selector: (r) => Number(r.quantity || 0), sortable: true, right: true },
+    { name: 'A', selector: (r) => Number(r.gradeA || 0), sortable: true, right: true },
+    { name: 'B', selector: (r) => Number(r.gradeB || 0), sortable: true, right: true },
+    { name: 'C', selector: (r) => Number(r.gradeC || 0), sortable: true, right: true },
+    { name: 'D', selector: (r) => Number(r.gradeD || 0), sortable: true, right: true },
+  ];
+  const treesByBlockColumns = [
+    { name: 'Block', selector: (r) => r.blockName || '-', sortable: true, wrap: true },
+    { name: 'Tree Count', selector: (r) => Number(r.treeCount || 0), sortable: true, right: true },
+  ];
+  const treesByVarietyColumns = [
+    { name: 'Variety', selector: (r) => r.variety || 'Unspecified', sortable: true, wrap: true },
+    { name: 'Tree Count', selector: (r) => Number(r.treeCount || 0), sortable: true, right: true },
+  ];
+  const varietyProductionColumns = [
+    { name: 'Year', selector: (r) => r.year, sortable: true },
+    { name: 'Variety', selector: (r) => r.variety || 'Unspecified', sortable: true, wrap: true },
+    { name: 'Production Qty', selector: (r) => Number(r.quantity || 0), sortable: true, right: true },
+    { name: 'A', selector: (r) => Number(r.gradeA || 0), sortable: true, right: true },
+    { name: 'B', selector: (r) => Number(r.gradeB || 0), sortable: true, right: true },
+    { name: 'C', selector: (r) => Number(r.gradeC || 0), sortable: true, right: true },
+    { name: 'D', selector: (r) => Number(r.gradeD || 0), sortable: true, right: true },
+  ];
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
@@ -83,53 +163,95 @@ const FarmDashboard = () => {
       </div>
 
       <div className="overflow-x-auto bg-white rounded shadow mb-4">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Year</th>
-              <th className="border px-3 py-2">Block</th>
-              <th className="border px-3 py-2">Production Qty</th>
-              <th className="border px-3 py-2">A</th>
-              <th className="border px-3 py-2">B</th>
-              <th className="border px-3 py-2">C</th>
-              <th className="border px-3 py-2">D</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, idx) => (
-              <tr key={`${r.year}-${r.blockId}-${idx}`}>
-                <td className="border px-3 py-2">{r.year}</td>
-                <td className="border px-3 py-2">{r.blockName}</td>
-                <td className="border px-3 py-2">{r.quantity || 0}</td>
-                <td className="border px-3 py-2">{r.gradeA || 0}</td>
-                <td className="border px-3 py-2">{r.gradeB || 0}</td>
-                <td className="border px-3 py-2">{r.gradeC || 0}</td>
-                <td className="border px-3 py-2">{r.gradeD || 0}</td>
-              </tr>
-            ))}
-            {!rows.length ? <tr><td colSpan="7" className="border px-3 py-4 text-center text-gray-500">No production data available.</td></tr> : null}
-          </tbody>
-        </table>
+        <div className="px-4 py-3 border-b font-semibold">Production By Block {selectedYear ? `(${selectedYear})` : '(All Years)'}</div>
+        <DataTable
+          columns={blockProductionColumns}
+          data={filteredBlockProductionRows}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+              <input type="text" value={searchBlockProduction} onChange={(e) => setSearchBlockProduction(e.target.value)} placeholder="Search year or block..." className="border rounded px-3 py-2 text-sm w-full md:max-w-sm" />
+              <div className="flex gap-2">
+                <button onClick={() => exportRowsCsv(`farm_dashboard_block_production_${selectedYear || 'all'}_visible.csv`, ['Year', 'Block', 'ProductionQty', 'A', 'B', 'C', 'D'], filteredBlockProductionRows, (r) => [r.year, r.blockName, r.quantity || 0, r.gradeA || 0, r.gradeB || 0, r.gradeC || 0, r.gradeD || 0])} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => exportRowsCsv(`farm_dashboard_block_production_${selectedYear || 'all'}_all.csv`, ['Year', 'Block', 'ProductionQty', 'A', 'B', 'C', 'D'], rows, (r) => [r.year, r.blockName, r.quantity || 0, r.gradeA || 0, r.gradeB || 0, r.gradeC || 0, r.gradeD || 0])} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No production data available."
+        />
       </div>
 
       <div className="overflow-x-auto bg-white rounded shadow">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Block</th>
-              <th className="border px-3 py-2">Tree Count</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.treesByBlock || []).map((r) => (
-              <tr key={String(r._id)}>
-                <td className="border px-3 py-2">{r.blockName}</td>
-                <td className="border px-3 py-2">{r.treeCount || 0}</td>
-              </tr>
-            ))}
-            {!data?.treesByBlock?.length ? <tr><td colSpan="2" className="border px-3 py-4 text-center text-gray-500">No block data.</td></tr> : null}
-          </tbody>
-        </table>
+        <div className="px-4 py-3 border-b font-semibold">Tree Count By Block</div>
+        <DataTable
+          columns={treesByBlockColumns}
+          data={filteredTreesByBlockRows}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+              <input type="text" value={searchTreesByBlock} onChange={(e) => setSearchTreesByBlock(e.target.value)} placeholder="Search block..." className="border rounded px-3 py-2 text-sm w-full md:max-w-sm" />
+              <div className="flex gap-2">
+                <button onClick={() => exportRowsCsv('farm_dashboard_trees_by_block_visible.csv', ['Block', 'TreeCount'], filteredTreesByBlockRows, (r) => [r.blockName, r.treeCount || 0])} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => exportRowsCsv('farm_dashboard_trees_by_block_all.csv', ['Block', 'TreeCount'], treesByBlockRows, (r) => [r.blockName, r.treeCount || 0])} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No block data."
+        />
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow mt-4">
+        <div className="px-4 py-3 border-b font-semibold">Tree Count By Variety</div>
+        <DataTable
+          columns={treesByVarietyColumns}
+          data={filteredTreesByVarietyRows}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+              <input type="text" value={searchTreesByVariety} onChange={(e) => setSearchTreesByVariety(e.target.value)} placeholder="Search variety..." className="border rounded px-3 py-2 text-sm w-full md:max-w-sm" />
+              <div className="flex gap-2">
+                <button onClick={() => exportRowsCsv('farm_dashboard_trees_by_variety_visible.csv', ['Variety', 'TreeCount'], filteredTreesByVarietyRows, (r) => [r.variety || 'Unspecified', r.treeCount || 0])} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => exportRowsCsv('farm_dashboard_trees_by_variety_all.csv', ['Variety', 'TreeCount'], treesByVarietyRows, (r) => [r.variety || 'Unspecified', r.treeCount || 0])} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No variety data."
+        />
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow mt-4">
+        <div className="px-4 py-3 border-b font-semibold">Production By Variety {selectedYear ? `(${selectedYear})` : '(All Years)'}</div>
+        <DataTable
+          columns={varietyProductionColumns}
+          data={filteredVarietyProductionRows}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+              <input type="text" value={searchVarietyProduction} onChange={(e) => setSearchVarietyProduction(e.target.value)} placeholder="Search year or variety..." className="border rounded px-3 py-2 text-sm w-full md:max-w-sm" />
+              <div className="flex gap-2">
+                <button onClick={() => exportRowsCsv(`farm_dashboard_variety_production_${selectedYear || 'all'}_visible.csv`, ['Year', 'Variety', 'ProductionQty', 'A', 'B', 'C', 'D'], filteredVarietyProductionRows, (r) => [r.year, r.variety || 'Unspecified', r.quantity || 0, r.gradeA || 0, r.gradeB || 0, r.gradeC || 0, r.gradeD || 0])} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => exportRowsCsv(`farm_dashboard_variety_production_${selectedYear || 'all'}_all.csv`, ['Year', 'Variety', 'ProductionQty', 'A', 'B', 'C', 'D'], varietyRows, (r) => [r.year, r.variety || 'Unspecified', r.quantity || 0, r.gradeA || 0, r.gradeB || 0, r.gradeC || 0, r.gradeD || 0])} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No variety production data."
+        />
       </div>
     </div>
   );

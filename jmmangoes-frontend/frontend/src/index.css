@@ -29,6 +29,24 @@ body {
   min-width: 320px;
   min-height: 100vh;
 }
+
+/* Force readable text colors for react-data-table-component across the app */
+.rdt_Table,
+.rdt_TableRow,
+.rdt_TableCell,
+.rdt_TableCol,
+.rdt_TableCol_Sortable,
+.rdt_TableHead,
+.rdt_TableHeadRow,
+.rdt_Pagination,
+.rdt_TableBody {
+  color: #111827 !important;
+}
+
+.rdt_TableHeadRow .rdt_TableCol {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
 /* 
 h1 {
   font-size: 3.2em;

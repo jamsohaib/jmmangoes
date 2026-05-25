@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
+import jsQR from 'jsqr';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -14,7 +15,7 @@ const blank = {
   latitude: '',
   longitude: '',
   ageYears: '',
-  varietiesText: '',
+  varieties: [],
   plantingDate: '',
   isActive: true,
 };
@@ -25,6 +26,7 @@ const FarmTrees = () => {
   const canManage = user?.role === 'admin' || user?.permissions?.farmTrees?.manage;
   const [clusters, setClusters] = useState([]);
   const [blocks, setBlocks] = useState([]);
+  const [varieties, setVarieties] = useState([]);
   const [trees, setTrees] = useState([]);
   const [selectedClusterId, setSelectedClusterId] = useState('');
   const [selectedBlock, setSelectedBlock] = useState('');
@@ -32,10 +34,15 @@ const FarmTrees = () => {
   const [editingId, setEditingId] = useState('');
   const [draggingTreeId, setDraggingTreeId] = useState('');
   const [dropHoverSlot, setDropHoverSlot] = useState('');
-  const [generatorRows, setGeneratorRows] = useState('');
-  const [generatorTreesPerRow, setGeneratorTreesPerRow] = useState('');
   const [searchTreeCode, setSearchTreeCode] = useState('');
   const [searchQrCode, setSearchQrCode] = useState('');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const videoRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const scanRafRef = useRef(null);
+  const scanCanvasRef = useRef(null);
   const navigate = useNavigate();
 
   const selectedCluster = useMemo(() => clusters.find((c) => c._id === selectedClusterId) || null, [clusters, selectedClusterId]);
@@ -95,10 +102,28 @@ const FarmTrees = () => {
     return value ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(value)}` : '';
   }, [form.qrCodeData, form.treeCode, form.treeId]);
 
+  const calculatedTreeAgeYears = useMemo(() => {
+    if (!form.plantingDate) return 0;
+    const d = new Date(form.plantingDate);
+    if (Number.isNaN(d.getTime())) return 0;
+    const now = new Date();
+    let years = now.getFullYear() - d.getFullYear();
+    const monthDiff = now.getMonth() - d.getMonth();
+    const dayDiff = now.getDate() - d.getDate();
+    if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) years -= 1;
+    return years < 0 ? 0 : years;
+  }, [form.plantingDate]);
+
   const loadData = async () => {
-    const [clustersRes, blocksRes, treesRes] = await Promise.all([api.get('/farm/clusters'), api.get('/farm/blocks'), api.get('/farm/trees')]);
+    const [clustersRes, blocksRes, varietiesRes, treesRes] = await Promise.all([
+      api.get('/farm/clusters'),
+      api.get('/farm/blocks'),
+      api.get('/farm/varieties'),
+      api.get('/farm/trees'),
+    ]);
     setClusters(clustersRes.data || []);
     setBlocks(blocksRes.data || []);
+    setVarieties(varietiesRes.data || []);
     setTrees(treesRes.data || []);
   };
 
@@ -118,7 +143,7 @@ const FarmTrees = () => {
       latitude: tree.latitude ?? '',
       longitude: tree.longitude ?? '',
       ageYears: tree.ageYears ?? '',
-      varietiesText: (tree.varieties || []).join(', '),
+      varieties: Array.isArray(tree.varieties) ? tree.varieties : [],
       plantingDate: tree.plantingDate ? new Date(tree.plantingDate).toISOString().slice(0, 10) : '',
       isActive: tree.isActive !== false,
     });
@@ -128,6 +153,9 @@ const FarmTrees = () => {
   const submit = async (e) => {
     e.preventDefault();
     if (!canManage) return toast.warn('No manage permission.');
+    if (!editingId) {
+      return toast.warn('Please add/select a tree from map first. Tree code and location are system-managed.');
+    }
     const payload = {
       blockId: form.blockId,
       treeCode: form.treeCode,
@@ -137,19 +165,14 @@ const FarmTrees = () => {
       rowTreeNumber: form.rowTreeNumber || null,
       latitude: form.latitude,
       longitude: form.longitude,
-      ageYears: form.ageYears,
+      ageYears: calculatedTreeAgeYears,
       plantingDate: form.plantingDate || null,
-      varieties: String(form.varietiesText || '').split(',').map((v) => v.trim()).filter(Boolean),
+      varieties: Array.isArray(form.varieties) ? form.varieties : [],
       isActive: !!form.isActive,
     };
     try {
-      if (editingId) {
-        await api.put(`/farm/trees/${editingId}`, payload);
-        toast.success('Tree updated');
-      } else {
-        await api.post('/farm/trees', payload);
-        toast.success('Tree added');
-      }
+      await api.put(`/farm/trees/${editingId}`, payload);
+      toast.success('Tree updated');
       setForm(blank);
       setEditingId('');
       await loadData();
@@ -167,21 +190,6 @@ const FarmTrees = () => {
       await loadData();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to delete tree');
-    }
-  };
-
-  const generateTrees = async () => {
-    if (!canManage) return toast.warn('No manage permission.');
-    if (!selectedBlock) return toast.warn('Please select a block first.');
-    const rows = Number(generatorRows || 0);
-    const treesPerRow = Number(generatorTreesPerRow || 0);
-    if (!rows || !treesPerRow) return toast.warn('Enter valid rows and trees per row.');
-    try {
-      const res = await api.post('/farm/trees/generate', { blockId: selectedBlock, rows, treesPerRow });
-      toast.success(`${res?.data?.created || 0} trees generated`);
-      await loadData();
-    } catch (err) {
-      toast.error(err?.response?.data?.message || 'Failed to generate trees');
     }
   };
 
@@ -304,6 +312,120 @@ const FarmTrees = () => {
     toast.success(`Tree found: ${found.treeCode}`);
   };
 
+  const stopScanner = () => {
+    setIsScanning(false);
+    if (scanRafRef.current) {
+      cancelAnimationFrame(scanRafRef.current);
+      scanRafRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  const performSearchByScannedText = (scannedText) => {
+    const scanned = String(scannedText || '').trim();
+    if (!scanned) return;
+    setSearchQrCode(scanned);
+    const found = filteredTrees.find((t) => String(t.qrCodeData || '').toLowerCase().includes(scanned.toLowerCase()));
+    if (!found) {
+      toast.warn('QR scanned, but no tree found in selected block.');
+      return;
+    }
+    applyTreeToForm(found);
+    toast.success(`Tree found: ${found.treeCode}`);
+  };
+
+  const beginCameraScan = async () => {
+    setScanError('');
+    if (!selectedBlock) {
+      toast.warn('Select a block first.');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setScanError('Camera scanning requires secure context (https) or localhost.');
+      return;
+    }
+    const supportsBarcodeDetector = 'BarcodeDetector' in window;
+    let detector = null;
+    if (supportsBarcodeDetector) {
+      try {
+        detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+      } catch (_) {
+        detector = null;
+      }
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      mediaStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setIsScanning(true);
+
+      const scanFrame = async () => {
+        if (!videoRef.current || !mediaStreamRef.current) return;
+        try {
+          let rawValue = '';
+          if (detector) {
+            const barcodes = await detector.detect(videoRef.current);
+            if (barcodes?.length) {
+              rawValue = barcodes[0]?.rawValue || '';
+            }
+          } else {
+            const video = videoRef.current;
+            const w = video.videoWidth || 0;
+            const h = video.videoHeight || 0;
+            if (w > 0 && h > 0) {
+              if (!scanCanvasRef.current) scanCanvasRef.current = document.createElement('canvas');
+              const canvas = scanCanvasRef.current;
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              if (ctx) {
+                ctx.drawImage(video, 0, 0, w, h);
+                const imageData = ctx.getImageData(0, 0, w, h);
+                const code = jsQR(imageData.data, w, h, { inversionAttempts: 'attemptBoth' });
+                rawValue = code?.data || '';
+              }
+            }
+          }
+          if (rawValue) {
+            stopScanner();
+            setIsScannerOpen(false);
+            performSearchByScannedText(rawValue);
+            return;
+          }
+        } catch (_) {
+          // keep scanning
+        }
+        scanRafRef.current = requestAnimationFrame(scanFrame);
+      };
+      scanRafRef.current = requestAnimationFrame(scanFrame);
+    } catch (err) {
+      setScanError(err?.message || 'Unable to access camera.');
+      stopScanner();
+    }
+  };
+
+  useEffect(() => {
+    if (isScannerOpen) {
+      beginCameraScan();
+    } else {
+      stopScanner();
+    }
+    return () => stopScanner();
+  }, [isScannerOpen]);
+
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
@@ -366,18 +488,6 @@ const FarmTrees = () => {
             </div>
           </div>
         </div>
-      ) : null}
-
-      {selectedBlock ? (
-      <div className="mb-4 bg-white p-3 rounded shadow">
-        <h3 className="font-semibold mb-2">Auto Generate Tree Codes and QR</h3>
-        <p className="text-sm text-gray-700 mb-3">Row counting instruction: stand facing east and number rows from left to right in that direction.</p>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-          <input type="number" min="1" className="border p-2 rounded" placeholder="Number of rows" value={generatorRows} onChange={(e) => setGeneratorRows(e.target.value)} />
-          <input type="number" min="1" className="border p-2 rounded" placeholder="Trees in each row" value={generatorTreesPerRow} onChange={(e) => setGeneratorTreesPerRow(e.target.value)} />
-          <button type="button" onClick={generateTrees} className="bg-green-600 text-white px-4 py-2 rounded">Generate</button>
-        </div>
-      </div>
       ) : null}
 
       {selectedBlock ? (
@@ -504,6 +614,35 @@ const FarmTrees = () => {
             <input className="border p-2 rounded md:col-span-2" placeholder="Search by QR code text" value={searchQrCode} onChange={(e) => setSearchQrCode(e.target.value)} />
             <button type="button" onClick={runSearch} className="bg-green-600 text-white px-4 py-2 rounded">Search Tree</button>
           </div>
+          <div className="mt-3">
+            <button
+              type="button"
+              className="px-3 py-2 rounded bg-blue-600 text-white"
+              onClick={() => setIsScannerOpen(true)}
+            >
+              Scan QR with Camera
+            </button>
+          </div>
+          {isScannerOpen ? (
+            <div className="mt-3 border rounded p-3 bg-gray-50">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium">Camera Scanner</p>
+                <button
+                  type="button"
+                  className="text-red-600 text-sm hover:underline"
+                  onClick={() => setIsScannerOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
+              <video ref={videoRef} className="w-full max-w-md rounded border bg-black" muted playsInline />
+              <p className="text-xs text-gray-600 mt-2">
+                Point camera at the tree QR code. Search runs automatically after scan.
+              </p>
+              {isScanning ? <p className="text-xs text-green-700 mt-1">Scanning...</p> : null}
+              {scanError ? <p className="text-xs text-red-600 mt-1">{scanError}</p> : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -514,24 +653,54 @@ const FarmTrees = () => {
           <option value="">Select Block</option>
           {blocks.map((b) => <option key={b._id} value={b._id}>{b.code} - {b.name}</option>)}
         </select>
-        <input className="border p-2 rounded" placeholder="Tree Code (unique number)" value={form.treeCode} onChange={(e) => setForm({ ...form, treeCode: e.target.value })} required />
-        <input className="border p-2 rounded" placeholder="Tree Identifier (Block-Row-Tree format)" value={form.treeId} onChange={(e) => setForm({ ...form, treeId: e.target.value })} required />
-        <input type="number" min="1" className="border p-2 rounded" placeholder="Row Number" value={form.rowNumber} onChange={(e) => setForm({ ...form, rowNumber: e.target.value })} />
-        <input type="number" min="1" className="border p-2 rounded" placeholder="Tree # in Row" value={form.rowTreeNumber} onChange={(e) => setForm({ ...form, rowTreeNumber: e.target.value })} />
+        <input className="border p-2 rounded bg-gray-100" placeholder="Tree Code (system generated)" value={form.treeCode} disabled />
+        <input className="border p-2 rounded bg-gray-100" placeholder="Tree Identifier (system generated)" value={form.treeId} disabled />
+        <input className="border p-2 rounded bg-gray-100" placeholder="Row Location (managed from map)" value={form.rowNumber ? `Row ${form.rowNumber}` : ''} disabled />
+        <input className="border p-2 rounded bg-gray-100" placeholder="Column Location (managed from map)" value={form.rowTreeNumber ? `Column ${form.rowTreeNumber}` : ''} disabled />
         <input className="border p-2 rounded" placeholder="Latitude (optional)" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} />
         <input className="border p-2 rounded" placeholder="Longitude (optional)" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} />
-        <input type="number" min="0" className="border p-2 rounded" placeholder="Tree Age (years)" value={form.ageYears} onChange={(e) => setForm({ ...form, ageYears: e.target.value })} />
-        <input type="date" className="border p-2 rounded" value={form.plantingDate} onChange={(e) => setForm({ ...form, plantingDate: e.target.value })} />
-        <input className="border p-2 rounded md:col-span-2" placeholder="Varieties (comma separated)" value={form.varietiesText} onChange={(e) => setForm({ ...form, varietiesText: e.target.value })} />
+        <input type="number" min="0" className="border p-2 rounded bg-gray-100" placeholder="Tree Age (auto from plantation date)" value={calculatedTreeAgeYears} disabled />
+        <div>
+          <label className="block mb-1 text-sm font-medium text-gray-700">Date of Plantation</label>
+          <input
+            type="date"
+            className="border p-2 rounded w-full"
+            title="Date of Plantation"
+            value={form.plantingDate}
+            onChange={(e) => setForm({ ...form, plantingDate: e.target.value })}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block mb-1 text-sm font-medium text-gray-700">Varieties (select one or multiple)</label>
+          <select
+            multiple
+            className="border p-2 rounded w-full min-h-[120px]"
+            value={form.varieties || []}
+            onChange={(e) => {
+              const values = Array.from(e.target.selectedOptions).map((o) => o.value);
+              setForm({ ...form, varieties: values });
+            }}
+          >
+            {varieties.filter((v) => v.isActive !== false).map((v) => (
+              <option key={v._id} value={v.name}>{v.name}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 mt-1">Use Ctrl/Cmd + click to select multiple varieties for mixed-branch trees.</p>
+        </div>
         <input className="border p-2 rounded md:col-span-2" placeholder="QR Code data (optional, auto-generated if blank)" value={form.qrCodeData} onChange={(e) => setForm({ ...form, qrCodeData: e.target.value })} />
         <label className="inline-flex items-center gap-2"><input type="checkbox" checked={!!form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />Active</label>
         <div className="md:col-span-3 flex items-start gap-4">
           {qrPreview ? <img src={qrPreview} alt="Tree QR preview" className="w-24 h-24 border rounded" /> : null}
           <div className="flex gap-2">
-            <button className="bg-green-600 text-white px-4 py-2 rounded">{editingId ? 'Update Tree' : 'Add Tree'}</button>
+            <button className="bg-green-600 text-white px-4 py-2 rounded">{editingId ? 'Update Tree' : 'Save Tree Details'}</button>
             {editingId ? <button type="button" className="px-4 py-2 rounded border" onClick={() => { setForm(blank); setEditingId(''); }}>Cancel Edit</button> : null}
           </div>
         </div>
+        {!editingId ? (
+          <p className="md:col-span-3 text-xs text-gray-600">
+            Tree creation, unique code generation, and row/column placement are managed from the map.
+          </p>
+        ) : null}
       </form>
       ) : null}
 

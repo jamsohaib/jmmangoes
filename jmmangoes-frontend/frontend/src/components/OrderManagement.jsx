@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
+import DataTable from 'react-data-table-component';
 import api, { toPublicAssetUrl } from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -19,6 +20,8 @@ const OrderManagement = () => {
   const [products, setProducts] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [newItem, setNewItem] = useState({ productId: '', quantity: 1 });
+  const [tableSearch, setTableSearch] = useState({});
+  const formatDateTime = (v) => (v ? new Date(v).toLocaleString() : '-');
 
   const load = async () => {
     const [o, c] = await Promise.all([api.get('/orders'), api.get('/couriers')]);
@@ -199,41 +202,131 @@ const OrderManagement = () => {
     }
   };
 
-  const renderTable = (title, rows, actions) => (
+  const csvEscape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const downloadOrdersCsv = (title, sourceRows, suffix = 'all') => {
+    const headers = ['Order #', 'Date & Time', 'Customer Name', 'Customer Email', 'Amount', 'Payment', 'Receipt', 'Payment Verified', 'Status'];
+    const csvRows = sourceRows.map((o) => [
+      csvEscape(o.orderNumber || '-'),
+      csvEscape(new Date(o.createdAt || o.updatedAt || Date.now()).toLocaleString()),
+      csvEscape(o.customer?.name || '-'),
+      csvEscape(o.customer?.email || '-'),
+      csvEscape(Number(o.finalAmount || o.totalCost || 0).toFixed(2)),
+      csvEscape(paymentLabel(o)),
+      csvEscape(o?.paymentDetails?.receiptUrl ? toPublicAssetUrl(o.paymentDetails.receiptUrl) : '-'),
+      csvEscape(o?.paymentDetails?.isVerified ? 'Yes' : 'No'),
+      csvEscape(o.status || '-'),
+    ].join(','));
+    const csv = [headers.join(','), ...csvRows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${title.toLowerCase().replace(/\s+/g, '_')}_${suffix}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const renderTable = (tableKey, title, rows, actions) => {
+    const q = String(tableSearch[tableKey] || '').trim().toLowerCase();
+    const filteredRows = !q ? rows : rows.filter((o) =>
+      String(o.orderNumber || '').toLowerCase().includes(q) ||
+      String(o.customer?.name || '').toLowerCase().includes(q) ||
+      String(o.customer?.email || '').toLowerCase().includes(q) ||
+      String(o.status || '').toLowerCase().includes(q) ||
+      String(paymentLabel(o) || '').toLowerCase().includes(q)
+    );
+    return (
     <div className="bg-white rounded shadow mb-5 overflow-x-auto">
       <div className="px-4 py-3 border-b font-semibold">{title}</div>
-      <table className="min-w-full text-sm">
-        <thead><tr><th className="border px-3 py-2">Order #</th><th className="border px-3 py-2">Customer</th><th className="border px-3 py-2">Amount</th><th className="border px-3 py-2">Payment</th><th className="border px-3 py-2">Receipt</th><th className="border px-3 py-2">Actions</th></tr></thead>
-        <tbody>
-          {rows.map((o) => (
-            <tr key={o._id}>
-              <td className="border px-3 py-2">{o.orderNumber}</td>
-              <td className="border px-3 py-2">{o.customer?.name}<br />{o.customer?.email}</td>
-              <td className="border px-3 py-2">PKR {amount(o)}</td>
-              <td className="border px-3 py-2">{paymentLabel(o)}</td>
-              <td className="border px-3 py-2">
+      <div className="px-4 py-3 border-b flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+        <input
+          type="text"
+          value={tableSearch[tableKey] || ''}
+          onChange={(e) => setTableSearch((p) => ({ ...p, [tableKey]: e.target.value }))}
+          placeholder={`Search ${title.toLowerCase()}...`}
+          className="border rounded px-3 py-2 text-sm w-full md:max-w-sm"
+        />
+        <div className="flex gap-2">
+          <button onClick={() => downloadOrdersCsv(title, filteredRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+          <button onClick={() => downloadOrdersCsv(title, rows, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+        </div>
+      </div>
+      <DataTable
+        columns={[
+          { name: 'Order #', selector: (o) => o.orderNumber || '-', sortable: true, wrap: true },
+          {
+            name: 'Date & Time',
+            selector: (o) => new Date(o.createdAt || o.updatedAt || Date.now()).toLocaleString(),
+            sortable: true,
+            wrap: true,
+          },
+          {
+            name: 'Customer',
+            selector: (o) => `${o.customer?.name || '-'} ${o.customer?.email || ''}`.trim(),
+            sortable: true,
+            wrap: true,
+            grow: 1.2,
+            cell: (o) => (
+              <div>
+                <div>{o.customer?.name || '-'}</div>
+                <div className="text-xs text-gray-600">{o.customer?.email || '-'}</div>
+              </div>
+            ),
+          },
+          {
+            name: 'Amount',
+            selector: (o) => Number(o.finalAmount || o.totalCost || 0),
+            sortable: true,
+            right: true,
+            cell: (o) => `PKR ${amount(o)}`,
+          },
+          { name: 'Payment', selector: (o) => paymentLabel(o), sortable: true, wrap: true },
+          {
+            name: 'Receipt',
+            selector: (o) => (o?.paymentDetails?.receiptUrl ? 'View' : '-'),
+            wrap: true,
+            cell: (o) => (
+              <div>
                 {o?.paymentDetails?.receiptUrl ? (
                   <a className="text-blue-700 hover:underline" href={toPublicAssetUrl(o.paymentDetails.receiptUrl)} target="_blank" rel="noreferrer">View</a>
                 ) : '-'}
                 <div className="text-xs text-gray-600 mt-1">
                   {o?.paymentDetails?.isVerified ? `Verified${o?.paymentDetails?.verifiedByName ? ` by ${o.paymentDetails.verifiedByName}` : ''}` : 'Not Verified'}
                 </div>
-              </td>
-              <td className="border px-3 py-2">{actions(o)}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={6} className="border px-3 py-3 text-center text-gray-500">No orders</td></tr>}
-        </tbody>
-      </table>
+              </div>
+            ),
+          },
+          {
+            name: 'Actions',
+            cell: (o) => actions(o),
+            ignoreRowClick: true,
+            allowOverflow: true,
+            button: true,
+            grow: 0,
+            width: tableKey === 'courier' ? '300px' : '240px',
+            minWidth: tableKey === 'courier' ? '300px' : '240px',
+            maxWidth: tableKey === 'courier' ? '300px' : '240px',
+          },
+        ]}
+        data={filteredRows}
+        pagination
+        highlightOnHover
+        striped
+        dense
+        noDataComponent="No orders"
+      />
     </div>
-  );
+    );
+  };
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
     <div className="p-4 text-black">
       <h2 className="text-2xl font-bold mb-4">Order Management</h2>
-      {renderTable('Pending For Confirmation', grouped.pending, (o) => (
+      {renderTable('pending', 'Pending For Confirmation', grouped.pending, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
@@ -243,20 +336,19 @@ const OrderManagement = () => {
         </div>
       ))}
 
-      {renderTable('Enter Courier Details', grouped.courier, (o) => (
-        <div className="space-y-2">
+      {renderTable('courier', 'Enter Courier Details', grouped.courier, (o) => (
+        <div className="space-y-3 w-full">
           <div className="flex gap-2">
             <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-            <select className="border p-1 rounded" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierId: e.target.value } }))}>
+          <div className="grid grid-cols-1 gap-2">
+            <select className="border p-2 rounded text-sm w-full" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierId: e.target.value } }))}>
               <option value="">Courier</option>
               {couriers.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
             </select>
-            <input className="border p-1 rounded" placeholder="Tracking #" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
-            <input className="border p-1 rounded" placeholder="Courier helpline" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierHelpline: e.target.value } }))} />
+            <input className="border p-2 rounded text-sm w-full" placeholder="Tracking #" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
             <select
-              className="border p-1 rounded"
+              className="border p-2 rounded text-sm w-full"
               value={dispatchForm[o._id]?.paymentMode ?? o.paymentMode ?? 'cod'}
               onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), paymentMode: e.target.value } }))}
             >
@@ -271,7 +363,7 @@ const OrderManagement = () => {
         </div>
       ))}
 
-      {renderTable('Dispatched Orders', grouped.dispatched, (o) => (
+      {renderTable('dispatched', 'Dispatched Orders', grouped.dispatched, (o) => (
         <div className="flex gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
@@ -280,7 +372,7 @@ const OrderManagement = () => {
         </div>
       ))}
 
-      {renderTable('Delivered Orders', grouped.delivered, (o) => (
+      {renderTable('delivered', 'Delivered Orders', grouped.delivered, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           {o.feedback?.rating ? (
@@ -290,13 +382,13 @@ const OrderManagement = () => {
           )}
         </div>
       ))}
-      {renderTable('Returned Orders', grouped.returned, (o) => (
+      {renderTable('returned', 'Returned Orders', grouped.returned, (o) => (
         <div className="flex flex-col gap-1">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
           <span>{o.adminRemarks || '-'}</span>
         </div>
       ))}
-      {renderTable('Cancelled Orders', grouped.cancelled, (o) => (
+      {renderTable('cancelled', 'Cancelled Orders', grouped.cancelled, (o) => (
         <div className="flex flex-col gap-1">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
           <span>{o.adminRemarks || o.rejectionReason || '-'}</span>
@@ -402,6 +494,7 @@ const OrderManagement = () => {
             <h3 className="text-xl font-semibold mb-2">Order Details</h3>
             <div className="text-sm mb-3">
               <div><strong>Order #:</strong> {viewOrderModal.order.orderNumber}</div>
+              <div><strong>Placed At:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.placedAt || viewOrderModal.order?.createdAt)}</div>
               <div><strong>Customer:</strong> {viewOrderModal.order.customer?.name || '-'}</div>
               <div><strong>Email:</strong> {viewOrderModal.order.customer?.email || '-'}</div>
               <div><strong>Mobile:</strong> {viewOrderModal.order.customer?.mobile || '-'}</div>
@@ -417,6 +510,16 @@ const OrderManagement = () => {
                 </div>
               ) : null}
               <div><strong>Payment Verified:</strong> {viewOrderModal.order.paymentDetails?.isVerified ? 'Yes' : 'No'}</div>
+            </div>
+
+            <div className="mb-3 text-sm border rounded p-3 bg-gray-50">
+              <div className="font-semibold mb-2">Order Timeline</div>
+              <div><strong>Order Placed:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.placedAt || viewOrderModal.order?.createdAt)}</div>
+              <div><strong>Order Confirmed:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.confirmedAt)}</div>
+              <div><strong>Order Dispatched:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.dispatchedAt)}</div>
+              <div><strong>Order Delivered:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.deliveredAt)}</div>
+              <div><strong>Order Cancelled:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.cancelledAt)}</div>
+              <div><strong>Order Returned:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.returnedAt)}</div>
             </div>
 
             <div className="overflow-x-auto border rounded">

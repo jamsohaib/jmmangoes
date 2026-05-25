@@ -27,6 +27,21 @@ const authorizePage = (pageKey, action = 'view') => {
     if (req.user.role === 'admin') return next();
     const perms = req.user.permissions || {};
     const pagePerms = perms[pageKey] || {};
+    if (pagePerms[action]) return next();
+
+    // Backward compatibility for older farm permission key.
+    const fallbackMap = {
+      farmDashboard: 'farmLogs',
+      farmTreeLogs: 'farmLogs',
+      farmMaintenanceTasks: 'farmLogs',
+      farmBlockDetails: 'farmBlocks',
+      farmBlockLogs: 'farmBlocks',
+    };
+    const fallbackKey = fallbackMap[pageKey];
+    if (fallbackKey && perms[fallbackKey]?.[action]) {
+      return next();
+    }
+
     if (!pagePerms[action]) {
       return res.status(403).json({ message: 'Access denied for this page/action' });
     }

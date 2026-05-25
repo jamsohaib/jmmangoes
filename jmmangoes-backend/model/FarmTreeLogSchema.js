@@ -19,6 +19,10 @@ const farmTreeLogSchema = new mongoose.Schema(
     fertilizerQuantity: { type: Number, default: 0, min: 0 },
     diseaseName: { type: String, default: '', trim: true },
     maintenanceJob: { type: String, default: '', trim: true },
+    maintenanceStatus: { type: String, enum: ['pending', 'completed'], default: 'pending' },
+    maintenanceCompletedAt: { type: Date, default: null },
+    maintenanceCompletedById: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    maintenanceCompletedByName: { type: String, default: '', trim: true },
     gradeA: { type: Number, default: 0, min: 0 },
     gradeB: { type: Number, default: 0, min: 0 },
     gradeC: { type: Number, default: 0, min: 0 },
@@ -33,4 +37,3 @@ const farmTreeLogSchema = new mongoose.Schema(
 farmTreeLogSchema.index({ treeId: 1, logDate: -1 });
 
 module.exports = mongoose.model('FarmTreeLog', farmTreeLogSchema);
-

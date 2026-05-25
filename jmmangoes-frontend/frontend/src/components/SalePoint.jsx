@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
+import DataTable from 'react-data-table-component';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -34,6 +35,7 @@ const SalePoint = () => {
   const [returnCustomerName, setReturnCustomerName] = useState('');
   const [returnCustomerWhatsapp, setReturnCustomerWhatsapp] = useState('');
   const [returnCustomerEmail, setReturnCustomerEmail] = useState('');
+  const [transactionSearch, setTransactionSearch] = useState('');
 
   const loadSites = async () => {
     const res = await api.get('/sales/sites');
@@ -279,9 +281,27 @@ const SalePoint = () => {
 
   const transactionNet = useMemo(() => entries.reduce((sum, e) => sum + Number(e.netAmount || 0), 0), [entries]);
 
-  const downloadCsv = () => {
+  const transactionColumns = useMemo(() => ([
+    {
+      name: 'Date',
+      selector: (row) => new Date(row.createdAt || row.date).toLocaleString(),
+      sortable: true,
+      wrap: true,
+    },
+    { name: 'Type', selector: (row) => (row.entryType === 'return' ? 'Return' : 'Sale'), sortable: true },
+    { name: 'Customer Name', selector: (row) => row.customerName || '-', sortable: true, wrap: true },
+    { name: 'WhatsApp', selector: (row) => row.customerWhatsapp || '-', wrap: true },
+    { name: 'Email', selector: (row) => row.customerEmail || '-', wrap: true },
+    { name: 'Product', selector: (row) => row.productName || '-', sortable: true, wrap: true },
+    { name: 'Qty', selector: (row) => Number(row.quantity || 0), sortable: true, right: true },
+    { name: 'Gross', selector: (row) => Number(row.grossAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.grossAmount || 0).toFixed(2)}` },
+    { name: 'Discount', selector: (row) => Number(row.discountAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.discountAmount || 0).toFixed(2)}` },
+    { name: 'Net', selector: (row) => Number(row.netAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.netAmount || 0).toFixed(2)}` },
+  ]), []);
+
+  const downloadCsv = (sourceRows = entries, suffix = 'all') => {
     const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Discount', 'Net'];
-    const rows = entries.map((e) => [
+    const rows = sourceRows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
       `"${String(e.entryType === 'return' ? 'Return' : 'Sale').replace(/"/g, '""')}"`,
       `"${String(e.customerName || '-').replace(/"/g, '""')}"`,
@@ -298,12 +318,23 @@ const SalePoint = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `sale_transactions_${dateFrom || 'from'}_${dateTo || 'to'}.csv`);
+    link.setAttribute('download', `sale_transactions_${dateFrom || 'from'}_${dateTo || 'to'}_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+  const filteredTransactions = useMemo(() => {
+    const q = transactionSearch.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) =>
+      String(e.entryType === 'return' ? 'Return' : 'Sale').toLowerCase().includes(q) ||
+      String(e.customerName || '').toLowerCase().includes(q) ||
+      String(e.customerWhatsapp || '').toLowerCase().includes(q) ||
+      String(e.customerEmail || '').toLowerCase().includes(q) ||
+      String(e.productName || '').toLowerCase().includes(q)
+    );
+  }, [entries, transactionSearch]);
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
@@ -491,7 +522,7 @@ const SalePoint = () => {
           </button>
         </div>
         <div className="flex items-end">
-          <button onClick={downloadCsv} className="bg-green-600 text-white px-4 py-2 rounded w-full">
+          <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-4 py-2 rounded w-full">
             Download CSV
           </button>
         </div>
@@ -499,49 +530,34 @@ const SalePoint = () => {
 
       <div className="overflow-x-auto bg-white rounded shadow mt-2">
         <div className="px-4 py-3 border-b font-semibold">Sale Transactions ({dateFrom} to {dateTo})</div>
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Date</th>
-              <th className="border px-3 py-2">Type</th>
-              <th className="border px-3 py-2">Customer Name</th>
-              <th className="border px-3 py-2">WhatsApp</th>
-              <th className="border px-3 py-2">Email</th>
-              <th className="border px-3 py-2">Product</th>
-              <th className="border px-3 py-2">Qty</th>
-              <th className="border px-3 py-2">Gross</th>
-              <th className="border px-3 py-2">Discount</th>
-              <th className="border px-3 py-2">Net</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e._id}>
-                <td className="border px-3 py-2">{new Date(e.createdAt || e.date).toLocaleString()}</td>
-                <td className="border px-3 py-2">{e.entryType === 'return' ? 'Return' : 'Sale'}</td>
-                <td className="border px-3 py-2">{e.customerName || '-'}</td>
-                <td className="border px-3 py-2">{e.customerWhatsapp || '-'}</td>
-                <td className="border px-3 py-2">{e.customerEmail || '-'}</td>
-                <td className="border px-3 py-2">{e.productName}</td>
-                <td className="border px-3 py-2">{e.quantity}</td>
-                <td className="border px-3 py-2">PKR {Number(e.grossAmount || 0).toFixed(2)}</td>
-                <td className="border px-3 py-2">PKR {Number(e.discountAmount || 0).toFixed(2)}</td>
-                <td className="border px-3 py-2">PKR {Number(e.netAmount || 0).toFixed(2)}</td>
-              </tr>
-            ))}
-            {entries.length === 0 && (
-              <tr>
-                <td colSpan={10} className="border px-3 py-3 text-center text-gray-500">No sale/return entries found for selected date/site.</td>
-              </tr>
-            )}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={9} className="border px-3 py-2 text-right font-semibold">Net Amount</td>
-              <td className="border px-3 py-2 font-bold">PKR {transactionNet.toFixed(2)}</td>
-            </tr>
-          </tfoot>
-        </table>
+        <DataTable
+          columns={transactionColumns}
+          data={filteredTransactions}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+              <input
+                type="text"
+                value={transactionSearch}
+                onChange={(e) => setTransactionSearch(e.target.value)}
+                placeholder="Search transactions..."
+                className="border rounded px-3 py-2 text-sm w-full md:max-w-sm"
+              />
+              <div className="flex gap-2">
+                <button onClick={() => downloadCsv(filteredTransactions, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+                <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+              </div>
+            </div>
+          )}
+          noDataComponent="No sale/return entries found for selected date/site."
+        />
+        <div className="border-t px-4 py-3 text-right font-semibold">
+          Net Amount: <span className="font-bold">PKR {transactionNet.toFixed(2)}</span>
+        </div>
       </div>
     </div>
   );

@@ -59,6 +59,14 @@ const orderSchema = new mongoose.Schema({
     comments: { type: String, default: '' },
     submittedAt: { type: Date, default: null },
   },
+  statusTimeline: {
+    placedAt: { type: Date, default: Date.now },
+    confirmedAt: { type: Date, default: null },
+    dispatchedAt: { type: Date, default: null },
+    deliveredAt: { type: Date, default: null },
+    cancelledAt: { type: Date, default: null },
+    returnedAt: { type: Date, default: null },
+  },
   createdAt: { type: Date, default: Date.now }
 });
 
