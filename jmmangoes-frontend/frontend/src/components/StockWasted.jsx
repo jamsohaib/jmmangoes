@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import DataTable from 'react-data-table-component';
 import { toast } from 'react-toastify';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
@@ -19,6 +20,7 @@ const StockWasted = () => {
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
   const [entries, setEntries] = useState([]);
+  const [entrySearch, setEntrySearch] = useState('');
 
   const loadSites = async () => {
     const res = await api.get('/wastage/sites');
@@ -77,9 +79,9 @@ const StockWasted = () => {
     }
   };
 
-  const downloadCsv = () => {
+  const downloadCsv = (sourceRows = entries, suffix = 'all') => {
     const headers = ['Date & Time', 'Site', 'Product', 'Quantity', 'Notes', 'Updated By'];
-    const rows = entries.map((e) => [
+    const rows = sourceRows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
       `"${String(e.siteName || '').replace(/"/g, '""')}"`,
       `"${String(e.productName || '').replace(/"/g, '""')}"`,
@@ -92,12 +94,32 @@ const StockWasted = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `stock_wastage_${dateFrom || 'from'}_${dateTo || 'to'}.csv`);
+    link.setAttribute('download', `stock_wastage_${dateFrom || 'from'}_${dateTo || 'to'}_${suffix}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+
+  const filteredEntries = entries.filter((e) => {
+    const q = entrySearch.trim().toLowerCase();
+    if (!q) return true;
+    return [
+      new Date(e.createdAt || e.date).toLocaleString(),
+      e.productName,
+      e.quantity,
+      e.notes,
+      e.createdByName,
+    ].some((x) => String(x || '').toLowerCase().includes(q));
+  });
+
+  const entryColumns = [
+    { name: 'Date & Time', selector: (row) => new Date(row.createdAt || row.date).toLocaleString(), sortable: true, wrap: true },
+    { name: 'Product', selector: (row) => row.productName || '-', sortable: true, wrap: true },
+    { name: 'Quantity', selector: (row) => Number(row.quantity || 0), sortable: true, wrap: true },
+    { name: 'Notes', selector: (row) => row.notes || '-', wrap: true, grow: 2 },
+    { name: 'Updated By', selector: (row) => row.createdByName || '-', sortable: true, wrap: true },
+  ];
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
@@ -116,33 +138,6 @@ const StockWasted = () => {
         <div>
           <label className="block text-sm font-medium mb-1">Entry Date</label>
           <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="w-full border p-2 rounded" />
-        </div>
-      </div>
-
-      <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-4 gap-3">
-        <div>
-          <label className="block text-sm font-medium mb-1">From Date</label>
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full border p-2 rounded" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">To Date</label>
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full border p-2 rounded" />
-        </div>
-        <div className="flex items-end">
-          <button
-            onClick={() => loadEntries(siteId, dateFrom, dateTo)}
-            className="bg-blue-600 text-white px-4 py-2 rounded w-full"
-          >
-            Apply Range
-          </button>
-        </div>
-        <div className="flex items-end">
-          <button
-            onClick={downloadCsv}
-            className="bg-green-600 text-white px-4 py-2 rounded w-full"
-          >
-            Download CSV
-          </button>
         </div>
       </div>
 
@@ -196,35 +191,57 @@ const StockWasted = () => {
         </div>
       </div>
 
-      <div className="overflow-x-auto bg-white rounded shadow mt-5">
+      <div className="bg-white rounded shadow p-4 mt-5 grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">From Date</label>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full border p-2 rounded" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">To Date</label>
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full border p-2 rounded" />
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={() => loadEntries(siteId, dateFrom, dateTo)}
+            className="bg-blue-600 text-white px-4 py-2 rounded w-full"
+          >
+            Apply Range
+          </button>
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={() => downloadCsv(entries, 'all')}
+            className="bg-green-600 text-white px-4 py-2 rounded w-full"
+          >
+            Download CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded shadow mt-5 p-3">
         <div className="px-4 py-3 border-b font-semibold">Wasted Stock Transactions ({dateFrom} to {dateTo})</div>
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Date & Time</th>
-              <th className="border px-3 py-2">Product</th>
-              <th className="border px-3 py-2">Quantity</th>
-              <th className="border px-3 py-2">Notes</th>
-              <th className="border px-3 py-2">Updated By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e._id}>
-                <td className="border px-3 py-2">{new Date(e.createdAt || e.date).toLocaleString()}</td>
-                <td className="border px-3 py-2">{e.productName}</td>
-                <td className="border px-3 py-2">{e.quantity}</td>
-                <td className="border px-3 py-2">{e.notes || '-'}</td>
-                <td className="border px-3 py-2">{e.createdByName || '-'}</td>
-              </tr>
-            ))}
-            {entries.length === 0 && (
-              <tr>
-                <td colSpan={5} className="border px-3 py-3 text-center text-gray-500">No wasted stock entries found for selected range/site.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 py-3">
+          <input
+            value={entrySearch}
+            onChange={(e) => setEntrySearch(e.target.value)}
+            placeholder="Search wasted transactions..."
+            className="border p-2 rounded w-full md:max-w-sm"
+          />
+          <div className="flex gap-2">
+            <button onClick={() => downloadCsv(filteredEntries, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+            <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+          </div>
+        </div>
+        <DataTable
+          columns={entryColumns}
+          data={filteredEntries}
+          pagination
+          highlightOnHover
+          dense
+          responsive
+          persistTableHead
+          noDataComponent="No wasted stock entries found for selected range/site."
+        />
       </div>
     </div>
   );

@@ -30,6 +30,10 @@ import AdminSites from './components/AdminSites';
 import ManageStocks from './components/ManageStocks';
 import AdminUsers from './components/AdminUsers';
 import SalePoint from './components/SalePoint';
+import SalesDashboard from './components/SalesDashboard';
+import WarehouseManagement from './components/WarehouseManagement';
+import WholesellerManagement from './components/WholesellerManagement';
+import StockTransfer from './components/StockTransfer';
 import StockWasted from './components/StockWasted';
 import CustomerDirectory from './components/CustomerDirectory';
 import ManageExpense from './components/ManageExpense';
@@ -80,6 +84,10 @@ function App() {
              <Route path="/admin-sites" element={<AdminSites />} />
              <Route path="/manage-stocks" element={<ManageStocks />} />
              <Route path="/sale-point" element={<SalePoint />} />
+             <Route path="/sales-dashboard" element={<SalesDashboard />} />
+             <Route path="/warehouse-management" element={<WarehouseManagement />} />
+             <Route path="/wholeseller-management" element={<WholesellerManagement />} />
+             <Route path="/stock-transfer" element={<StockTransfer />} />
              <Route path="/stock-wasted" element={<StockWasted />} />
              <Route path="/customer-directory" element={<CustomerDirectory />} />
              <Route path="/manage-expense" element={<ManageExpense />} />

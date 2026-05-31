@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const mongoose = require('mongoose');
 
 
 
@@ -31,6 +32,12 @@ const FarmVariety = require('../model/FarmVarietySchema');
 const FarmTree = require('../model/FarmTreeSchema');
 const FarmTreeLog = require('../model/FarmTreeLogSchema');
 const FarmBlockLog = require('../model/FarmBlockLogSchema');
+const Warehouse = require('../model/WarehouseSchema');
+const Wholeseller = require('../model/WholesellerSchema');
+const StockLot = require('../model/StockLotSchema');
+const StockLedger = require('../model/StockLedgerSchema');
+const StockTransfer = require('../model/StockTransferSchema');
+const OrderStockRequest = require('../model/OrderStockRequestSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -81,6 +88,204 @@ function canAccessFarmBlock(req, blockId) {
   return allowed?.has(String(blockId));
 }
 
+function normalizeEntityType(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (['site', 'warehouse', 'wholeseller', 'online'].includes(v)) return v;
+  return '';
+}
+
+async function resolveEntity(type, id, { allowOnlineName = false } = {}) {
+  const normalized = normalizeEntityType(type);
+  if (!normalized) return null;
+  if (normalized === 'online') {
+    const onlineSite = await ensureOnlineSite();
+    return { type: 'online', id: onlineSite._id, name: allowOnlineName ? 'online' : onlineSite.name };
+  }
+  if (!id) return null;
+  if (normalized === 'site') {
+    const doc = await Site.findById(id).select('name');
+    if (!doc) return null;
+    return { type: normalized, id: doc._id, name: doc.name };
+  }
+  if (normalized === 'warehouse') {
+    const doc = await Warehouse.findById(id).select('name');
+    if (!doc) return null;
+    return { type: normalized, id: doc._id, name: doc.name };
+  }
+  if (normalized === 'wholeseller') {
+    const doc = await Wholeseller.findById(id).select('name');
+    if (!doc) return null;
+    return { type: normalized, id: doc._id, name: doc.name };
+  }
+  return null;
+}
+
+function userCanAccessEntity(req, type, id) {
+  if (req.user?.role === 'admin') return true;
+  const normalized = normalizeEntityType(type);
+  if (normalized === 'online') {
+    const allowedSet = new Set((req.user?.siteAccess || []).map(String));
+    return allowedSet.has(String(id));
+  }
+  if (normalized === 'site') {
+    const allowedSet = new Set((req.user?.siteAccess || []).map(String));
+    return allowedSet.has(String(id));
+  }
+  if (normalized === 'warehouse') {
+    const allowedSet = new Set((req.user?.warehouseAccess || []).map(String));
+    return allowedSet.has(String(id));
+  }
+  if (normalized === 'wholeseller') {
+    const allowedSet = new Set((req.user?.wholesellerAccess || []).map(String));
+    return allowedSet.has(String(id));
+  }
+  return false;
+}
+
+async function createStockLedgerRow(payload) {
+  return StockLedger.create({
+    ...payload,
+    amount: Number(payload.quantity || 0) * Number(payload.unitCost || 0),
+  });
+}
+
+function makeTransferNumber() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const rand = String(Math.floor(1000 + Math.random() * 9000));
+  return `TRF-${y}${m}${d}-${rand}`;
+}
+
+function formatDDMMYYYY(date = new Date()) {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const y = String(date.getFullYear());
+  return `${d}${m}${y}`;
+}
+
+function toLotSafeProductName(name = '') {
+  return String(name || 'Product')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'Product';
+}
+
+async function makeSimpleLotCode(productName, quantity) {
+  const safeProduct = toLotSafeProductName(productName);
+  const datePart = formatDDMMYYYY(new Date());
+  const qtyPart = Number(quantity || 0);
+  const prefix = `${safeProduct}_${datePart}_${qtyPart}`;
+  const existingCount = await StockLot.countDocuments({ lotCode: { $regex: `^${prefix}_` } });
+  const serial = existingCount + 1;
+  return `${prefix}_${serial}`;
+}
+
+function productHasSiteAssignment(product, siteId, siteName = '') {
+  const siteIdStr = String(siteId || '');
+  const siteNameNorm = String(siteName || '').trim().toLowerCase();
+  const locationPrices = Array.isArray(product?.locationPrices) ? product.locationPrices : [];
+  return locationPrices.some((lp) => String(lp.siteId || '') === siteIdStr || (siteNameNorm && String(lp.siteName || '').trim().toLowerCase() === siteNameNorm));
+}
+
+function getProductSitePrice(product, siteId, fallbackPrice = 0) {
+  const siteIdStr = String(siteId || '');
+  const locationPrices = Array.isArray(product?.locationPrices) ? product.locationPrices : [];
+  const lp = locationPrices.find((x) => String(x.siteId || '') === siteIdStr);
+  if (lp && Number.isFinite(Number(lp.price))) return Number(lp.price);
+  return Number(fallbackPrice || product?.price || 0);
+}
+
+
+async function getSiteProductAvailableQty(siteId, productId) {
+  const rows = await StockLot.find({
+    holderType: 'site',
+    holderId: siteId,
+    productId,
+    quantityAvailable: { $gt: 0 },
+  }).select('quantityAvailable');
+  return rows.reduce((sum, r) => sum + Number(r.quantityAvailable || 0), 0);
+}
+
+async function consumeSiteProductLots(siteId, productId, qty) {
+  let remaining = Number(qty || 0);
+  const touched = [];
+  const lots = await StockLot.find({
+    holderType: 'site',
+    holderId: siteId,
+    productId,
+    quantityAvailable: { $gt: 0 },
+  }).sort({ receivedAt: 1, createdAt: 1 });
+
+  const available = lots.reduce((sum, l) => sum + Number(l.quantityAvailable || 0), 0);
+  if (available < remaining) return { ok: false, available, touched: [] };
+
+  for (const lot of lots) {
+    if (remaining <= 0) break;
+    const take = Math.min(Number(lot.quantityAvailable || 0), remaining);
+    if (take <= 0) continue;
+    lot.quantityAvailable = Number(lot.quantityAvailable || 0) - take;
+    await lot.save();
+    touched.push({ lotId: lot._id, lotCode: lot.lotCode, qty: take, unitCost: Number(lot.unitCost || 0) });
+    remaining -= take;
+  }
+  return { ok: true, available, touched };
+}
+
+async function addSiteProductReturnLot(siteId, siteName, product, qty, unitCost = 0) {
+  const lotCode = await makeSimpleLotCode(product?.name || 'Product', Number(qty || 0));
+  return StockLot.create({
+    holderType: 'site',
+    holderId: siteId,
+    holderName: siteName,
+    productId: product._id,
+    productName: product.name,
+    lotCode,
+    quantityInitial: Number(qty || 0),
+    quantityAvailable: Number(qty || 0),
+    unitCost: Number(unitCost || 0),
+    sourceRefType: 'sale_return',
+    sourceRefId: null,
+    notes: 'Sale return',
+  });
+}
+
+async function getSiteProductAvailableQtyByName(siteId, productName) {
+  const rows = await StockLot.find({
+    holderType: 'site',
+    holderId: siteId,
+    productName,
+    quantityAvailable: { $gt: 0 },
+  }).select('quantityAvailable');
+  return rows.reduce((sum, r) => sum + Number(r.quantityAvailable || 0), 0);
+}
+
+async function consumeSiteProductLotsByName(siteId, productName, qty) {
+  let remaining = Number(qty || 0);
+  const touched = [];
+  const lots = await StockLot.find({
+    holderType: 'site',
+    holderId: siteId,
+    productName,
+    quantityAvailable: { $gt: 0 },
+  }).sort({ receivedAt: 1, createdAt: 1 });
+  const available = lots.reduce((sum, l) => sum + Number(l.quantityAvailable || 0), 0);
+  if (available < remaining) return { ok: false, available, touched: [] };
+  for (const lot of lots) {
+    if (remaining <= 0) break;
+    const take = Math.min(Number(lot.quantityAvailable || 0), remaining);
+    if (take <= 0) continue;
+    lot.quantityAvailable = Number(lot.quantityAvailable || 0) - take;
+    await lot.save();
+    touched.push({ lotId: lot._id, lotCode: lot.lotCode, qty: take, unitCost: Number(lot.unitCost || 0), productName: lot.productName, productId: lot.productId });
+    remaining -= take;
+  }
+  return { ok: true, available, touched };
+}
+
 function toPositiveInt(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
   const n = Number(value);
@@ -121,6 +326,7 @@ function updateEnvKey(key, value) {
   }
   fs.writeFileSync(envPath, content, 'utf8');
 }
+
 
 function createHumanChallengeToken(a, b) {
   const secret = process.env.JWT_SECRET || 'fallback_secret';
@@ -185,14 +391,46 @@ async function rebuildBlockTreeIdentifiers(blockId) {
 }
 
 async function getNextOrderNumber() {
-  const numericRows = await Order.find({ orderNumber: { $regex: '^[0-9]{6}$' } })
-    .sort({ orderNumber: -1 })
-    .limit(1)
+  const rows = await Order.find({ orderNumber: { $regex: '^JMM-[A-Z][0-9]{3}$' } })
     .select('orderNumber');
-  const latest = Number(numericRows?.[0]?.orderNumber || 100000);
-  const next = Number.isFinite(latest) ? latest + 1 : 100001;
-  if (next > 999999) return String(Math.floor(100000 + Math.random() * 900000));
-  return String(next).padStart(6, '0');
+
+  if (!rows.length) return 'JMM-A001';
+
+  const parsed = rows
+    .map((r) => {
+      const m = String(r.orderNumber || '').match(/^JMM-([A-Z])([0-9]{3})$/);
+      if (!m) return null;
+      return {
+        letterIdx: m[1].charCodeAt(0) - 65,
+        number: Number(m[2]),
+      };
+    })
+    .filter(Boolean);
+
+  if (!parsed.length) return 'JMM-A001';
+
+  const max = parsed.reduce((best, cur) => {
+    if (!best) return cur;
+    if (cur.letterIdx > best.letterIdx) return cur;
+    if (cur.letterIdx === best.letterIdx && cur.number > best.number) return cur;
+    return best;
+  }, null);
+
+  let nextLetterIdx = max.letterIdx;
+  let nextNum = max.number + 1;
+  if (nextNum > 999) {
+    nextLetterIdx += 1;
+    nextNum = 1;
+  }
+
+  if (nextLetterIdx > 25) {
+    // Fallback guard after Z999
+    const rand = Math.floor(100 + Math.random() * 900);
+    return `JMM-Z${String(rand).padStart(3, '0')}`;
+  }
+
+  const letter = String.fromCharCode(65 + nextLetterIdx);
+  return `JMM-${letter}${String(nextNum).padStart(3, '0')}`;
 }
 
 async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
@@ -201,6 +439,47 @@ async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
   const unique = Array.from(new Set([...(customerEmail ? [customerEmail] : []), ...emails]));
   if (!unique.length) return;
   await sendMail({ to: unique.join(','), subject, text, html });
+}
+
+async function sendOrderStockRequestEmailsForSite(siteId, subject, text, html = '') {
+  const fallbackEmail = 'engr.dr.ahmed.sohaib@gmail.com';
+  const users = await userDetails.find({
+    isActive: true,
+    siteAccess: siteId,
+  }).select('email permissions');
+  const recipients = users
+    .filter((u) => !!u?.permissions?.stockTransfer?.manage)
+    .map((u) => String(u.email || '').trim().toLowerCase())
+    .filter(Boolean);
+  const finalRecipients = recipients.length ? Array.from(new Set(recipients)) : [fallbackEmail];
+  await sendMail({ to: finalRecipients.join(','), subject, text, html });
+}
+
+async function getStockTransferRecipientsByEntity(entityType, entityId) {
+  const fallbackEmail = 'engr.dr.ahmed.sohaib@gmail.com';
+  const normalized = normalizeEntityType(entityType);
+  if (!normalized || !entityId) return [fallbackEmail];
+
+  const baseQuery = { isActive: true, 'permissions.stockTransfer.manage': true };
+  if (normalized === 'site' || normalized === 'online') {
+    baseQuery.siteAccess = entityId;
+  } else if (normalized === 'warehouse') {
+    baseQuery.warehouseAccess = entityId;
+  } else if (normalized === 'wholeseller') {
+    baseQuery.wholesellerAccess = entityId;
+  }
+
+  const users = await userDetails.find(baseQuery).select('email');
+  const emails = users
+    .map((u) => String(u.email || '').trim().toLowerCase())
+    .filter(Boolean);
+  return emails.length ? Array.from(new Set(emails)) : [fallbackEmail];
+}
+
+async function notifyStockTransferEntity(entityType, entityId, { subject, text, html = '' }) {
+  const recipients = await getStockTransferRecipientsByEntity(entityType, entityId);
+  if (!recipients.length) return;
+  await sendMail({ to: recipients.join(','), subject, text, html });
 }
 
 
@@ -246,6 +525,8 @@ async function handleLogin(req, res) {
           username: superAdminUsername,
           permissions: {},
           siteAccess: [],
+          warehouseAccess: [],
+          wholesellerAccess: [],
           isSuperAdmin: true,
         },
         process.env.JWT_SECRET,
@@ -270,6 +551,8 @@ async function handleLogin(req, res) {
           name: 'Super Admin',
           permissions: {},
           siteAccess: [],
+          warehouseAccess: [],
+          wholesellerAccess: [],
           isSuperAdmin: true,
         },
       });
@@ -293,6 +576,8 @@ async function handleLogin(req, res) {
         username: user.username,
         permissions: user.permissions || {},
         siteAccess: (user.siteAccess || []).map((s) => String(s)),
+        warehouseAccess: (user.warehouseAccess || []).map((w) => String(w)),
+        wholesellerAccess: (user.wholesellerAccess || []).map((w) => String(w)),
         farmBlockAccess: (user.farmBlockAccess || []).map((b) => String(b)),
         isFarmUser: !!user.isFarmUser,
         isSalesUser: !!user.isSalesUser,
@@ -323,6 +608,8 @@ async function handleLogin(req, res) {
         name : user.name,
         permissions: user.permissions || {},
         siteAccess: (user.siteAccess || []).map((s) => String(s)),
+        warehouseAccess: (user.warehouseAccess || []).map((w) => String(w)),
+        wholesellerAccess: (user.wholesellerAccess || []).map((w) => String(w)),
         farmBlockAccess: (user.farmBlockAccess || []).map((b) => String(b)),
         isFarmUser: !!user.isFarmUser,
         isSalesUser: !!user.isSalesUser,
@@ -359,13 +646,8 @@ async function handleAddProducts(req,res){
     logger.debug("In handleAddProducts");
 
     try {
-    const { name, description, price, weight, imageUrl, category, locationPrices = [], productChannel = 'website', availableSiteId = null } = req.body;
+    const { name, description, price, weight, imageUrl, category, locationPrices = [], productChannel = 'website' } = req.body;
     const onlineSite = await ensureOnlineSite();
-    let availableSiteName = '';
-    if (availableSiteId) {
-      const site = await Site.findById(availableSiteId);
-      availableSiteName = site?.name || '';
-    }
     const normalizedLocationPrices = Array.isArray(locationPrices)
       ? locationPrices
           .filter((lp) => lp && lp.siteId && lp.siteName && typeof lp.price === 'number')
@@ -396,8 +678,6 @@ async function handleAddProducts(req,res){
       isActive: true,
       isAvailableForCart: true,
       productChannel,
-      availableSiteId: availableSiteId || (productChannel === 'website' ? onlineSite._id : null),
-      availableSiteName: availableSiteName || (productChannel === 'website' ? 'online' : ''),
       locationPrices: normalizedLocationPrices,
     });
 
@@ -415,12 +695,14 @@ async function handleGetProducts(req,res){
   logger.debug("In handleGetProducts");
 
   try {
-    let query = {};
+    let products = await Product.find({}).sort({ createdAt: -1 });
     if (req.user.role !== 'admin') {
       const allowed = req.user.siteAccess || [];
-      query = { availableSiteId: { $in: allowed } };
+      const allowedSet = new Set(allowed.map(String));
+      products = products.filter((product) => {
+        return Array.from(allowedSet).some((siteId) => productHasSiteAssignment(product, siteId));
+      });
     }
-    const products = await Product.find(query).sort({ createdAt: -1 });
     res.status(200).json(products);
   } catch (err) {
     logger.error('Error fetching products', { error: err?.message || String(err) });
@@ -622,16 +904,24 @@ async function handleResetPassword(req, res) {
 
 async function handleUpdateProduct(req, res) {
   const { id } = req.params;
-  const { name, description, price, weight, imageUrl, category, productChannel, availableSiteId, availableSiteName } = req.body;
+  const { name, description, price, weight, imageUrl, category, productChannel } = req.body;
   try {
-    const updated = await Product.findByIdAndUpdate(
-      id,
-      { name, description, price, weight, imageUrl, category, productChannel, availableSiteId, availableSiteName },
-      { new: true, runValidators: true }
-    );
+    const updated = await Product.findById(id);
     if (!updated) return res.status(404).json({ message: 'Product not found' });
+    updated.name = name;
+    updated.description = description;
+    updated.price = price;
+    updated.weight = weight;
+    updated.imageUrl = imageUrl;
+    updated.category = category;
+    updated.productChannel = productChannel;
+    await updated.save();
     return res.status(200).json({ success: true, product: updated });
   } catch (err) {
+    if (err?.code === 11000) {
+      const dupField = Object.keys(err.keyPattern || {})[0] || 'field';
+      return res.status(400).json({ message: `${dupField} already exists` });
+    }
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -643,6 +933,10 @@ async function handleDeleteProduct(req, res) {
     if (!deleted) return res.status(404).json({ message: 'Product not found' });
     return res.status(200).json({ success: true, message: 'Product deleted' });
   } catch (err) {
+    if (err?.code === 11000) {
+      const dupField = Object.keys(err.keyPattern || {})[0] || 'field';
+      return res.status(400).json({ message: `${dupField} already exists` });
+    }
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -700,10 +994,7 @@ async function handleUpsertLocationPrice(req, res) {
       });
     }
 
-    if (siteName?.toLowerCase() === 'online') {
-      product.price = Number(price);
-    }
-
+    if (siteName?.toLowerCase() === 'online') product.price = Number(price);
     await product.save();
     return res.status(200).json({ success: true, product });
   } catch (err) {
@@ -730,8 +1021,16 @@ async function handleGetProductsForPublic(req,res){
   logger.debug("In handleGetProductsForPublic");
 
   try {
-    const products = await Product.find({ isActive: true, productChannel: 'website' }).sort({ createdAt: -1 });
-    res.status(200).json(products);
+    const onlineSite = await ensureOnlineSite();
+    const products = await Product.find({ isActive: true }).sort({ createdAt: -1 });
+    const filtered = products
+      .filter((p) => productHasSiteAssignment(p, onlineSite._id, 'online'))
+      .map((p) => {
+        const onlinePrice = getProductSitePrice(p, onlineSite._id, p.price);
+        const obj = p.toObject ? p.toObject() : p;
+        return { ...obj, price: onlinePrice };
+      });
+    res.status(200).json(filtered);
   } catch (err) {
     logger.error('Error fetching products', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -844,9 +1143,7 @@ async function handleStockSummary(req, res) {
       sites = sites.filter((s) => allowedSet.has(String(s._id)));
     }
     const summary = sites.map((site) => {
-      const items = products.filter(
-        (p) => String(p.availableSiteId || '') === String(site._id) || (p.availableSiteName || '').toLowerCase() === site.name.toLowerCase()
-      );
+      const items = products.filter((p) => productHasSiteAssignment(p, site._id, site.name));
       const totalStock = items.reduce((sum, p) => sum + Number(p.quantity || 0), 0);
       return {
         siteId: site._id,
@@ -861,15 +1158,121 @@ async function handleStockSummary(req, res) {
   }
 }
 
+async function handleStockStatusAll(req, res) {
+  try {
+    await ensureOnlineSite();
+    let sites = await Site.find({ isActive: true }).select('name').sort({ name: 1 });
+    let warehouses = await Warehouse.find({ isActive: true }).select('name code').sort({ name: 1 });
+    let wholesellers = await Wholeseller.find({ isActive: true }).select('name code').sort({ name: 1 });
+
+    if (req.user.role !== 'admin') {
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+      const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+      sites = sites.filter((s) => siteSet.has(String(s._id)));
+      warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
+      wholesellers = wholesellers.filter((w) => wholesellerSet.has(String(w._id)));
+    }
+
+    const allLots = await StockLot.find({ quantityAvailable: { $gt: 0 } }).select('holderType holderId productId productName quantityAvailable');
+
+    const buildHolderSummary = (holderTypeOrTypes, holders) => {
+      const holderTypes = Array.isArray(holderTypeOrTypes) ? holderTypeOrTypes : [holderTypeOrTypes];
+      return holders.map((h) => {
+        const lots = allLots.filter(
+          (l) =>
+            holderTypes.includes(String(l.holderType)) &&
+            String(l.holderId) === String(h._id)
+        );
+        const productMap = new Map();
+        for (const lot of lots) {
+          const key = String(lot.productId);
+          if (!productMap.has(key)) {
+            productMap.set(key, { productId: lot.productId, productName: lot.productName, quantity: 0 });
+          }
+          const row = productMap.get(key);
+          row.quantity += Number(lot.quantityAvailable || 0);
+        }
+        const products = Array.from(productMap.values()).sort((a, b) => String(a.productName || '').localeCompare(String(b.productName || '')));
+        const totalStock = products.reduce((sum, p) => sum + Number(p.quantity || 0), 0);
+        return {
+          holderType: holderTypes.length > 1 ? holderTypes.join(',') : holderTypes[0],
+          holderId: h._id,
+          holderName: h.name,
+          holderCode: h.code || '',
+          totalStock,
+          products,
+        };
+      });
+    };
+
+    return res.status(200).json({
+      sites: buildHolderSummary(['site', 'online'], sites),
+      warehouses: buildHolderSummary('warehouse', warehouses),
+      wholesellers: buildHolderSummary('wholeseller', wholesellers),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetStockProducts(req, res) {
   try {
-    let query = {};
-    if (req.user.role !== 'admin') {
-      const allowed = req.user.siteAccess || [];
-      query = { availableSiteId: { $in: allowed } };
-    }
-    const products = await Product.find(query).sort({ name: 1 });
+    const products = await Product.find({ isActive: { $ne: false } }).sort({ name: 1 });
     return res.status(200).json(products);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetStockHolders(req, res) {
+  try {
+    await ensureOnlineSite();
+    let sites = await Site.find({ isActive: true }).sort({ name: 1 });
+    let warehouses = await Warehouse.find({ isActive: true }).sort({ name: 1 });
+    let wholesellers = await Wholeseller.find({ isActive: true }).sort({ name: 1 });
+
+    if (req.user.role !== 'admin') {
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+      const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+      sites = sites.filter((s) => siteSet.has(String(s._id)));
+      warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
+      wholesellers = wholesellers.filter((w) => wholesellerSet.has(String(w._id)));
+    }
+
+    return res.status(200).json({ sites, warehouses, wholesellers });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetStockTransferHolders(req, res) {
+  try {
+    await ensureOnlineSite();
+    const allSites = await Site.find({ isActive: true }).sort({ name: 1 });
+    const allWarehouses = await Warehouse.find({ isActive: true }).sort({ name: 1 });
+    const allWholesellers = await Wholeseller.find({ isActive: true }).sort({ name: 1 });
+
+    if (req.user.role === 'admin') {
+      return res.status(200).json({
+        source: { sites: allSites, warehouses: allWarehouses, wholesellers: allWholesellers },
+        target: { sites: allSites, warehouses: allWarehouses, wholesellers: allWholesellers },
+      });
+    }
+
+    const siteSet = new Set((req.user.siteAccess || []).map(String));
+    const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+    const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+
+    const sourceSites = allSites.filter((s) => siteSet.has(String(s._id)));
+    const sourceWarehouses = allWarehouses.filter((w) => warehouseSet.has(String(w._id)));
+    const sourceWholesellers = allWholesellers.filter((w) => wholesellerSet.has(String(w._id)));
+
+    return res.status(200).json({
+      source: { sites: sourceSites, warehouses: sourceWarehouses, wholesellers: sourceWholesellers },
+      target: { sites: allSites, warehouses: allWarehouses, wholesellers: allWholesellers },
+    });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -897,13 +1300,22 @@ async function handleGetSiteStock(req, res) {
       const allowedSet = new Set((req.user.siteAccess || []).map(String));
       if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
     }
-    const products = await Product.find({
-      $or: [{ availableSiteId: siteId }, { availableSiteName: { $regex: /^online$/i } }],
-    }).sort({ name: 1 });
-    const filtered = products.filter(
-      (p) => String(p.availableSiteId || '') === String(siteId)
+    const site = await Site.findById(siteId).select('name');
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+    const products = await Product.find({ isActive: { $ne: false } }).sort({ name: 1 });
+    const filtered = products.filter((p) => productHasSiteAssignment(p, siteId, site.name));
+    const mapped = await Promise.all(
+      filtered.map(async (p) => {
+        const qty = await getSiteProductAvailableQty(siteId, p._id);
+        const obj = p.toObject ? p.toObject() : p;
+        return {
+          ...obj,
+          price: getProductSitePrice(p, siteId, p.price),
+          quantity: qty,
+        };
+      })
     );
-    return res.status(200).json(filtered);
+    return res.status(200).json(mapped);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -929,19 +1341,19 @@ async function handleCreateSalePointEntry(req, res) {
     if (!site) return res.status(404).json({ message: 'Site not found' });
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    if (String(product.availableSiteId || '') !== String(siteId)) {
+    if (!productHasSiteAssignment(product, siteId, site.name)) {
       return res.status(400).json({ message: 'Selected product does not belong to this site' });
     }
-    if (Number(product.quantity || 0) < qty) {
+    const availableQty = await getSiteProductAvailableQty(siteId, product._id);
+    if (availableQty < qty) {
       return res.status(400).json({ message: 'Insufficient stock available' });
     }
 
-    const unitPrice = Number(product.price || 0);
+    const unitPrice = getProductSitePrice(product, siteId, product.price);
     const grossAmount = unitPrice * qty;
     const netAmount = Math.max(0, grossAmount - discount);
 
-    product.quantity = Number(product.quantity || 0) - qty;
-    await product.save();
+    await consumeSiteProductLots(siteId, product._id, qty);
 
     const entry = await SalePointEntry.create({
       siteId: site._id,
@@ -958,7 +1370,7 @@ async function handleCreateSalePointEntry(req, res) {
       createdByName: req.user.name || req.user.username || '',
     });
 
-    return res.status(201).json({ success: true, entry, remainingStock: product.quantity });
+    return res.status(201).json({ success: true, entry, remainingStock: Math.max(0, availableQty - qty) });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -988,10 +1400,11 @@ async function handleCreateSaleCheckout(req, res) {
       }
       const product = await Product.findById(it.productId);
       if (!product) return res.status(404).json({ message: 'Product not found' });
-      if (String(product.availableSiteId || '') !== String(siteId)) {
+      if (!productHasSiteAssignment(product, siteId, site.name)) {
         return res.status(400).json({ message: `Product "${product.name}" does not belong to selected site` });
       }
-      if (Number(product.quantity || 0) < it.quantity) {
+      const availableQty = await getSiteProductAvailableQty(siteId, product._id);
+      if (availableQty < it.quantity) {
         return res.status(400).json({ message: `Insufficient stock for "${product.name}"` });
       }
     }
@@ -1002,12 +1415,11 @@ async function handleCreateSaleCheckout(req, res) {
     let netTotal = 0;
     for (const it of normalizedItems) {
       const product = await Product.findById(it.productId);
-      const unitPrice = Number(product.price || 0);
+      const unitPrice = getProductSitePrice(product, siteId, product.price);
       const grossAmount = unitPrice * it.quantity;
       const netAmount = Math.max(0, grossAmount - it.discountAmount);
 
-      product.quantity = Number(product.quantity || 0) - it.quantity;
-      await product.save();
+      await consumeSiteProductLots(siteId, product._id, it.quantity);
 
       const entry = await SalePointEntry.create({
         entryType: 'sale',
@@ -1061,12 +1473,11 @@ async function handleCreateSaleReturn(req, res) {
       }
       const product = await Product.findById(raw.productId);
       if (!product) return res.status(404).json({ message: 'Product not found' });
-      if (String(product.availableSiteId || '') !== String(siteId)) {
+      if (!productHasSiteAssignment(product, siteId, site.name)) {
         return res.status(400).json({ message: `Product "${product.name}" does not belong to selected site` });
       }
 
-      product.quantity = Number(product.quantity || 0) + quantity;
-      await product.save();
+      await addSiteProductReturnLot(site._id, site.name, product, quantity, quantity > 0 ? returnAmount / quantity : 0);
 
       const entry = await SalePointEntry.create({
         entryType: 'return',
@@ -1076,7 +1487,7 @@ async function handleCreateSaleReturn(req, res) {
         productName: product.name,
         date: date ? new Date(date) : new Date(),
         quantity,
-        unitPrice: quantity > 0 ? returnAmount / quantity : Number(product.price || 0),
+        unitPrice: quantity > 0 ? returnAmount / quantity : getProductSitePrice(product, siteId, product.price),
         grossAmount: returnAmount,
         discountAmount: 0,
         netAmount: -Math.abs(returnAmount),
@@ -1132,6 +1543,1115 @@ async function handleGetSalePointEntries(req, res) {
   }
 }
 
+async function handleGetWarehouses(req, res) {
+  try {
+    let query = {};
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.warehouseAccess || []).map(String));
+      query._id = { $in: Array.from(allowedSet) };
+    }
+    const rows = await Warehouse.find(query).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateWarehouse(req, res) {
+  try {
+    const { name, code, contactNumber = '', contactPersonName = '', address = '', city = '', latitude = null, longitude = null, isActive = true } = req.body;
+    if (!name?.trim() || !code?.trim()) return res.status(400).json({ message: 'Name and code are required' });
+    const exists = await Warehouse.findOne({ $or: [{ name: { $regex: new RegExp(`^${name.trim()}$`, 'i') } }, { code: { $regex: new RegExp(`^${code.trim()}$`, 'i') } }] });
+    if (exists) return res.status(400).json({ message: 'Warehouse name/code already exists' });
+    const row = await Warehouse.create({ name: name.trim(), code: code.trim().toUpperCase(), contactNumber, contactPersonName, address, city, latitude, longitude, isActive });
+    return res.status(201).json({ success: true, warehouse: row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateWarehouse(req, res) {
+  try {
+    const row = await Warehouse.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Warehouse not found' });
+    const { name, code, contactNumber, contactPersonName, address, city, latitude, longitude, isActive } = req.body;
+    if (name !== undefined) row.name = String(name || '').trim();
+    if (code !== undefined) row.code = String(code || '').trim().toUpperCase();
+    if (contactNumber !== undefined) row.contactNumber = contactNumber;
+    if (contactPersonName !== undefined) row.contactPersonName = contactPersonName;
+    if (address !== undefined) row.address = address;
+    if (city !== undefined) row.city = city;
+    if (latitude !== undefined) row.latitude = latitude;
+    if (longitude !== undefined) row.longitude = longitude;
+    if (isActive !== undefined) row.isActive = !!isActive;
+    await row.save();
+    return res.status(200).json({ success: true, warehouse: row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteWarehouse(req, res) {
+  try {
+    const row = await Warehouse.findByIdAndDelete(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Warehouse not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetWholesellers(req, res) {
+  try {
+    let query = {};
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.wholesellerAccess || []).map(String));
+      query._id = { $in: Array.from(allowedSet) };
+    }
+    const rows = await Wholeseller.find(query).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateWholeseller(req, res) {
+  try {
+    const { name, code, contactNumber = '', contactPersonName = '', address = '', city = '', latitude = null, longitude = null, isActive = true } = req.body;
+    if (!name?.trim() || !code?.trim()) return res.status(400).json({ message: 'Name and code are required' });
+    const exists = await Wholeseller.findOne({ $or: [{ name: { $regex: new RegExp(`^${name.trim()}$`, 'i') } }, { code: { $regex: new RegExp(`^${code.trim()}$`, 'i') } }] });
+    if (exists) return res.status(400).json({ message: 'Wholeseller name/code already exists' });
+    const row = await Wholeseller.create({ name: name.trim(), code: code.trim().toUpperCase(), contactNumber, contactPersonName, address, city, latitude, longitude, isActive });
+    return res.status(201).json({ success: true, wholeseller: row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateWholeseller(req, res) {
+  try {
+    const row = await Wholeseller.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Wholeseller not found' });
+    const { name, code, contactNumber, contactPersonName, address, city, latitude, longitude, isActive } = req.body;
+    if (name !== undefined) row.name = String(name || '').trim();
+    if (code !== undefined) row.code = String(code || '').trim().toUpperCase();
+    if (contactNumber !== undefined) row.contactNumber = contactNumber;
+    if (contactPersonName !== undefined) row.contactPersonName = contactPersonName;
+    if (address !== undefined) row.address = address;
+    if (city !== undefined) row.city = city;
+    if (latitude !== undefined) row.latitude = latitude;
+    if (longitude !== undefined) row.longitude = longitude;
+    if (isActive !== undefined) row.isActive = !!isActive;
+    await row.save();
+    return res.status(200).json({ success: true, wholeseller: row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteWholeseller(req, res) {
+  try {
+    const row = await Wholeseller.findByIdAndDelete(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Wholeseller not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetStockLots(req, res) {
+  try {
+    const { holderType, holderId, productId } = req.query;
+    const query = {};
+    if (holderType) query.holderType = normalizeEntityType(holderType);
+    if (holderId) query.holderId = holderId;
+    if (productId) query.productId = productId;
+    if (req.user.role !== 'admin') {
+      if (!query.holderType || !query.holderId) {
+        return res.status(400).json({ message: 'holderType and holderId are required for non-admin users' });
+      }
+      if (!userCanAccessEntity(req, query.holderType, query.holderId)) {
+        return res.status(403).json({ message: 'Access denied for selected holder' });
+      }
+    }
+    const rows = await StockLot.find(query).sort({ createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateStockLot(req, res) {
+  try {
+    const {
+      holderType,
+      holderId,
+      productId,
+      lotCode,
+      quantity,
+      unitCost = 0,
+      receivedAt,
+      notes = '',
+      sourceRefType = 'manual',
+      sourceRefId = null,
+    } = req.body;
+    const qty = Number(quantity);
+    if (!holderType || !holderId || !productId || !lotCode?.trim() || Number.isNaN(qty) || qty <= 0) {
+      return res.status(400).json({ message: 'holderType, holderId, productId, lotCode, quantity are required' });
+    }
+    const holder = await resolveEntity(holderType, holderId, { allowOnlineName: true });
+    if (!holder) return res.status(404).json({ message: 'Holder not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Access denied for selected holder' });
+    const product = await Product.findById(productId).select('name');
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const row = await StockLot.create({
+      holderType: holder.type,
+      holderId: holder.id,
+      holderName: holder.name,
+      productId: product._id,
+      productName: product.name,
+      lotCode: lotCode.trim(),
+      quantityInitial: qty,
+      quantityAvailable: qty,
+      unitCost: Number(unitCost || 0),
+      receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
+      sourceRefType,
+      sourceRefId,
+      notes,
+    });
+
+    await createStockLedgerRow({
+      movementType: 'in',
+      holderType: holder.type,
+      holderId: holder.id,
+      holderName: holder.name,
+      productId: product._id,
+      productName: product.name,
+      lotId: row._id,
+      lotCode: row.lotCode,
+      quantity: qty,
+      unitCost: Number(unitCost || 0),
+      referenceType: 'stock_lot_create',
+      referenceId: row._id,
+      remarks: notes,
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: req.user.name || '',
+    });
+
+    return res.status(201).json({ success: true, lot: row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateStockTransfer(req, res) {
+  try {
+    const { fromType, fromId, toType, toId, items = [], senderRemarks = '' } = req.body;
+    if (!fromType || !fromId || !toType || !toId || !Array.isArray(items) || !items.length) {
+      return res.status(400).json({ message: 'from/to and items are required' });
+    }
+    const from = await resolveEntity(fromType, fromId, { allowOnlineName: true });
+    const to = await resolveEntity(toType, toId, { allowOnlineName: true });
+    if (!from || !to) return res.status(404).json({ message: 'Source/target not found' });
+    if (!userCanAccessEntity(req, from.type, from.id)) return res.status(403).json({ message: 'No access to source holder' });
+    if (String(from.type) === String(to.type) && String(from.id) === String(to.id)) {
+      return res.status(400).json({ message: 'Source and target cannot be same' });
+    }
+
+    const transferItems = [];
+    for (const item of items) {
+      const lot = await StockLot.findById(item.lotId);
+      const qty = Number(item.quantity);
+      if (!lot || Number.isNaN(qty) || qty <= 0 || !Number.isInteger(qty)) {
+        return res.status(400).json({ message: 'Invalid transfer item/lot/qty. Only whole-number quantities are allowed.' });
+      }
+      if (String(lot.holderType) !== String(from.type) || String(lot.holderId) !== String(from.id)) {
+        return res.status(400).json({ message: `Lot ${lot.lotCode} does not belong to source holder` });
+      }
+      if (Number(lot.quantityAvailable || 0) < qty) return res.status(400).json({ message: `Insufficient quantity in lot ${lot.lotCode}` });
+      lot.quantityAvailable = Number(lot.quantityAvailable || 0) - qty;
+      await lot.save();
+
+      transferItems.push({
+        productId: lot.productId,
+        productName: lot.productName,
+        lotId: lot._id,
+        lotCode: lot.lotCode,
+        requestedQty: qty,
+        acceptedQty: null,
+        returnedQty: 0,
+        unitCost: Number(item.unitCost ?? lot.unitCost ?? 0),
+        notes: item.notes || '',
+      });
+
+      await createStockLedgerRow({
+        movementType: 'transfer_out',
+        holderType: from.type,
+        holderId: from.id,
+        holderName: from.name,
+        productId: lot.productId,
+        productName: lot.productName,
+        lotId: lot._id,
+        lotCode: lot.lotCode,
+        quantity: -qty,
+        unitCost: Number(item.unitCost ?? lot.unitCost ?? 0),
+        referenceType: 'stock_transfer',
+        counterpartType: to.type,
+        counterpartId: to.id,
+        counterpartName: to.name,
+        remarks: `Transfer initiated`,
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || '',
+      });
+    }
+
+    const transfer = await StockTransfer.create({
+      transferNumber: makeTransferNumber(),
+      fromType: from.type,
+      fromId: from.id,
+      fromName: from.name,
+      toType: to.type,
+      toId: to.id,
+      toName: to.name,
+      status: 'pending',
+      items: transferItems,
+      senderRemarks,
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: req.user.name || '',
+    });
+
+    // Notify receiving-side users that a transfer was initiated for their holder.
+    try {
+      const itemsText = transferItems.map((it) => `${it.productName} x ${Number(it.requestedQty || 0)}`).join(', ');
+      const subject = `Stock Transfer Requested - ${transfer.transferNumber}`;
+      const text = [
+        `A stock transfer has been initiated.`,
+        `Transfer#: ${transfer.transferNumber}`,
+        `From: ${transfer.fromName}`,
+        `To: ${transfer.toName}`,
+        `Items: ${itemsText}`,
+        `Requested By: ${req.user.name || req.user.username || 'User'}`,
+      ].join('\n');
+      await notifyStockTransferEntity(transfer.toType, transfer.toId, { subject, text });
+    } catch (mailErr) {
+      logger.warn('Stock transfer initiation email failed', { error: mailErr?.message || String(mailErr), transferNumber: transfer.transferNumber });
+    }
+
+    return res.status(201).json({ success: true, transfer });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetStockTransfers(req, res) {
+  try {
+    const { role = 'all', status = '' } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (req.user.role !== 'admin') {
+      const siteIds = new Set((req.user.siteAccess || []).map(String));
+      const warehouseIds = new Set((req.user.warehouseAccess || []).map(String));
+      const wholesellerIds = new Set((req.user.wholesellerAccess || []).map(String));
+      query.$or = [
+        { fromType: 'site', fromId: { $in: Array.from(siteIds) } },
+        { toType: 'site', toId: { $in: Array.from(siteIds) } },
+        { fromType: 'online', fromId: { $in: Array.from(siteIds) } },
+        { toType: 'online', toId: { $in: Array.from(siteIds) } },
+        { fromType: 'warehouse', fromId: { $in: Array.from(warehouseIds) } },
+        { toType: 'warehouse', toId: { $in: Array.from(warehouseIds) } },
+        { fromType: 'wholeseller', fromId: { $in: Array.from(wholesellerIds) } },
+        { toType: 'wholeseller', toId: { $in: Array.from(wholesellerIds) } },
+      ];
+    }
+    if (role === 'sent') query.createdBy = req.user.id;
+    if (role === 'received') {
+      const ands = query.$and || [];
+      ands.push({ toType: { $exists: true } });
+      query.$and = ands;
+    }
+    const rows = await StockTransfer.find(query).sort({ createdAt: -1 }).limit(500);
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleRespondStockTransfer(req, res) {
+  try {
+    const { action, items = [], receiverRemarks = '', returnDisposition = 'return_to_sender' } = req.body;
+    const transfer = await StockTransfer.findById(req.params.id);
+    if (!transfer) return res.status(404).json({ message: 'Transfer not found' });
+    if (transfer.status !== 'pending') return res.status(400).json({ message: 'Transfer already processed' });
+    if (!userCanAccessEntity(req, transfer.toType, transfer.toId)) return res.status(403).json({ message: 'No access to receiving holder' });
+    if (!['accepted', 'modified', 'returned'].includes(action)) return res.status(400).json({ message: 'Invalid action' });
+
+    const itemMap = new Map((items || []).map((r) => [String(r.itemId), r]));
+    let totalReturnedQty = 0;
+    for (const row of transfer.items) {
+      const decision = itemMap.get(String(row._id)) || {};
+      let acceptedQty = 0;
+      if (action === 'accepted') acceptedQty = Number(row.requestedQty || 0);
+      else if (action === 'returned') acceptedQty = 0;
+      else acceptedQty = Number(decision.acceptedQty ?? row.requestedQty ?? 0);
+      if (!Number.isFinite(acceptedQty) || !Number.isInteger(acceptedQty) || acceptedQty < 0 || acceptedQty > Number(row.requestedQty || 0)) {
+        return res.status(400).json({ message: `Invalid acceptedQty for lot ${row.lotCode}` });
+      }
+      const returnedQty = Number(row.requestedQty || 0) - acceptedQty;
+      row.acceptedQty = acceptedQty;
+      row.returnedQty = returnedQty;
+      totalReturnedQty += Number(returnedQty || 0);
+
+      if (acceptedQty > 0) {
+        const generatedInLotCode = await makeSimpleLotCode(row.productName, Number(acceptedQty || 0));
+        const existingLot = await StockLot.findOne({
+          holderType: transfer.toType,
+          holderId: transfer.toId,
+          productId: row.productId,
+          lotCode: generatedInLotCode,
+        });
+        if (existingLot) {
+          existingLot.quantityAvailable = Number(existingLot.quantityAvailable || 0) + acceptedQty;
+          existingLot.quantityInitial = Number(existingLot.quantityInitial || 0) + acceptedQty;
+          await existingLot.save();
+        } else {
+          await StockLot.create({
+            holderType: transfer.toType,
+            holderId: transfer.toId,
+            holderName: transfer.toName,
+            productId: row.productId,
+            productName: row.productName,
+            lotCode: generatedInLotCode,
+            quantityInitial: acceptedQty,
+            quantityAvailable: acceptedQty,
+            unitCost: Number(row.unitCost || 0),
+            sourceRefType: 'stock_transfer',
+            sourceRefId: transfer._id,
+            notes: `Received from ${transfer.fromName} via ${transfer.transferNumber}`,
+          });
+        }
+        await createStockLedgerRow({
+          movementType: 'transfer_in',
+          holderType: transfer.toType,
+          holderId: transfer.toId,
+          holderName: transfer.toName,
+          productId: row.productId,
+          productName: row.productName,
+          lotId: null,
+          lotCode: row.lotCode,
+          quantity: acceptedQty,
+          unitCost: Number(row.unitCost || 0),
+          referenceType: 'stock_transfer',
+          referenceId: transfer._id,
+          counterpartType: transfer.fromType,
+          counterpartId: transfer.fromId,
+          counterpartName: transfer.fromName,
+          remarks: `Transfer received`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || '',
+        });
+      }
+
+      // For modified transfers, sender will resolve difference in a second step.
+      const shouldAutoResolveReturned = action !== 'modified';
+      if (returnedQty > 0 && shouldAutoResolveReturned) {
+        if (returnDisposition === 'mark_wasted') {
+          if ((transfer.fromType === 'site' || transfer.fromType === 'online') && transfer.fromId) {
+            await StockWastedEntry.create({
+              siteId: transfer.fromId,
+              siteName: transfer.fromName || (transfer.fromType === 'online' ? 'online' : 'site'),
+              productId: row.productId,
+              productName: row.productName,
+              date: new Date(),
+              quantity: Number(returnedQty || 0),
+              notes: [
+                `Transfer ${transfer.transferNumber} difference marked wasted`,
+                `From: ${transfer.fromName}`,
+                `To: ${transfer.toName}`,
+                receiverRemarks ? `Comments: ${receiverRemarks}` : '',
+              ].filter(Boolean).join(' | '),
+              createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+              createdByName: req.user.name || '',
+            });
+          }
+          await createStockLedgerRow({
+            movementType: 'wastage',
+            holderType: transfer.fromType,
+            holderId: transfer.fromId,
+            holderName: transfer.fromName,
+            productId: row.productId,
+            productName: row.productName,
+            lotId: row.lotId,
+            lotCode: row.lotCode,
+            quantity: -returnedQty,
+            unitCost: Number(row.unitCost || 0),
+            referenceType: 'stock_transfer',
+            referenceId: transfer._id,
+            counterpartType: transfer.toType,
+            counterpartId: transfer.toId,
+            counterpartName: transfer.toName,
+            remarks: `Transfer diff marked wastage${receiverRemarks ? ` | ${receiverRemarks}` : ''}`,
+            createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+            createdByName: req.user.name || '',
+          });
+        } else {
+          const sourceLot = await StockLot.findById(row.lotId);
+          if (sourceLot) {
+            sourceLot.quantityAvailable = Number(sourceLot.quantityAvailable || 0) + returnedQty;
+            await sourceLot.save();
+          }
+          await createStockLedgerRow({
+            movementType: 'in',
+            holderType: transfer.fromType,
+            holderId: transfer.fromId,
+            holderName: transfer.fromName,
+            productId: row.productId,
+            productName: row.productName,
+            lotId: row.lotId,
+            lotCode: row.lotCode,
+            quantity: returnedQty,
+            unitCost: Number(row.unitCost || 0),
+            referenceType: 'stock_transfer_return',
+            referenceId: transfer._id,
+            counterpartType: transfer.toType,
+            counterpartId: transfer.toId,
+            counterpartName: transfer.toName,
+            remarks: `Transfer qty returned`,
+            createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+            createdByName: req.user.name || '',
+          });
+        }
+      }
+    }
+
+    transfer.status = action;
+    transfer.receiverRemarks = receiverRemarks;
+    if (action === 'modified' && totalReturnedQty > 0) {
+      transfer.differenceStatus = 'pending_sender';
+      transfer.differenceNotes = receiverRemarks || '';
+      transfer.differenceResolvedAt = null;
+      transfer.differenceResolvedBy = null;
+      transfer.differenceResolvedByName = '';
+    } else if (action !== 'modified') {
+      transfer.differenceStatus = 'none';
+      transfer.differenceNotes = '';
+      transfer.differenceResolvedAt = null;
+      transfer.differenceResolvedBy = null;
+      transfer.differenceResolvedByName = '';
+    }
+    transfer.responseAt = new Date();
+    transfer.respondedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    transfer.respondedByName = req.user.name || '';
+    await transfer.save();
+
+    // Notify sender-side users about the action taken by receiver.
+    try {
+      const initiatedItems = (transfer.items || [])
+        .map((i) => `${i.productName} x ${Number(i.requestedQty || 0)}`)
+        .join(', ');
+      const finalItems = (transfer.items || [])
+        .map((i) => `${i.productName} x ${Number((i.acceptedQty === undefined || i.acceptedQty === null) ? i.requestedQty : i.acceptedQty || 0)}`)
+        .join(', ');
+      const subject = `Stock Transfer ${transfer.status.toUpperCase()} - ${transfer.transferNumber}`;
+      const text = [
+        `A stock transfer has been updated by receiver.`,
+        `Transfer#: ${transfer.transferNumber}`,
+        `From: ${transfer.fromName}`,
+        `To: ${transfer.toName}`,
+        `Status: ${transfer.status}`,
+        `Initiated Items: ${initiatedItems}`,
+        `Final Items: ${finalItems}`,
+        transfer.receiverRemarks ? `Receiver Remarks: ${transfer.receiverRemarks}` : '',
+        `Action By: ${req.user.name || req.user.username || 'User'}`,
+      ].filter(Boolean).join('\n');
+      await notifyStockTransferEntity(transfer.fromType, transfer.fromId, { subject, text });
+    } catch (mailErr) {
+      logger.warn('Stock transfer response email failed', { error: mailErr?.message || String(mailErr), transferNumber: transfer.transferNumber });
+    }
+
+    return res.status(200).json({ success: true, transfer });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleResolveStockTransferDifference(req, res) {
+  try {
+    const { resolution, notes = '' } = req.body;
+    if (!['return_to_sender', 'mark_wasted'].includes(String(resolution || ''))) {
+      return res.status(400).json({ message: 'resolution must be return_to_sender or mark_wasted' });
+    }
+    const transfer = await StockTransfer.findById(req.params.id);
+    if (!transfer) return res.status(404).json({ message: 'Transfer not found' });
+    if (transfer.status !== 'modified' || transfer.differenceStatus !== 'pending_sender') {
+      return res.status(400).json({ message: 'No pending modified difference to resolve' });
+    }
+    if (!userCanAccessEntity(req, transfer.fromType, transfer.fromId)) {
+      return res.status(403).json({ message: 'No access to source holder for difference resolution' });
+    }
+
+    for (const row of transfer.items || []) {
+      const returnedQty = Number(row.returnedQty || 0);
+      if (returnedQty <= 0) continue;
+
+      if (resolution === 'mark_wasted') {
+        if ((transfer.fromType === 'site' || transfer.fromType === 'online') && transfer.fromId) {
+          await StockWastedEntry.create({
+            siteId: transfer.fromId,
+            siteName: transfer.fromName || (transfer.fromType === 'online' ? 'online' : 'site'),
+            productId: row.productId,
+            productName: row.productName,
+            date: new Date(),
+            quantity: Number(returnedQty || 0),
+            notes: [
+              `Transfer ${transfer.transferNumber} modified difference marked wasted`,
+              `From: ${transfer.fromName}`,
+              `To: ${transfer.toName}`,
+              notes ? `Comments: ${notes}` : '',
+            ].filter(Boolean).join(' | '),
+            createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+            createdByName: req.user.name || '',
+          });
+        }
+        await createStockLedgerRow({
+          movementType: 'wastage',
+          holderType: transfer.fromType,
+          holderId: transfer.fromId,
+          holderName: transfer.fromName,
+          productId: row.productId,
+          productName: row.productName,
+          lotId: row.lotId,
+          lotCode: row.lotCode,
+          quantity: -returnedQty,
+          unitCost: Number(row.unitCost || 0),
+          referenceType: 'stock_transfer',
+          referenceId: transfer._id,
+          counterpartType: transfer.toType,
+          counterpartId: transfer.toId,
+          counterpartName: transfer.toName,
+          remarks: `Sender resolved modified difference as wastage${notes ? ` | ${notes}` : ''}`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || '',
+        });
+      } else {
+        const sourceLot = await StockLot.findById(row.lotId);
+        if (sourceLot) {
+          sourceLot.quantityAvailable = Number(sourceLot.quantityAvailable || 0) + returnedQty;
+          await sourceLot.save();
+        }
+        await createStockLedgerRow({
+          movementType: 'in',
+          holderType: transfer.fromType,
+          holderId: transfer.fromId,
+          holderName: transfer.fromName,
+          productId: row.productId,
+          productName: row.productName,
+          lotId: row.lotId,
+          lotCode: row.lotCode,
+          quantity: returnedQty,
+          unitCost: Number(row.unitCost || 0),
+          referenceType: 'stock_transfer_return',
+          referenceId: transfer._id,
+          counterpartType: transfer.toType,
+          counterpartId: transfer.toId,
+          counterpartName: transfer.toName,
+          remarks: `Sender accepted back modified difference${notes ? ` | ${notes}` : ''}`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || '',
+        });
+      }
+    }
+
+    transfer.differenceStatus = resolution === 'mark_wasted' ? 'resolved_wasted' : 'resolved_returned';
+    transfer.differenceNotes = notes || '';
+    transfer.differenceResolvedAt = new Date();
+    transfer.differenceResolvedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    transfer.differenceResolvedByName = req.user.name || '';
+    await transfer.save();
+
+    // Notify receiving-side users that sender resolved modified difference.
+    try {
+      const returnedItems = (transfer.items || [])
+        .filter((i) => Number(i.returnedQty || 0) > 0)
+        .map((i) => `${i.productName} x ${Number(i.returnedQty || 0)}`)
+        .join(', ');
+      const resolutionLabel = resolution === 'mark_wasted' ? 'MARKED_WASTED' : 'ACCEPTED_BACK';
+      const subject = `Stock Transfer Difference ${resolutionLabel} - ${transfer.transferNumber}`;
+      const text = [
+        `Modified transfer difference has been resolved by sender.`,
+        `Transfer#: ${transfer.transferNumber}`,
+        `From: ${transfer.fromName}`,
+        `To: ${transfer.toName}`,
+        `Resolution: ${resolutionLabel}`,
+        `Difference Items: ${returnedItems || '-'}`,
+        notes ? `Remarks: ${notes}` : '',
+        `Resolved By: ${req.user.name || req.user.username || 'User'}`,
+      ].filter(Boolean).join('\n');
+      await notifyStockTransferEntity(transfer.toType, transfer.toId, { subject, text });
+    } catch (mailErr) {
+      logger.warn('Stock transfer difference resolution email failed', { error: mailErr?.message || String(mailErr), transferNumber: transfer.transferNumber });
+    }
+
+    return res.status(200).json({ success: true, transfer });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCancelStockTransfer(req, res) {
+  try {
+    const transfer = await StockTransfer.findById(req.params.id);
+    if (!transfer) return res.status(404).json({ message: 'Transfer not found' });
+    if (transfer.status !== 'pending') return res.status(400).json({ message: 'Only pending transfer can be cancelled' });
+
+    const isAdmin = req.user.role === 'admin';
+    const isInitiator = transfer.createdBy && String(transfer.createdBy) === String(req.user.id);
+    if (!isAdmin && !isInitiator) {
+      return res.status(403).json({ message: 'Only initiator can cancel this transfer' });
+    }
+
+    // Restore quantities to original source lots.
+    for (const row of transfer.items || []) {
+      const sourceLot = await StockLot.findById(row.lotId);
+      if (sourceLot) {
+        sourceLot.quantityAvailable = Number(sourceLot.quantityAvailable || 0) + Number(row.requestedQty || 0);
+        await sourceLot.save();
+      }
+      await createStockLedgerRow({
+        movementType: 'in',
+        holderType: transfer.fromType,
+        holderId: transfer.fromId,
+        holderName: transfer.fromName,
+        productId: row.productId,
+        productName: row.productName,
+        lotId: row.lotId,
+        lotCode: row.lotCode,
+        quantity: Number(row.requestedQty || 0),
+        unitCost: Number(row.unitCost || 0),
+        referenceType: 'stock_transfer_cancel',
+        referenceId: transfer._id,
+        counterpartType: transfer.toType,
+        counterpartId: transfer.toId,
+        counterpartName: transfer.toName,
+        remarks: 'Transfer cancelled by initiator',
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || '',
+      });
+    }
+
+    transfer.status = 'cancelled';
+    transfer.receiverRemarks = 'Cancelled by initiator';
+    transfer.responseAt = new Date();
+    transfer.respondedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    transfer.respondedByName = req.user.name || '';
+    await transfer.save();
+
+    // Notify receiving-side users that sender cancelled the transfer.
+    try {
+      const itemsText = (transfer.items || []).map((i) => `${i.productName} x ${Number(i.requestedQty || 0)}`).join(', ');
+      const subject = `Stock Transfer CANCELLED - ${transfer.transferNumber}`;
+      const text = [
+        `A stock transfer has been cancelled by sender.`,
+        `Transfer#: ${transfer.transferNumber}`,
+        `From: ${transfer.fromName}`,
+        `To: ${transfer.toName}`,
+        `Items: ${itemsText}`,
+        `Cancelled By: ${req.user.name || req.user.username || 'User'}`,
+      ].join('\n');
+      await notifyStockTransferEntity(transfer.toType, transfer.toId, { subject, text });
+    } catch (mailErr) {
+      logger.warn('Stock transfer cancel email failed', { error: mailErr?.message || String(mailErr), transferNumber: transfer.transferNumber });
+    }
+
+    return res.status(200).json({ success: true, transfer });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleAdjustHolderStock(req, res) {
+  try {
+    const {
+      holderType,
+      holderId,
+      productId,
+      lotId = null,
+      operation = 'add',
+      quantity,
+      unitCost = 0,
+      notes = '',
+    } = req.body;
+
+    const qty = Number(quantity);
+    if (!holderType || !holderId || !productId || !['add', 'remove'].includes(operation) || Number.isNaN(qty) || qty <= 0) {
+      return res.status(400).json({ message: 'holderType, holderId, productId, operation(add/remove), quantity are required' });
+    }
+
+    const holder = await resolveEntity(holderType, holderId, { allowOnlineName: true });
+    if (!holder) return res.status(404).json({ message: 'Holder not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Access denied for selected holder' });
+
+    const product = await Product.findById(productId).select('name');
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    if (operation === 'add') {
+      let targetLot = null;
+      if (lotId) {
+        targetLot = await StockLot.findById(lotId);
+        if (!targetLot) return res.status(404).json({ message: 'Lot not found' });
+        if (
+          String(targetLot.holderType) !== String(holder.type) ||
+          String(targetLot.holderId) !== String(holder.id) ||
+          String(targetLot.productId) !== String(product._id)
+        ) {
+          return res.status(400).json({ message: 'Selected lot does not belong to chosen holder/product' });
+        }
+        targetLot.quantityInitial = Number(targetLot.quantityInitial || 0) + qty;
+        targetLot.quantityAvailable = Number(targetLot.quantityAvailable || 0) + qty;
+        if (Number(unitCost || 0) > 0) targetLot.unitCost = Number(unitCost || 0);
+        await targetLot.save();
+      } else {
+        const datePart = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+        const rand = String(Math.floor(100 + Math.random() * 900));
+        const lotCode = `ADJ-${String(holder.type || 'H').toUpperCase()}-${datePart}-${rand}`;
+        targetLot = await StockLot.create({
+          holderType: holder.type,
+          holderId: holder.id,
+          holderName: holder.name,
+          productId: product._id,
+          productName: product.name,
+          lotCode,
+          quantityInitial: qty,
+          quantityAvailable: qty,
+          unitCost: Number(unitCost || 0),
+          sourceRefType: 'manual_adjustment',
+          sourceRefId: null,
+          notes: notes || 'Manual stock add',
+        });
+      }
+
+      await createStockLedgerRow({
+        movementType: 'adjustment',
+        holderType: holder.type,
+        holderId: holder.id,
+        holderName: holder.name,
+        productId: product._id,
+        productName: product.name,
+        lotId: targetLot._id,
+        lotCode: targetLot.lotCode,
+        quantity: qty,
+        unitCost: Number(unitCost || targetLot.unitCost || 0),
+        referenceType: 'manual_adjustment',
+        referenceId: targetLot._id,
+        remarks: notes || 'Manual stock add',
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || '',
+      });
+
+      return res.status(200).json({ success: true, message: 'Stock added', lot: targetLot });
+    }
+
+    // remove
+    let remaining = qty;
+    const touchedLots = [];
+    if (lotId) {
+      const sourceLot = await StockLot.findById(lotId);
+      if (!sourceLot) return res.status(404).json({ message: 'Lot not found' });
+      if (
+        String(sourceLot.holderType) !== String(holder.type) ||
+        String(sourceLot.holderId) !== String(holder.id) ||
+        String(sourceLot.productId) !== String(product._id)
+      ) {
+        return res.status(400).json({ message: 'Selected lot does not belong to chosen holder/product' });
+      }
+      if (Number(sourceLot.quantityAvailable || 0) < remaining) return res.status(400).json({ message: 'Insufficient stock in selected lot' });
+      sourceLot.quantityAvailable = Number(sourceLot.quantityAvailable || 0) - remaining;
+      await sourceLot.save();
+      touchedLots.push({ lot: sourceLot, qty: remaining });
+      remaining = 0;
+    } else {
+      const lots = await StockLot.find({
+        holderType: holder.type,
+        holderId: holder.id,
+        productId: product._id,
+        quantityAvailable: { $gt: 0 },
+      }).sort({ receivedAt: 1, createdAt: 1 });
+
+      const availableTotal = lots.reduce((sum, l) => sum + Number(l.quantityAvailable || 0), 0);
+      if (availableTotal < remaining) return res.status(400).json({ message: 'Insufficient stock across lots' });
+
+      for (const l of lots) {
+        if (remaining <= 0) break;
+        const take = Math.min(Number(l.quantityAvailable || 0), remaining);
+        if (take <= 0) continue;
+        l.quantityAvailable = Number(l.quantityAvailable || 0) - take;
+        await l.save();
+        touchedLots.push({ lot: l, qty: take });
+        remaining -= take;
+      }
+    }
+
+    for (const t of touchedLots) {
+      await createStockLedgerRow({
+        movementType: 'adjustment',
+        holderType: holder.type,
+        holderId: holder.id,
+        holderName: holder.name,
+        productId: product._id,
+        productName: product.name,
+        lotId: t.lot._id,
+        lotCode: t.lot.lotCode,
+        quantity: -Number(t.qty || 0),
+        unitCost: Number(unitCost || t.lot.unitCost || 0),
+        referenceType: 'manual_adjustment',
+        referenceId: t.lot._id,
+        remarks: notes || 'Manual stock remove',
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || '',
+      });
+    }
+
+    return res.status(200).json({ success: true, message: 'Stock removed', touchedLots: touchedLots.map((t) => ({ lotId: t.lot._id, lotCode: t.lot.lotCode, qty: t.qty })) });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetSalesDashboardSummary(req, res) {
+  try {
+    const { dateFrom, dateTo } = req.query;
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date();
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const makeRange = (from, to) => {
+      if (!from && !to) return null;
+      const range = {};
+      if (from) {
+        const s = new Date(from);
+        s.setHours(0, 0, 0, 0);
+        range.$gte = s;
+      }
+      if (to) {
+        const e = new Date(to);
+        e.setHours(23, 59, 59, 999);
+        range.$lte = e;
+      }
+      return Object.keys(range).length ? range : null;
+    };
+
+    const selectedRange = makeRange(dateFrom, dateTo);
+
+    let allowedSiteIds = null;
+    let allowOnline = true;
+    if (req.user.role !== 'admin') {
+      allowedSiteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+      const allowedSites = await Site.find({ _id: { $in: allowedSiteIds } }).select('name');
+      allowOnline = allowedSites.some((s) => String(s.name || '').trim().toLowerCase() === 'online');
+    }
+
+    const baseSiteMatch = (range) => {
+      const match = {};
+      if (range) match.date = range;
+      if (allowedSiteIds) match.siteId = { $in: allowedSiteIds };
+      return match;
+    };
+
+    const salesGroupPipeline = (range) => ([
+      { $match: baseSiteMatch(range) },
+      {
+        $group: {
+          _id: '$siteName',
+          salesAmount: {
+            $sum: {
+              $cond: [
+                { $eq: ['$entryType', 'return'] },
+                { $multiply: ['$netAmount', -1] },
+                '$netAmount',
+              ],
+            },
+          },
+          salesQty: {
+            $sum: {
+              $cond: [
+                { $eq: ['$entryType', 'return'] },
+                { $multiply: ['$quantity', -1] },
+                '$quantity',
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const expenseGroupPipeline = (range) => ([
+      { $match: baseSiteMatch(range) },
+      {
+        $group: {
+          _id: '$siteName',
+          expenseAmount: { $sum: '$amount' },
+        },
+      },
+    ]);
+
+    const [
+      salesOverall,
+      salesDaily,
+      salesRange,
+      expenseOverall,
+      expenseDaily,
+      expenseRange,
+    ] = await Promise.all([
+      SalePointEntry.aggregate(salesGroupPipeline(null)),
+      SalePointEntry.aggregate(salesGroupPipeline({ $gte: dayStart, $lte: dayEnd })),
+      selectedRange ? SalePointEntry.aggregate(salesGroupPipeline(selectedRange)) : Promise.resolve([]),
+      ExpenseEntry.aggregate(expenseGroupPipeline(null)),
+      ExpenseEntry.aggregate(expenseGroupPipeline({ $gte: dayStart, $lte: dayEnd })),
+      selectedRange ? ExpenseEntry.aggregate(expenseGroupPipeline(selectedRange)) : Promise.resolve([]),
+    ]);
+
+    const onlineOrderMatch = {
+      status: { $nin: ['rejected', 'cancelled', 'returned'] },
+    };
+    if (allowedSiteIds && !allowOnline) {
+      // non-admin user without online site access should not see online order sales
+      onlineOrderMatch._id = null;
+    }
+
+    const orderAggPipeline = (range) => {
+      const match = { ...onlineOrderMatch };
+      if (range) match.createdAt = range;
+      return [
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            salesAmount: { $sum: { $ifNull: ['$paymentDetails.payableAmount', '$totalCost'] } },
+            salesQty: {
+              $sum: {
+                $reduce: {
+                  input: { $ifNull: ['$items', []] },
+                  initialValue: 0,
+                  in: { $add: ['$$value', { $ifNull: ['$$this.quantity', 0] }] },
+                },
+              },
+            },
+          },
+        },
+      ];
+    };
+
+    const [onlineOverallAgg, onlineDailyAgg, onlineRangeAgg] = await Promise.all([
+      Order.aggregate(orderAggPipeline(null)),
+      Order.aggregate(orderAggPipeline({ $gte: dayStart, $lte: dayEnd })),
+      selectedRange ? Order.aggregate(orderAggPipeline(selectedRange)) : Promise.resolve([]),
+    ]);
+
+    const onlineOverall = onlineOverallAgg[0] || { salesAmount: 0, salesQty: 0 };
+    const onlineDaily = onlineDailyAgg[0] || { salesAmount: 0, salesQty: 0 };
+    const onlineRange = onlineRangeAgg[0] || { salesAmount: 0, salesQty: 0 };
+
+    const allSiteNames = new Set();
+    const collectSiteNames = (rows) => rows.forEach((r) => allSiteNames.add(String(r._id || '').trim()));
+    [salesOverall, salesDaily, salesRange, expenseOverall, expenseDaily, expenseRange].forEach(collectSiteNames);
+    if (allowOnline) allSiteNames.add('online');
+
+    const toMap = (rows, valueKey) => {
+      const m = new Map();
+      rows.forEach((r) => m.set(String(r._id || '').trim(), Number(r[valueKey] || 0)));
+      return m;
+    };
+    const toDualMap = (rows) => {
+      const m = new Map();
+      rows.forEach((r) => m.set(String(r._id || '').trim(), {
+        salesAmount: Number(r.salesAmount || 0),
+        salesQty: Number(r.salesQty || 0),
+      }));
+      return m;
+    };
+
+    const salesOverallMap = toDualMap(salesOverall);
+    const salesDailyMap = toDualMap(salesDaily);
+    const salesRangeMap = toDualMap(salesRange);
+    const expenseOverallMap = toMap(expenseOverall, 'expenseAmount');
+    const expenseDailyMap = toMap(expenseDaily, 'expenseAmount');
+    const expenseRangeMap = toMap(expenseRange, 'expenseAmount');
+
+    if (allowOnline) {
+      salesOverallMap.set('online', onlineOverall);
+      salesDailyMap.set('online', onlineDaily);
+      if (selectedRange) salesRangeMap.set('online', onlineRange);
+    }
+
+    const siteCards = Array.from(allSiteNames)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .map((siteName) => {
+        const ovSales = salesOverallMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
+        const dySales = salesDailyMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
+        const rgSales = salesRangeMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
+        const ovExp = Number(expenseOverallMap.get(siteName) || 0);
+        const dyExp = Number(expenseDailyMap.get(siteName) || 0);
+        const rgExp = Number(expenseRangeMap.get(siteName) || 0);
+        return {
+          siteName,
+          overall: {
+            salesAmount: ovSales.salesAmount,
+            expenseAmount: ovExp,
+            netProfit: ovSales.salesAmount - ovExp,
+            quantity: ovSales.salesQty,
+          },
+          daily: {
+            salesAmount: dySales.salesAmount,
+            expenseAmount: dyExp,
+            netProfit: dySales.salesAmount - dyExp,
+            quantity: dySales.salesQty,
+          },
+          range: {
+            salesAmount: rgSales.salesAmount,
+            expenseAmount: rgExp,
+            netProfit: rgSales.salesAmount - rgExp,
+            quantity: rgSales.salesQty,
+          },
+        };
+      });
+
+    const sumField = (list, pathFn) => list.reduce((acc, item) => acc + Number(pathFn(item) || 0), 0);
+    const totals = {
+      overall: {
+        salesAmount: sumField(siteCards, (c) => c.overall.salesAmount),
+        expenseAmount: sumField(siteCards, (c) => c.overall.expenseAmount),
+        netProfit: sumField(siteCards, (c) => c.overall.netProfit),
+        quantity: sumField(siteCards, (c) => c.overall.quantity),
+      },
+      daily: {
+        salesAmount: sumField(siteCards, (c) => c.daily.salesAmount),
+        expenseAmount: sumField(siteCards, (c) => c.daily.expenseAmount),
+        netProfit: sumField(siteCards, (c) => c.daily.netProfit),
+        quantity: sumField(siteCards, (c) => c.daily.quantity),
+      },
+      range: {
+        salesAmount: sumField(siteCards, (c) => c.range.salesAmount),
+        expenseAmount: sumField(siteCards, (c) => c.range.expenseAmount),
+        netProfit: sumField(siteCards, (c) => c.range.netProfit),
+        quantity: sumField(siteCards, (c) => c.range.quantity),
+      },
+    };
+
+    return res.status(200).json({
+      selectedRange: selectedRange ? {
+        from: dateFrom || null,
+        to: dateTo || null,
+      } : null,
+      totals,
+      siteCards,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateStockWastedEntry(req, res) {
   try {
     const { siteId, productId, quantity, notes = '', date } = req.body;
@@ -1148,15 +2668,15 @@ async function handleCreateStockWastedEntry(req, res) {
     if (!site) return res.status(404).json({ message: 'Site not found' });
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    if (String(product.availableSiteId || '') !== String(siteId)) {
+    if (!productHasSiteAssignment(product, siteId, site.name)) {
       return res.status(400).json({ message: 'Selected product does not belong to this site' });
     }
-    if (Number(product.quantity || 0) < qty) {
+    const availableQty = await getSiteProductAvailableQty(siteId, product._id);
+    if (availableQty < qty) {
       return res.status(400).json({ message: 'Insufficient stock available' });
     }
 
-    product.quantity = Number(product.quantity || 0) - qty;
-    await product.save();
+    await consumeSiteProductLots(siteId, product._id, qty);
 
     const entry = await StockWastedEntry.create({
       siteId: site._id,
@@ -1170,7 +2690,7 @@ async function handleCreateStockWastedEntry(req, res) {
       createdByName: req.user.name || req.user.username || '',
     });
 
-    return res.status(201).json({ success: true, entry, remainingStock: product.quantity });
+    return res.status(201).json({ success: true, entry, remainingStock: Math.max(0, availableQty - qty) });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1484,6 +3004,8 @@ async function handleGetUsers(req, res) {
       .find({})
       .select('-password')
       .populate('siteAccess', 'name city isActive')
+      .populate('warehouseAccess', 'name code city isActive')
+      .populate('wholesellerAccess', 'name code city isActive')
       .populate('farmBlockAccess', 'name code acreage isActive')
       .sort({ createdAt: -1 });
     return res.status(200).json(users);
@@ -1505,6 +3027,8 @@ async function handleCreateUser(req, res) {
       confirmPassword,
       role = 'user',
       siteAccess = [],
+      warehouseAccess = [],
+      wholesellerAccess = [],
       farmBlockAccess = [],
       isFarmUser = false,
       isSalesUser = true,
@@ -1535,6 +3059,8 @@ async function handleCreateUser(req, res) {
       password,
       role,
       siteAccess,
+      warehouseAccess,
+      wholesellerAccess,
       farmBlockAccess,
       isFarmUser: Boolean(isFarmUser),
       isSalesUser: Boolean(isSalesUser),
@@ -1559,6 +3085,8 @@ async function handleUpdateUser(req, res) {
       email,
       role,
       siteAccess,
+      warehouseAccess,
+      wholesellerAccess,
       farmBlockAccess,
       isFarmUser,
       isSalesUser,
@@ -1586,6 +3114,8 @@ async function handleUpdateUser(req, res) {
     }
     user.role = role ?? user.role;
     user.siteAccess = Array.isArray(siteAccess) ? siteAccess : user.siteAccess;
+    user.warehouseAccess = Array.isArray(warehouseAccess) ? warehouseAccess : user.warehouseAccess;
+    user.wholesellerAccess = Array.isArray(wholesellerAccess) ? wholesellerAccess : user.wholesellerAccess;
     user.farmBlockAccess = Array.isArray(farmBlockAccess) ? farmBlockAccess : user.farmBlockAccess;
     if (typeof isFarmUser === 'boolean') user.isFarmUser = isFarmUser;
     if (typeof isSalesUser === 'boolean') user.isSalesUser = isSalesUser;
@@ -1624,32 +3154,7 @@ async function handleDeleteUser(req, res) {
 
 async function handleAdjustStock(req, res) {
   try {
-    const { productId, quantityChange } = req.body;
-    const delta = Number(quantityChange);
-    if (!productId || Number.isNaN(delta) || delta === 0) {
-      return res.status(400).json({ message: 'Invalid stock adjustment request' });
-    }
-    const product = await Product.findById(productId);
-    if (!product) return res.status(404).json({ message: 'Product not found' });
-    const quantityBefore = Number(product.quantity || 0);
-    const nextQuantity = quantityBefore + delta;
-    if (nextQuantity < 0) return res.status(400).json({ message: 'Stock cannot go below zero' });
-    product.quantity = nextQuantity;
-    await product.save();
-    const site = product.availableSiteId ? await Site.findById(product.availableSiteId) : null;
-    await StockAdjustment.create({
-      siteId: site?._id || product.availableSiteId,
-      siteName: site?.name || product.availableSiteName || 'Unknown',
-      productId: product._id,
-      productName: product.name,
-      adjustmentType: delta > 0 ? 'add' : 'remove',
-      quantityChange: delta,
-      quantityBefore,
-      quantityAfter: nextQuantity,
-      updatedBy: req.user.id === 'super-admin' ? null : req.user.id,
-      updatedByName: req.user.name || req.user.username || 'Unknown',
-    });
-    return res.status(200).json({ success: true, product });
+    return res.status(410).json({ message: 'Legacy global stock adjustment is disabled. Use holder/lot-based adjustment.' });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1663,6 +3168,27 @@ async function handleStockAdjustments(req, res) {
       query = { siteId: { $in: allowed } };
     }
     const rows = await StockAdjustment.find(query).sort({ createdAt: -1 }).limit(500);
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleStockLedger(req, res) {
+  try {
+    let query = {};
+    if (req.user.role !== 'admin') {
+      const siteIds = Array.from(new Set((req.user.siteAccess || []).map(String)));
+      const warehouseIds = Array.from(new Set((req.user.warehouseAccess || []).map(String)));
+      const wholesellerIds = Array.from(new Set((req.user.wholesellerAccess || []).map(String)));
+      query.$or = [
+        { holderType: 'site', holderId: { $in: siteIds } },
+        { holderType: 'online', holderId: { $in: siteIds } },
+        { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+        { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
+      ];
+    }
+    const rows = await StockLedger.find(query).sort({ createdAt: -1 }).limit(500);
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -1883,11 +3409,411 @@ async function handleGetOrders(req, res) {
   }
 }
 
+async function handleCreateOrderStockRequest(req, res) {
+  try {
+    const siteId = req.body?.siteId || req.body?.sourceSiteId || '';
+    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status !== 'pending_confirmation') return res.status(400).json({ message: 'Only pending orders can request stock' });
+    if (order.stockRequest?.status === 'pending') return res.status(400).json({ message: 'Stock request already pending' });
+    const site = await Site.findById(siteId);
+    if (!site) return res.status(404).json({ message: 'Source site not found' });
+
+    const items = (order.items || []).map((it) => ({
+      productId: it.productId || null,
+      productName: it.name,
+      quantity: Number(it.quantity || 0),
+    })).filter((x) => x.quantity > 0);
+
+    const request = await OrderStockRequest.create({
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      sourceSiteId: site._id,
+      sourceSiteName: site.name,
+      status: 'pending',
+      items,
+      requestedBy: req.user.id === 'super-admin' ? null : req.user.id,
+      requestedByName: req.user.name || req.user.username || '',
+    });
+
+    order.stockRequest = {
+      requestId: request._id,
+      status: 'pending',
+      sourceSiteId: site._id,
+      sourceSiteName: site.name,
+      requestedAt: new Date(),
+      requestedByName: req.user.name || req.user.username || '',
+      respondedAt: null,
+      respondedByName: '',
+    };
+    await order.save();
+
+    const stockTransferLink = `${process.env.CLIENT_ORIGIN || 'http://localhost:5173'}/stock-transfer`;
+    const subject = `Stock Request - Order ${order.orderNumber}`;
+    const text = `A stock request is awaiting your action for Order ${order.orderNumber}.\nSource Site: ${site.name}\nOpen after login: ${stockTransferLink}`;
+    const html = `<p>A stock request is awaiting your action for Order <strong>${order.orderNumber}</strong>.</p><p>Source Site: <strong>${site.name}</strong></p><p><a href="${stockTransferLink}">Open Stock Transfer Page</a></p>`;
+    await sendOrderStockRequestEmailsForSite(site._id, subject, text, html);
+
+    return res.status(201).json({ success: true, request, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCancelOrderStockRequest(req, res) {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.stockRequest?.status !== 'pending' || !order.stockRequest?.requestId) {
+      return res.status(400).json({ message: 'No pending stock request to cancel' });
+    }
+    const request = await OrderStockRequest.findById(order.stockRequest.requestId);
+    if (request && request.status === 'pending') {
+      request.status = 'cancelled';
+      request.respondedAt = new Date();
+      request.respondedBy = req.user.id === 'super-admin' ? null : req.user.id;
+      request.respondedByName = req.user.name || req.user.username || '';
+      await request.save();
+    }
+    order.stockRequest.status = 'cancelled';
+    order.stockRequest.respondedAt = new Date();
+    order.stockRequest.respondedByName = req.user.name || req.user.username || '';
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetPendingOrderStockRequests(req, res) {
+  try {
+    let rows = await OrderStockRequest.find({ status: 'pending' }).sort({ createdAt: -1 }).limit(500);
+    if (req.user.role !== 'admin') {
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      rows = rows.filter((r) => siteSet.has(String(r.sourceSiteId)));
+    }
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleRespondOrderStockRequest(req, res) {
+  try {
+    const { action, lotSelections = [] } = req.body;
+    if (!['accepted', 'rejected'].includes(String(action || ''))) {
+      return res.status(400).json({ message: 'Invalid action' });
+    }
+    const request = await OrderStockRequest.findById(req.params.id);
+    if (!request) return res.status(404).json({ message: 'Stock request not found' });
+    if (request.status !== 'pending') return res.status(400).json({ message: 'Stock request already processed' });
+    if (!userCanAccessEntity(req, 'site', request.sourceSiteId)) return res.status(403).json({ message: 'No access to source site' });
+    const order = await Order.findById(request.orderId);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    if (action === 'accepted') {
+      const online = await ensureOnlineSite();
+      const consumedAll = [];
+      const hasManualLotSelections = Array.isArray(lotSelections) && lotSelections.length > 0;
+      if (hasManualLotSelections) {
+        const normalizedSelections = lotSelections.map((s) => ({
+          itemIndex: Number(s?.itemIndex),
+          allocations: Array.isArray(s?.allocations) ? s.allocations.map((a) => ({
+            lotId: String(a?.lotId || ''),
+            quantity: Number(a?.quantity || 0),
+          })) : [],
+        }));
+        for (let idx = 0; idx < (request.items || []).length; idx += 1) {
+          const it = request.items[idx];
+          const neededQty = Number(it.quantity || 0);
+          const sel = normalizedSelections.find((x) => x.itemIndex === idx);
+          if (!sel || !Array.isArray(sel.allocations) || sel.allocations.length === 0) {
+            return res.status(400).json({ message: `Select lot quantities for ${it.productName}` });
+          }
+          const totalSelectedQty = sel.allocations.reduce((sum, a) => sum + Number(a.quantity || 0), 0);
+          if (Number(totalSelectedQty) !== Number(neededQty)) {
+            return res.status(400).json({ message: `Selected lot quantities for ${it.productName} must equal requested quantity (${neededQty})` });
+          }
+          const lotUsageMap = new Map();
+          for (const alloc of sel.allocations) {
+            const allocQty = Number(alloc.quantity || 0);
+            if (!alloc.lotId || allocQty <= 0 || !Number.isInteger(allocQty)) {
+              return res.status(400).json({ message: `Invalid lot allocation for ${it.productName}` });
+            }
+            lotUsageMap.set(
+              alloc.lotId,
+              Number(lotUsageMap.get(alloc.lotId) || 0) + allocQty
+            );
+          }
+          for (const [lotId, qtyToTake] of lotUsageMap.entries()) {
+            const lot = await StockLot.findById(lotId);
+            if (!lot) return res.status(404).json({ message: `Selected lot not found for ${it.productName}` });
+            if (String(lot.holderType) !== 'site' || String(lot.holderId) !== String(request.sourceSiteId)) {
+              return res.status(400).json({ message: `Selected lot does not belong to ${request.sourceSiteName}` });
+            }
+            if (String(lot.productName || '').trim().toLowerCase() !== String(it.productName || '').trim().toLowerCase()) {
+              return res.status(400).json({ message: `Selected lot product mismatch for ${it.productName}` });
+            }
+            if (Number(lot.quantityAvailable || 0) < Number(qtyToTake)) {
+              return res.status(400).json({ message: `Selected lot has insufficient quantity for ${it.productName}` });
+            }
+            lot.quantityAvailable = Number(lot.quantityAvailable || 0) - Number(qtyToTake);
+            await lot.save();
+            consumedAll.push({
+              lotId: lot._id,
+              lotCode: lot.lotCode,
+              productId: lot.productId || it.productId || null,
+              productName: lot.productName || it.productName,
+              qty: Number(qtyToTake),
+              unitCost: Number(lot.unitCost || 0),
+            });
+          }
+        }
+      } else {
+        for (const it of request.items || []) {
+          const consumed = await consumeSiteProductLotsByName(request.sourceSiteId, it.productName, Number(it.quantity || 0));
+          if (!consumed.ok) {
+            for (const c of consumedAll) {
+              const lot = await StockLot.findById(c.lotId);
+              if (lot) {
+                lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
+                await lot.save();
+              }
+            }
+            return res.status(400).json({ message: `Insufficient stock for ${it.productName} at ${request.sourceSiteName}` });
+          }
+          consumedAll.push(...consumed.touched);
+        }
+      }
+
+      for (const c of consumedAll) {
+        await createStockLedgerRow({
+          movementType: 'transfer_out',
+          holderType: 'site',
+          holderId: request.sourceSiteId,
+          holderName: request.sourceSiteName,
+          productId: c.productId || null,
+          productName: c.productName,
+          lotId: c.lotId,
+          lotCode: c.lotCode,
+          quantity: -Number(c.qty || 0),
+          unitCost: Number(c.unitCost || 0),
+          referenceType: 'order_stock_request',
+          referenceId: request._id,
+          counterpartType: 'online',
+          counterpartId: online._id,
+          counterpartName: 'online',
+          remarks: `Order stock request accepted ${order.orderNumber}`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || '',
+        });
+
+        const generatedInLotCode = await makeSimpleLotCode(c.productName, Number(c.qty || 0));
+        const existingLot = await StockLot.findOne({ holderType: 'online', holderId: online._id, lotCode: generatedInLotCode, productName: c.productName });
+        if (existingLot) {
+          existingLot.quantityInitial = Number(existingLot.quantityInitial || 0) + Number(c.qty || 0);
+          existingLot.quantityAvailable = Number(existingLot.quantityAvailable || 0) + Number(c.qty || 0);
+          await existingLot.save();
+        } else {
+          await StockLot.create({
+            holderType: 'online',
+            holderId: online._id,
+            holderName: 'online',
+            productId: c.productId || null,
+            productName: c.productName,
+            lotCode: generatedInLotCode,
+            quantityInitial: Number(c.qty || 0),
+            quantityAvailable: Number(c.qty || 0),
+            unitCost: Number(c.unitCost || 0),
+            sourceRefType: 'order_stock_request',
+            sourceRefId: request._id,
+            notes: `Online stock received for order ${order.orderNumber}`,
+          });
+        }
+      }
+
+      // Also write a stock-transfer transaction record so this flow is visible
+      // in the main Stock Transfer history table.
+      await StockTransfer.create({
+        transferNumber: makeTransferNumber(),
+        fromType: 'site',
+        fromId: request.sourceSiteId,
+        fromName: request.sourceSiteName || 'Site',
+        toType: 'online',
+        toId: online._id,
+        toName: 'online',
+        status: 'accepted',
+        items: consumedAll.map((c) => ({
+          productId: c.productId || null,
+          productName: c.productName || '',
+          lotId: c.lotId,
+          lotCode: c.lotCode,
+          requestedQty: Number(c.qty || 0),
+          acceptedQty: Number(c.qty || 0),
+          returnedQty: 0,
+          unitCost: Number(c.unitCost || 0),
+          notes: `Online order stock request ${order.orderNumber}`,
+        })),
+        senderRemarks: `Auto-created from order stock request ${order.orderNumber}`,
+        receiverRemarks: `Accepted for online order ${order.orderNumber}`,
+        responseAt: new Date(),
+        createdBy: request.requestedBy || null,
+        createdByName: request.requestedByName || '',
+        respondedBy: req.user.id === 'super-admin' ? null : req.user.id,
+        respondedByName: req.user.name || req.user.username || '',
+      });
+
+      order.stockReservation = {
+        isReserved: true,
+        reservedSiteId: request.sourceSiteId,
+        reservedSiteName: request.sourceSiteName,
+        reservedAt: new Date(),
+        reservedByName: req.user.name || req.user.username || '',
+        items: (request.items || []).map((i) => ({
+          productId: i.productId || null,
+          productName: i.productName || '',
+          requestedQty: Number(i.quantity || 0),
+          reservedQty: Number(i.quantity || 0),
+        })),
+      };
+      order.stockRequest = {
+        ...(order.stockRequest || {}),
+        status: 'accepted',
+        respondedAt: new Date(),
+        respondedByName: req.user.name || req.user.username || '',
+      };
+      await order.save();
+    } else {
+      order.stockRequest = {
+        ...(order.stockRequest || {}),
+        status: 'rejected',
+        respondedAt: new Date(),
+        respondedByName: req.user.name || req.user.username || '',
+      };
+      await order.save();
+    }
+
+    request.status = action;
+    request.respondedAt = new Date();
+    request.respondedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    request.respondedByName = req.user.name || req.user.username || '';
+    await request.save();
+
+    const toEmail = order.customer?.email;
+    const subject = `Order ${order.orderNumber} Stock Request ${action === 'accepted' ? 'Accepted' : 'Rejected'}`;
+    const text = action === 'accepted'
+      ? `Stock request for order ${order.orderNumber} has been accepted by ${request.sourceSiteName}. You may now confirm the order.`
+      : `Stock request for order ${order.orderNumber} has been rejected by ${request.sourceSiteName}. You can cancel or request from another store.`;
+    await sendOrderAlertEmails(subject, text, toEmail);
+
+    return res.status(200).json({ success: true, request, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetOrderStockOptions(req, res) {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const sites = await Site.find({ isActive: true }).sort({ name: 1 });
+    const rows = await Promise.all(sites.map(async (s) => {
+      const items = await Promise.all((order.items || []).map(async (it) => {
+        const availableQty = await getSiteProductAvailableQtyByName(s._id, it.name);
+        return {
+          productName: it.name,
+          requiredQty: Number(it.quantity || 0),
+          availableQty,
+          isEnough: availableQty >= Number(it.quantity || 0),
+        };
+      }));
+      const canFulfill = items.every((i) => i.isEnough);
+      return { siteId: s._id, siteName: s.name, canFulfill, items };
+    }));
+    return res.status(200).json({ orderId: order._id, options: rows });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleReserveOrderStock(req, res) {
+  try {
+    const { siteId } = req.body;
+    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status !== 'pending_confirmation') return res.status(400).json({ message: 'Only pending orders can be reserved' });
+    if (order.stockReservation?.isReserved) return res.status(400).json({ message: 'Order stock already reserved' });
+    const site = await Site.findById(siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    const consumedAll = [];
+    for (const it of (order.items || [])) {
+      const needed = Number(it.quantity || 0);
+      const consumed = await consumeSiteProductLotsByName(site._id, it.name, needed);
+      if (!consumed.ok) {
+        // rollback previous consumptions by recreating available qty
+        for (const c of consumedAll) {
+          const lot = await StockLot.findById(c.lotId);
+          if (lot) {
+            lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
+            await lot.save();
+          }
+        }
+        return res.status(400).json({ message: `Insufficient stock for ${it.name} at ${site.name}` });
+      }
+      consumedAll.push(...consumed.touched);
+    }
+
+    for (const c of consumedAll) {
+      await createStockLedgerRow({
+        movementType: 'out',
+        holderType: 'site',
+        holderId: site._id,
+        holderName: site.name,
+        productId: c.productId || null,
+        productName: c.productName,
+        lotId: c.lotId,
+        lotCode: c.lotCode,
+        quantity: -Number(c.qty || 0),
+        unitCost: Number(c.unitCost || 0),
+        referenceType: 'online_order_reserve',
+        referenceId: order._id,
+        remarks: `Reserved for order ${order.orderNumber}`,
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || req.user.username || '',
+      });
+    }
+
+    order.stockReservation = {
+      isReserved: true,
+      reservedSiteId: site._id,
+      reservedSiteName: site.name,
+      reservedAt: new Date(),
+      reservedByName: req.user.name || req.user.username || '',
+      items: (order.items || []).map((i) => ({
+        productId: i.productId || null,
+        productName: i.name || '',
+        requestedQty: Number(i.quantity || 0),
+        reservedQty: Number(i.quantity || 0),
+      })),
+    };
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleConfirmOrder(req, res) {
   try {
     const { id } = req.params;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (!order?.stockReservation?.isReserved) {
+      return res.status(400).json({ message: 'Reserve stock first before confirmation' });
+    }
     order.status = 'confirmed';
     order.statusTimeline = {
       ...(order.statusTimeline || {}),
@@ -1916,6 +3842,19 @@ async function handleRejectOrder(req, res) {
       placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
       cancelledAt: new Date(),
     };
+    if (order?.stockReservation?.isReserved && order?.stockReservation?.reservedSiteId) {
+      for (const it of (order.stockReservation.items || [])) {
+        const product = await Product.findById(it.productId).select('name');
+        await addSiteProductReturnLot(
+          order.stockReservation.reservedSiteId,
+          order.stockReservation.reservedSiteName || 'Site',
+          { _id: it.productId, name: product?.name || it.productName || 'Product' },
+          Number(it.reservedQty || 0),
+          0
+        );
+      }
+      order.stockReservation.isReserved = false;
+    }
     await order.save();
     await sendOrderAlertEmails(
       `Order Cancelled - ${order.orderNumber}`,
@@ -1931,10 +3870,14 @@ async function handleRejectOrder(req, res) {
 async function handleModifyOrder(req, res) {
   try {
     const { id } = req.params;
-    const { items = [], discountAmount = 0, paymentMethodId } = req.body;
+    const { items = [], discountAmount = 0, paymentMethodId, fulfilmentSiteId } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Items are required' });
+    if (!fulfilmentSiteId) return res.status(400).json({ message: 'fulfilmentSiteId is required' });
+
+    const fulfilmentSite = await Site.findById(fulfilmentSiteId).select('name');
+    if (!fulfilmentSite) return res.status(404).json({ message: 'Fulfilment site not found' });
 
     const normalizedItems = [];
     for (const it of items) {
@@ -1949,16 +3892,21 @@ async function handleModifyOrder(req, res) {
         return res.status(400).json({ message: `Product not found for item: ${it?.name || pid}` });
       }
 
-      if (qty > Number(product.quantity || 0)) {
+      if (!productHasSiteAssignment(product, fulfilmentSite._id, fulfilmentSite.name)) {
+        return res.status(400).json({ message: `${product.name} is not assigned to ${fulfilmentSite.name}` });
+      }
+
+      const availableQty = await getSiteProductAvailableQtyByName(fulfilmentSite._id, product.name);
+      if (qty > Number(availableQty || 0)) {
         return res.status(400).json({
-          message: `Insufficient stock for ${product.name}. Available: ${Number(product.quantity || 0)}`,
+          message: `Insufficient stock for ${product.name} at ${fulfilmentSite.name}. Available: ${Number(availableQty || 0)}`,
         });
       }
 
       normalizedItems.push({
         productId: product._id,
         name: product.name,
-        price: Number(product.price || 0),
+        price: Number(getProductSitePrice(product, fulfilmentSite._id, product.price) || 0),
         quantity: qty,
       });
     }
@@ -2021,6 +3969,67 @@ async function handleModifyOrder(req, res) {
   }
 }
 
+async function handlePreviewFulfilmentSites(req, res) {
+  try {
+    const { items = [] } = req.body;
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Items are required' });
+    const normalizedItems = [];
+    for (const it of items) {
+      const productId = it?.productId;
+      const qty = Number(it?.quantity || 0);
+      if (!productId || qty < 1) return res.status(400).json({ message: 'Each item requires product and quantity' });
+      const product = await Product.findById(productId).select('name');
+      if (!product) return res.status(400).json({ message: `Product not found for item ${productId}` });
+      normalizedItems.push({ productId: product._id, productName: product.name, quantity: qty });
+    }
+
+    const sites = await Site.find({ isActive: true }).sort({ name: 1 }).select('name');
+    const rows = await Promise.all(sites.map(async (s) => {
+      const details = await Promise.all(normalizedItems.map(async (it) => {
+        const availableQty = await getSiteProductAvailableQtyByName(s._id, it.productName);
+        return {
+          productName: it.productName,
+          requiredQty: it.quantity,
+          availableQty,
+          isEnough: availableQty >= it.quantity,
+        };
+      }));
+      const canFulfill = details.every((d) => d.isEnough);
+      return { siteId: s._id, siteName: s.name, canFulfill, items: details };
+    }));
+    return res.status(200).json({ options: rows });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFulfilmentSiteProducts(req, res) {
+  try {
+    const { siteId } = req.query;
+    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
+    const site = await Site.findById(siteId).select('name');
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    const products = await Product.find({ isActive: true }).select('name price quantity locationPrices');
+    const mapped = await Promise.all(
+      products
+        .filter((p) => productHasSiteAssignment(p, site._id, site.name))
+        .map(async (p) => {
+          const availableQty = await getSiteProductAvailableQtyByName(site._id, p.name);
+          return {
+            _id: p._id,
+            name: p.name,
+            price: getProductSitePrice(p, site._id, p.price),
+            availableQty,
+          };
+        })
+    );
+    return res.status(200).json(mapped.filter((p) => Number(p.availableQty || 0) > 0));
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleDispatchOrder(req, res) {
   try {
     const { id } = req.params;
@@ -2057,6 +4066,31 @@ async function handleDispatchOrder(req, res) {
   }
 }
 
+async function handleAssignCourier(req, res) {
+  try {
+    const { id } = req.params;
+    const { courierId, trackingNumber = '', paymentMode = 'cod' } = req.body;
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const courier = await Courier.findById(courierId);
+    if (!courier) return res.status(404).json({ message: 'Courier not found' });
+
+    order.paymentMode = paymentMode;
+    order.courier = {
+      courierId: courier._id,
+      courierName: courier.name,
+      trackingNumber,
+      courierHelpline: courier.contactNumber || '',
+      jmmContactPersonName: courier.jmmContactPersonName || '',
+      jmmContactNumber: courier.jmmContactNumber || '',
+    };
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCancelOrder(req, res) {
   try {
     const { id } = req.params;
@@ -2070,6 +4104,19 @@ async function handleCancelOrder(req, res) {
       placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
       cancelledAt: new Date(),
     };
+    if (order?.stockReservation?.isReserved && order?.stockReservation?.reservedSiteId) {
+      for (const it of (order.stockReservation.items || [])) {
+        const product = await Product.findById(it.productId).select('name');
+        await addSiteProductReturnLot(
+          order.stockReservation.reservedSiteId,
+          order.stockReservation.reservedSiteName || 'Site',
+          { _id: it.productId, name: product?.name || it.productName || 'Product' },
+          Number(it.reservedQty || 0),
+          0
+        );
+      }
+      order.stockReservation.isReserved = false;
+    }
     await order.save();
     await sendOrderAlertEmails(`Order Cancelled - ${order.orderNumber}`, `Order ${order.orderNumber} was cancelled. Reason: ${reason}`, order.customer?.email);
     return res.status(200).json({ success: true, order });
@@ -2160,6 +4207,186 @@ async function handleReturnOrder(req, res) {
     await order.save();
     await sendOrderAlertEmails(`Order Returned - ${order.orderNumber}`, `Order ${order.orderNumber} was marked returned. Reason: ${reason}`, order.customer?.email);
     return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleResolveReturnedAsWasted(req, res) {
+  try {
+    const { id } = req.params;
+    const { reason = 'Marked wasted after return' } = req.body;
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status !== 'returned') return res.status(400).json({ message: 'Only returned orders can be marked wasted' });
+
+    const onlineSite = await ensureOnlineSite();
+    for (const it of (order.items || [])) {
+      await StockWastedEntry.create({
+        siteId: onlineSite._id,
+        siteName: 'online',
+        productId: it.productId,
+        productName: it.name || 'Product',
+        date: new Date(),
+        quantity: Number(it.quantity || 0),
+        notes: `Returned order wasted (${order.orderNumber})${reason ? ` - ${reason}` : ''}`,
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || req.user.username || '',
+      });
+    }
+
+    order.adminRemarks = `${order.adminRemarks || ''}\n[Return Resolution: WASTED] ${reason}`.trim();
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleResolveReturnedToStore(req, res) {
+  try {
+    const { id } = req.params;
+    const { siteId } = req.body;
+    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status !== 'returned') return res.status(400).json({ message: 'Only returned orders can be returned to store' });
+    const site = await Site.findById(siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    const online = await ensureOnlineSite();
+    const transferItems = [];
+    for (const it of (order.items || [])) {
+      const lot = await addSiteProductReturnLot(
+        site._id,
+        site.name,
+        { _id: it.productId, name: it.name },
+        Number(it.quantity || 0),
+        Number(it.price || 0)
+      );
+      transferItems.push({
+        productId: it.productId || lot.productId || null,
+        productName: it.name || lot.productName || 'Product',
+        lotId: lot._id,
+        lotCode: lot.lotCode,
+        requestedQty: Number(it.quantity || 0),
+        acceptedQty: Number(it.quantity || 0),
+        returnedQty: 0,
+        unitCost: Number(it.price || 0),
+        notes: `Returned order ${order.orderNumber} restored to ${site.name}`,
+      });
+    }
+
+    const transfer = await StockTransfer.create({
+      transferNumber: makeTransferNumber(),
+      fromType: 'online',
+      fromId: online._id,
+      fromName: `Returned Order ${order.orderNumber}`,
+      toType: 'site',
+      toId: site._id,
+      toName: site.name,
+      status: 'accepted',
+      items: transferItems,
+      senderRemarks: `Order return moved to store (${order.orderNumber})`,
+      receiverRemarks: `Accepted return at ${site.name}`,
+      responseAt: new Date(),
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: req.user.name || req.user.username || '',
+      respondedBy: req.user.id === 'super-admin' ? null : req.user.id,
+      respondedByName: req.user.name || req.user.username || '',
+    });
+
+    for (const row of transferItems) {
+      await createStockLedgerRow({
+        movementType: 'transfer_in',
+        holderType: 'site',
+        holderId: site._id,
+        holderName: site.name,
+        productId: row.productId,
+        productName: row.productName,
+        lotId: row.lotId,
+        lotCode: row.lotCode,
+        quantity: Number(row.acceptedQty || 0),
+        unitCost: Number(row.unitCost || 0),
+        referenceType: 'stock_transfer',
+        referenceId: transfer._id,
+        counterpartType: 'online',
+        counterpartId: online._id,
+        counterpartName: `Returned Order ${order.orderNumber}`,
+        remarks: `Returned order restored to store`,
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || req.user.username || '',
+      });
+    }
+    order.adminRemarks = `${order.adminRemarks || ''}\n[Return Resolution: RETURNED TO STORE] ${site.name}`.trim();
+    await order.save();
+    return res.status(200).json({ success: true, order, transfer });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleRedirectReturnedOrder(req, res) {
+  try {
+    const { id } = req.params;
+    const {
+      customer = {},
+      courierId,
+      trackingNumber = '',
+      paymentMode = 'prepaid',
+      paymentMethodName = '',
+      remarks = '',
+    } = req.body;
+    const oldOrder = await Order.findById(id);
+    if (!oldOrder) return res.status(404).json({ message: 'Order not found' });
+    if (oldOrder.status !== 'returned') return res.status(400).json({ message: 'Only returned orders can be redirected' });
+    const courier = await Courier.findById(courierId);
+    if (!courier) return res.status(404).json({ message: 'Courier not found' });
+
+    const redirected = await Order.create({
+      orderNumber: await getNextOrderNumber(),
+      customer: {
+        name: customer.name || '',
+        email: customer.email || '',
+        address: customer.address || '',
+        city: customer.city || '',
+        otherCity: customer.otherCity || '',
+        postalCode: customer.postalCode || '',
+        mobile: customer.mobile || '',
+      },
+      items: oldOrder.items || [],
+      subtotal: Number(oldOrder.subtotal || 0),
+      shippingRate: Number(oldOrder.shippingRate || 0),
+      shippingCost: Number(oldOrder.shippingCost || 0),
+      totalCost: Number(oldOrder.totalCost || 0),
+      discountAmount: Number(oldOrder.discountAmount || 0),
+      finalAmount: Number(oldOrder.finalAmount || oldOrder.totalCost || 0),
+      paymentMode,
+      paymentDetails: {
+        ...(oldOrder.paymentDetails || {}),
+        methodName: paymentMethodName || oldOrder?.paymentDetails?.methodName || '',
+      },
+      status: 'dispatched',
+      statusTimeline: { placedAt: new Date(), confirmedAt: new Date(), dispatchedAt: new Date() },
+      courier: {
+        courierId: courier._id,
+        courierName: courier.name,
+        trackingNumber,
+        courierHelpline: courier.contactNumber || '',
+        jmmContactPersonName: courier.jmmContactPersonName || '',
+        jmmContactNumber: courier.jmmContactNumber || '',
+      },
+      adminRemarks: `Redirected from returned order ${oldOrder.orderNumber}${remarks ? ` | Remarks: ${remarks}` : ''}`,
+    });
+    oldOrder.adminRemarks = `${oldOrder.adminRemarks || ''}\n[Return Resolution: REDIRECTED] ${redirected.orderNumber}`.trim();
+    await oldOrder.save();
+
+    await sendOrderAlertEmails(
+      `Order Confirmed & Dispatched - ${redirected.orderNumber}`,
+      `Your order ${redirected.orderNumber} is confirmed and dispatched.\nTracking: ${trackingNumber}\nCourier: ${courier.name}`,
+      redirected.customer?.email
+    );
+    return res.status(201).json({ success: true, redirectedOrder: redirected });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -3776,13 +6003,32 @@ module.exports = {
     handleUpdateUser,
     handleDeleteUser,
     handleStockSummary,
+    handleStockStatusAll,
     handleGetStockProducts,
+    handleGetStockHolders,
+    handleGetStockTransferHolders,
     handleGetAssignedSites,
     handleGetSiteStock,
     handleCreateSalePointEntry,
     handleCreateSaleCheckout,
     handleCreateSaleReturn,
     handleGetSalePointEntries,
+    handleGetSalesDashboardSummary,
+    handleGetWarehouses,
+    handleCreateWarehouse,
+    handleUpdateWarehouse,
+    handleDeleteWarehouse,
+    handleGetWholesellers,
+    handleCreateWholeseller,
+    handleUpdateWholeseller,
+    handleDeleteWholeseller,
+    handleGetStockLots,
+    handleCreateStockLot,
+    handleGetStockTransfers,
+    handleCreateStockTransfer,
+    handleRespondStockTransfer,
+    handleCancelStockTransfer,
+    handleResolveStockTransferDifference,
     handleCustomerDirectory,
     handleGetExpenseHeads,
     handleCreateExpenseHead,
@@ -3805,14 +6051,26 @@ module.exports = {
     handleUpdatePaymentMethod,
     handleDeletePaymentMethod,
     handleGetOrders,
+    handleGetOrderStockOptions,
+    handleReserveOrderStock,
+    handleCreateOrderStockRequest,
+    handleCancelOrderStockRequest,
+    handleGetPendingOrderStockRequests,
+    handleRespondOrderStockRequest,
     handleConfirmOrder,
     handleRejectOrder,
     handleModifyOrder,
+    handlePreviewFulfilmentSites,
+    handleGetFulfilmentSiteProducts,
+    handleAssignCourier,
     handleDispatchOrder,
     handleCancelOrder,
     handleDeliverOrder,
     handleSendFeedbackReminder,
     handleReturnOrder,
+    handleResolveReturnedAsWasted,
+    handleResolveReturnedToStore,
+    handleRedirectReturnedOrder,
     handleVerifyOrderPayment,
     handleGetFarmBlocks,
     handleCreateFarmBlock,
@@ -3855,7 +6113,9 @@ module.exports = {
     handleCreateStockWastedEntry,
     handleGetStockWastedEntries,
     handleAdjustStock,
+    handleAdjustHolderStock,
     handleStockAdjustments,
+    handleStockLedger,
     handleUpdateShippingCosts,
     handleFetchingShippingCosts,
     handleContactQuery,

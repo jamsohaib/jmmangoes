@@ -7,16 +7,21 @@ const empty = { name: '', contactPersonName: '', contactNumber: '', jmmContactPe
 
 const CourierManagement = () => {
   const user = useAuthStore((state) => state.user);
-  const canView = user?.role === 'admin' || user?.permissions?.courierManagement?.view;
+  const canView = user?.role === 'admin' || user?.permissions?.courierManagement?.view || user?.permissions?.orderManagement?.view;
   const canManage = user?.role === 'admin' || user?.permissions?.courierManagement?.manage;
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState(empty);
 
   const load = async () => {
-    const res = await api.get('/couriers');
-    setRows(res.data || []);
+    try {
+      const res = await api.get('/couriers');
+      setRows(res.data || []);
+    } catch (err) {
+      setRows([]);
+      toast.error(err?.response?.data?.message || 'Failed to load couriers.');
+    }
   };
-  useEffect(() => { if (canView) load().catch(console.error); }, [canView]);
+  useEffect(() => { if (canView) load(); }, [canView]);
 
   const add = async () => {
     if (!canManage) return toast.warn('No manage permission.');
@@ -51,4 +56,3 @@ const CourierManagement = () => {
 };
 
 export default CourierManagement;
-

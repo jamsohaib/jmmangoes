@@ -12,6 +12,7 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: false,
     unique: true,
+    sparse: true,
     lowercase: true
   },
   username: {
@@ -53,6 +54,8 @@ const userSchema = new mongoose.Schema({
   isSalesUser: { type: Boolean, default: true },
   isActive: { type: Boolean, default: true },
   siteAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Site' }],
+  warehouseAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' }],
+  wholesellerAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Wholeseller' }],
   farmBlockAccess: [{ type: mongoose.Schema.Types.ObjectId, ref: 'FarmBlock' }],
   permissions: {
     type: mongoose.Schema.Types.Mixed,
@@ -73,6 +76,10 @@ const userSchema = new mongoose.Schema({
       orderManagement: { view: false, manage: false },
       courierManagement: { view: false, manage: false },
       feedbackReport: { view: false, manage: false },
+      salesDashboard: { view: false, manage: false },
+      warehouseManagement: { view: false, manage: false },
+      wholesellerManagement: { view: false, manage: false },
+      stockTransfer: { view: false, manage: false },
       farmBlocks: { view: false, manage: false },
       farmBlockDetails: { view: false, manage: false },
       farmBlockLogs: { view: false, manage: false },

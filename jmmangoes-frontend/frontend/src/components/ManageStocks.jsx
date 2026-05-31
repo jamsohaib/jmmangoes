@@ -7,85 +7,196 @@ const ManageStocks = () => {
   const user = useAuthStore((state) => state.user);
   const canView = user?.role === 'admin' || user?.permissions?.manageStocks?.view;
   const canManage = user?.role === 'admin' || user?.permissions?.manageStocks?.manage;
-  const [summary, setSummary] = useState([]);
   const [products, setProducts] = useState([]);
   const [sites, setSites] = useState([]);
-  const [selectedSiteId, setSelectedSiteId] = useState('');
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [quantityChange, setQuantityChange] = useState('');
-  const [operation, setOperation] = useState('add');
-  const [adjustments, setAdjustments] = useState([]);
+  const [ledgerRows, setLedgerRows] = useState([]);
+  const [holders, setHolders] = useState({ sites: [], warehouses: [], wholesellers: [] });
+  const [stockStatusAll, setStockStatusAll] = useState({ sites: [], warehouses: [], wholesellers: [] });
+  const [adjustForm, setAdjustForm] = useState({
+    holderType: 'warehouse',
+    holderId: '',
+    productId: '',
+    lotId: '',
+    operation: 'add',
+    quantity: '',
+    unitCost: '',
+    notes: '',
+  });
+  const [lotForm, setLotForm] = useState({
+    holderType: 'warehouse',
+    holderId: '',
+    productId: '',
+    lotCode: '',
+    quantity: '',
+    unitCost: '',
+    receivedAt: new Date().toISOString().slice(0, 10),
+    notes: '',
+  });
+  const [holderLots, setHolderLots] = useState([]);
+  const [adjustLots, setAdjustLots] = useState([]);
 
   const loadData = async () => {
-    const [summaryRes, productsRes, adjustmentsRes] = await Promise.all([
-      api.get('/stocks/summary'),
+    const [productsRes, ledgerRes, holdersRes, stockStatusRes] = await Promise.all([
       api.get('/stocks/products'),
-      api.get('/stocks/adjustments'),
+      api.get('/stocks/ledger'),
+      api.get('/stocks/holders'),
+      api.get('/stocks/status-all'),
     ]);
-    const summaryData = summaryRes.data || [];
-    setSummary(summaryData);
     setProducts(productsRes.data || []);
-    setSites(summaryData.map((s) => ({ _id: s.siteId, name: s.siteName, isActive: true })));
-    setAdjustments(adjustmentsRes.data || []);
+    setSites((stockStatusRes.data?.sites || []).map((s) => ({ _id: s.holderId, name: s.holderName, isActive: true })));
+    setLedgerRows(ledgerRes.data || []);
+    setHolders(holdersRes.data || { sites: [], warehouses: [], wholesellers: [] });
+    setStockStatusAll(stockStatusRes.data || { sites: [], warehouses: [], wholesellers: [] });
   };
 
   useEffect(() => {
     if (canView) loadData().catch(console.error);
   }, [canView]);
 
-  const productOptions = useMemo(
-    () => {
-      if (!selectedSiteId) return [];
-      return products
-        .filter(
-          (p) =>
-            String(p.availableSiteId || '') === String(selectedSiteId) ||
-            (p.availableSiteName || '').toLowerCase() ===
-              (sites.find((s) => s._id === selectedSiteId)?.name || '').toLowerCase()
-        )
-        .map((p) => {
-        const siteName = p.availableSiteName || sites.find((s) => s._id === p.availableSiteId)?.name || 'Unknown';
-        return { id: p._id, label: `${p.name} (${siteName})`, qty: p.quantity || 0 };
-      });
-    },
-    [products, sites, selectedSiteId]
-  );
+  const holderTypeOptions = [
+    { value: 'warehouse', label: 'Warehouse' },
+    { value: 'site', label: 'Sale Point / Site' },
+    { value: 'wholeseller', label: 'Wholeseller' },
+    { value: 'online', label: 'Online' },
+  ];
 
-  const productsBySite = useMemo(() => {
-    const grouped = {};
-    sites.forEach((site) => {
-      grouped[site._id] = products.filter(
-        (p) =>
-          String(p.availableSiteId || '') === String(site._id) ||
-          (p.availableSiteName || '').toLowerCase() === site.name.toLowerCase()
-      );
-    });
-    return grouped;
-  }, [products, sites]);
+  const holderChoices = useMemo(() => {
+    if (lotForm.holderType === 'warehouse') return (holders.warehouses || []).map((w) => ({ id: w._id, label: `${w.code} - ${w.name}` }));
+    if (lotForm.holderType === 'wholeseller') return (holders.wholesellers || []).map((w) => ({ id: w._id, label: `${w.code} - ${w.name}` }));
+    if (lotForm.holderType === 'site') return (holders.sites || []).map((s) => ({ id: s._id, label: s.name }));
+    if (lotForm.holderType === 'online') return (holders.sites || []).filter((s) => String(s.name || '').toLowerCase() === 'online').map((s) => ({ id: s._id, label: 'online' }));
+    return [];
+  }, [lotForm.holderType, holders]);
+
+  const adjustHolderChoices = useMemo(() => {
+    if (adjustForm.holderType === 'warehouse') return (holders.warehouses || []).map((w) => ({ id: w._id, label: `${w.code} - ${w.name}` }));
+    if (adjustForm.holderType === 'wholeseller') return (holders.wholesellers || []).map((w) => ({ id: w._id, label: `${w.code} - ${w.name}` }));
+    if (adjustForm.holderType === 'site') return (holders.sites || []).map((s) => ({ id: s._id, label: s.name }));
+    if (adjustForm.holderType === 'online') return (holders.sites || []).filter((s) => String(s.name || '').toLowerCase() === 'online').map((s) => ({ id: s._id, label: 'online' }));
+    return [];
+  }, [adjustForm.holderType, holders]);
+
+  const adjustLotsForProduct = useMemo(() => {
+    if (!adjustForm.productId) return adjustLots;
+    return adjustLots.filter((l) => String(l.productId) === String(adjustForm.productId));
+  }, [adjustLots, adjustForm.productId]);
+
+  const topCards = useMemo(() => {
+    const siteCards = (stockStatusAll.sites || []).map((x) => ({ key: `site-${x.holderId}`, name: x.holderName, type: 'Site', totalStock: x.totalStock || 0, productsCount: (x.products || []).length }));
+    const warehouseCards = (stockStatusAll.warehouses || []).map((x) => ({ key: `warehouse-${x.holderId}`, name: `${x.holderCode ? `${x.holderCode} - ` : ''}${x.holderName}`, type: 'Warehouse', totalStock: x.totalStock || 0, productsCount: (x.products || []).length }));
+    const wholesellerCards = (stockStatusAll.wholesellers || []).map((x) => ({ key: `wholeseller-${x.holderId}`, name: `${x.holderCode ? `${x.holderCode} - ` : ''}${x.holderName}`, type: 'Wholeseller', totalStock: x.totalStock || 0, productsCount: (x.products || []).length }));
+    return [...siteCards, ...warehouseCards, ...wholesellerCards];
+  }, [stockStatusAll]);
+
+  const loadHolderLots = async () => {
+    if (!lotForm.holderType || !lotForm.holderId) return setHolderLots([]);
+    const res = await api.get('/stock/lots', { params: { holderType: lotForm.holderType, holderId: lotForm.holderId } });
+    setHolderLots(res.data || []);
+  };
+
+  useEffect(() => {
+    loadHolderLots().catch(() => {});
+  }, [lotForm.holderType, lotForm.holderId]);
+
+  useEffect(() => {
+    const loadAdjustLots = async () => {
+      if (!adjustForm.holderType || !adjustForm.holderId) return setAdjustLots([]);
+      const res = await api.get('/stock/lots', { params: { holderType: adjustForm.holderType, holderId: adjustForm.holderId } });
+      setAdjustLots(res.data || []);
+    };
+    loadAdjustLots().catch(() => setAdjustLots([]));
+  }, [adjustForm.holderType, adjustForm.holderId]);
 
   const handleAdjustStock = async () => {
     if (!canManage) return toast.warn('No manage permission.');
-    const qty = Number(quantityChange);
-    if (!selectedProductId || Number.isNaN(qty) || qty <= 0) {
-      toast.warn('Select product and enter valid quantity.');
+    const qty = Number(adjustForm.quantity);
+    if (!adjustForm.holderType || !adjustForm.holderId || !adjustForm.productId || Number.isNaN(qty) || qty <= 0) {
+      toast.warn('Please select holder, product, and valid quantity.');
       return;
     }
-    const signedQty = operation === 'remove' ? -qty : qty;
-    const selectedProductLabel = productOptions.find((p) => p.id === selectedProductId)?.label || 'selected product';
+    const selectedHolderLabel = adjustHolderChoices.find((h) => String(h.id) === String(adjustForm.holderId))?.label || 'selected holder';
+    const selectedProductLabel = products.find((p) => String(p._id) === String(adjustForm.productId))?.name || 'selected product';
     const confirmed = window.confirm(
-      `Confirm stock ${operation}?\nProduct: ${selectedProductLabel}\nQuantity: ${qty}`
+      `Confirm stock ${adjustForm.operation}?\nHolder: ${selectedHolderLabel}\nProduct: ${selectedProductLabel}\nQuantity: ${qty}`
     );
     if (!confirmed) return;
     try {
-      await api.post('/stocks/adjust', { productId: selectedProductId, quantityChange: signedQty });
+      await api.post('/stocks/adjust-holder', {
+        holderType: adjustForm.holderType,
+        holderId: adjustForm.holderId,
+        productId: adjustForm.productId,
+        lotId: adjustForm.lotId || null,
+        operation: adjustForm.operation,
+        quantity: qty,
+        unitCost: Number(adjustForm.unitCost || 0),
+        notes: adjustForm.notes,
+      });
       toast.success('Stock updated.');
-      setSelectedSiteId('');
-      setSelectedProductId('');
-      setQuantityChange('');
+      setAdjustForm((p) => ({ ...p, quantity: '', unitCost: '', notes: '' }));
       await loadData();
+      if (adjustForm.holderType && adjustForm.holderId) {
+        const res = await api.get('/stock/lots', { params: { holderType: adjustForm.holderType, holderId: adjustForm.holderId } });
+        setAdjustLots(res.data || []);
+      }
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to update stock.');
     }
+  };
+
+  const handleCreateLot = async () => {
+    if (!canManage) return toast.warn('No manage permission.');
+    const qty = Number(lotForm.quantity);
+    if (!lotForm.holderType || !lotForm.holderId || !lotForm.productId || !lotForm.lotCode.trim() || Number.isNaN(qty) || qty <= 0) {
+      return toast.warn('Please complete holder, product, lot code, and quantity.');
+    }
+    try {
+      await api.post('/stock/lots', {
+        holderType: lotForm.holderType,
+        holderId: lotForm.holderId,
+        productId: lotForm.productId,
+        lotCode: lotForm.lotCode.trim(),
+        quantity: qty,
+        unitCost: Number(lotForm.unitCost || 0),
+        receivedAt: lotForm.receivedAt,
+        notes: lotForm.notes,
+      });
+      toast.success('Stock lot added successfully.');
+      setLotForm((p) => ({ ...p, lotCode: '', quantity: '', unitCost: '', notes: '' }));
+      await loadHolderLots();
+      await loadData();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to add stock lot.');
+    }
+  };
+
+  const generateLotCode = () => {
+    if (!lotForm.productId) return toast.warn('Please select product before generating lot code.');
+    const qty = Number(lotForm.quantity);
+    if (Number.isNaN(qty) || qty <= 0) return toast.warn('Please enter valid quantity before generating lot code.');
+    if (!lotForm.receivedAt) return toast.warn('Please select date before generating lot code.');
+
+    const productName = products.find((p) => String(p._id) === String(lotForm.productId))?.name || 'product';
+    const productPart = String(productName)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+
+    const [yyyy, mm, dd] = String(lotForm.receivedAt).split('-');
+    const datePart = `${dd}${mm}${yyyy}`;
+    const qtyPart = String(qty).replace(/\.0+$/, '').replace(/\./g, '_');
+    const base = `${productPart}-${datePart}-${qtyPart}`;
+
+    const maxSerial = (holderLots || []).reduce((max, lot) => {
+      const lotCode = String(lot.lotCode || '').toLowerCase();
+      const prefix = `${base.toLowerCase()}-`;
+      if (!lotCode.startsWith(prefix)) return max;
+      const n = Number(lotCode.slice(prefix.length));
+      if (Number.isFinite(n) && n > max) return n;
+      return max;
+    }, 0);
+
+    const nextSerial = maxSerial + 1;
+    const code = `${base}-${nextSerial}`;
+    setLotForm((p) => ({ ...p, lotCode: code }));
   };
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
@@ -95,9 +206,10 @@ const ManageStocks = () => {
       <h2 className="text-2xl font-bold mb-4">Manage Stocks</h2>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
-        {summary.map((s) => (
-          <div key={s.siteId} className="bg-white rounded shadow p-4">
-            <div className="font-semibold">{s.siteName}</div>
+        {topCards.map((s) => (
+          <div key={s.key} className="bg-white rounded shadow p-4">
+            <div className="font-semibold">{s.name}</div>
+            <div className="text-sm text-gray-600">{s.type}</div>
             <div className="text-sm text-gray-600">Products: {s.productsCount}</div>
             <div className="text-lg font-bold text-green-700">Total Stock: {s.totalStock}</div>
           </div>
@@ -106,33 +218,138 @@ const ManageStocks = () => {
 
       <div className="bg-white rounded shadow p-4 mb-6">
         <h3 className="text-lg font-semibold mb-3">Add / Remove Stock</h3>
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-          <select value={selectedSiteId} onChange={(e) => { setSelectedSiteId(e.target.value); setSelectedProductId(''); }} className="border p-2 rounded">
-            <option value="">Select Site</option>
-            {sites.filter((s) => s.isActive).map((site) => (
-              <option key={site._id} value={site._id}>{site.name}</option>
-            ))}
+        <p className="text-sm text-gray-600 mb-3">
+          You can adjust stock for Site, Warehouse, Wholeseller, or Online. For remove, you may choose a specific lot or let the system consume FIFO.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <select
+            value={adjustForm.holderType}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, holderType: e.target.value, holderId: '', lotId: '' }))}
+            className="border p-2 rounded"
+          >
+            {holderTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <select value={selectedProductId} onChange={(e) => setSelectedProductId(e.target.value)} className="border p-2 rounded">
+          <select
+            value={adjustForm.holderId}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, holderId: e.target.value, lotId: '' }))}
+            className="border p-2 rounded"
+          >
+            <option value="">Select Holder</option>
+            {adjustHolderChoices.map((h) => <option key={h.id} value={h.id}>{h.label}</option>)}
+          </select>
+          <select
+            value={adjustForm.productId}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, productId: e.target.value, lotId: '' }))}
+            className="border p-2 rounded"
+          >
             <option value="">Select Product</option>
-            {productOptions.map((p) => (
-              <option key={p.id} value={p.id}>{p.label} - Current: {p.qty}</option>
-            ))}
+            {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
           </select>
-          <select value={operation} onChange={(e) => setOperation(e.target.value)} className="border p-2 rounded">
+          <select
+            value={adjustForm.operation}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, operation: e.target.value }))}
+            className="border p-2 rounded"
+          >
             <option value="add">Add</option>
             <option value="remove">Remove</option>
           </select>
-          <input type="number" value={quantityChange} onChange={(e) => setQuantityChange(e.target.value)} placeholder="Quantity" className="border p-2 rounded" />
+          <select
+            value={adjustForm.lotId}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, lotId: e.target.value }))}
+            className="border p-2 rounded"
+          >
+            <option value="">No specific lot (FIFO / adjustment lot)</option>
+            {adjustLotsForProduct.map((l) => (
+              <option key={l._id} value={l._id}>
+                {l.lotCode} (Avail: {l.quantityAvailable})
+              </option>
+            ))}
+          </select>
+          <input
+            type="number"
+            value={adjustForm.quantity}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, quantity: e.target.value }))}
+            placeholder="Quantity"
+            className="border p-2 rounded"
+          />
+          <input
+            type="number"
+            value={adjustForm.unitCost}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, unitCost: e.target.value }))}
+            placeholder="Unit Cost (optional)"
+            className="border p-2 rounded"
+          />
+          <input
+            value={adjustForm.notes}
+            onChange={(e) => setAdjustForm((p) => ({ ...p, notes: e.target.value }))}
+            placeholder="Notes (optional)"
+            className="border p-2 rounded"
+          />
           <button onClick={handleAdjustStock} className="bg-green-600 text-white rounded px-3 py-2">Update Stock</button>
         </div>
+      </div>
+
+      <div className="bg-white rounded shadow p-4 mb-6">
+        <h3 className="text-lg font-semibold mb-3">Add Stock as Lot (Primary Intake)</h3>
+        <p className="text-sm text-gray-600 mb-3">Use this to add stock lots primarily into Warehouse, then move via Stock Transfer.</p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 mb-2">
+          <select className="border p-2 rounded" value={lotForm.holderType} onChange={(e) => setLotForm((p) => ({ ...p, holderType: e.target.value, holderId: '' }))}>
+            {holderTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select className="border p-2 rounded" value={lotForm.holderId} onChange={(e) => setLotForm((p) => ({ ...p, holderId: e.target.value }))}>
+            <option value="">Select Holder</option>
+            {holderChoices.map((h) => <option key={h.id} value={h.id}>{h.label}</option>)}
+          </select>
+          <select className="border p-2 rounded" value={lotForm.productId} onChange={(e) => setLotForm((p) => ({ ...p, productId: e.target.value }))}>
+            <option value="">Select Product</option>
+            {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+          </select>
+          <input type="number" className="border p-2 rounded" placeholder="Quantity" value={lotForm.quantity} onChange={(e) => setLotForm((p) => ({ ...p, quantity: e.target.value }))} />
+          <input type="number" className="border p-2 rounded" placeholder="Unit Cost (optional)" value={lotForm.unitCost} onChange={(e) => setLotForm((p) => ({ ...p, unitCost: e.target.value }))} />
+          <input type="date" className="border p-2 rounded" value={lotForm.receivedAt} onChange={(e) => setLotForm((p) => ({ ...p, receivedAt: e.target.value }))} />
+          <button type="button" onClick={generateLotCode} className="border border-blue-600 text-blue-700 rounded px-3 py-2 whitespace-nowrap">Generate Lot Code</button>
+          <input className="border p-2 rounded md:col-span-2" placeholder="Lot Code" value={lotForm.lotCode} onChange={(e) => setLotForm((p) => ({ ...p, lotCode: e.target.value }))} />
+          <button onClick={handleCreateLot} className="bg-green-600 text-white rounded px-3 py-2">Add Lot</button>
+        </div>
+        <textarea className="border p-2 rounded w-full" placeholder="Notes (optional)" value={lotForm.notes} onChange={(e) => setLotForm((p) => ({ ...p, notes: e.target.value }))} />
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow mb-6">
+        <div className="px-4 py-3 border-b bg-gray-50 font-semibold">Stock Lots for Selected Holder</div>
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr>
+              <th className="border px-3 py-2">Lot Code</th>
+              <th className="border px-3 py-2">Product</th>
+              <th className="border px-3 py-2">Initial</th>
+              <th className="border px-3 py-2">Available</th>
+              <th className="border px-3 py-2">Unit Cost</th>
+              <th className="border px-3 py-2">Received At</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holderLots.map((l) => (
+              <tr key={l._id}>
+                <td className="border px-3 py-2">{l.lotCode}</td>
+                <td className="border px-3 py-2">{l.productName}</td>
+                <td className="border px-3 py-2">{l.quantityInitial}</td>
+                <td className="border px-3 py-2">{l.quantityAvailable}</td>
+                <td className="border px-3 py-2">{l.unitCost || 0}</td>
+                <td className="border px-3 py-2">{l.receivedAt ? new Date(l.receivedAt).toLocaleDateString() : '-'}</td>
+              </tr>
+            ))}
+            {holderLots.length === 0 && (
+              <tr><td colSpan={6} className="border px-3 py-3 text-center text-gray-500">No lots found for selected holder.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       {sites
         .filter((s) => s.isActive)
         .map((site) => {
-          const siteProducts = productsBySite[site._id] || [];
-          const siteSummary = summary.find((s) => String(s.siteId) === String(site._id));
+          const siteSummary = (stockStatusAll.sites || []).find((s) => String(s.holderId) === String(site._id));
+          const siteProducts = siteSummary?.products || [];
           return (
             <div key={site._id} className="overflow-x-auto bg-white rounded shadow mb-5">
               <div className="px-4 py-3 border-b bg-gray-50">
@@ -148,8 +365,8 @@ const ManageStocks = () => {
                 </thead>
                 <tbody>
                   {siteProducts.map((p) => (
-                    <tr key={p._id}>
-                      <td className="border px-3 py-2">{p.name}</td>
+                    <tr key={`${site._id}-${p.productId}`}>
+                      <td className="border px-3 py-2">{p.productName}</td>
                       <td className="border px-3 py-2">{p.quantity || 0}</td>
                     </tr>
                   ))}
@@ -166,37 +383,103 @@ const ManageStocks = () => {
           );
         })}
 
+      {(stockStatusAll.warehouses || []).map((wh) => (
+        <div key={wh.holderId} className="overflow-x-auto bg-white rounded shadow mb-5">
+          <div className="px-4 py-3 border-b bg-gray-50">
+            <div className="font-semibold">Warehouse: {wh.holderCode ? `${wh.holderCode} - ` : ''}{wh.holderName}</div>
+            <div className="text-sm text-gray-600">Total Stock: {wh.totalStock || 0}</div>
+          </div>
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr>
+                <th className="border px-3 py-2">Product</th>
+                <th className="border px-3 py-2">Current Stock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(wh.products || []).map((p) => (
+                <tr key={`${wh.holderId}-${p.productId}`}>
+                  <td className="border px-3 py-2">{p.productName}</td>
+                  <td className="border px-3 py-2">{p.quantity || 0}</td>
+                </tr>
+              ))}
+              {(!wh.products || wh.products.length === 0) && (
+                <tr>
+                  <td colSpan={2} className="border px-3 py-3 text-center text-gray-500">
+                    No products in this warehouse.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ))}
+
+      {(stockStatusAll.wholesellers || []).map((ws) => (
+        <div key={ws.holderId} className="overflow-x-auto bg-white rounded shadow mb-5">
+          <div className="px-4 py-3 border-b bg-gray-50">
+            <div className="font-semibold">Wholeseller: {ws.holderCode ? `${ws.holderCode} - ` : ''}{ws.holderName}</div>
+            <div className="text-sm text-gray-600">Total Stock: {ws.totalStock || 0}</div>
+          </div>
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr>
+                <th className="border px-3 py-2">Product</th>
+                <th className="border px-3 py-2">Current Stock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(ws.products || []).map((p) => (
+                <tr key={`${ws.holderId}-${p.productId}`}>
+                  <td className="border px-3 py-2">{p.productName}</td>
+                  <td className="border px-3 py-2">{p.quantity || 0}</td>
+                </tr>
+              ))}
+              {(!ws.products || ws.products.length === 0) && (
+                <tr>
+                  <td colSpan={2} className="border px-3 py-3 text-center text-gray-500">
+                    No products in this wholeseller.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ))}
+
       <div className="overflow-x-auto bg-white rounded shadow mt-6">
         <div className="px-4 py-3 border-b bg-gray-50 font-semibold">Stock Update Transaction History</div>
         <table className="min-w-full text-sm">
           <thead>
             <tr>
               <th className="border px-3 py-2">Date</th>
-              <th className="border px-3 py-2">Site</th>
+              <th className="border px-3 py-2">Holder Type</th>
+              <th className="border px-3 py-2">Holder</th>
               <th className="border px-3 py-2">Product</th>
-              <th className="border px-3 py-2">Action</th>
+              <th className="border px-3 py-2">Movement</th>
+              <th className="border px-3 py-2">Lot</th>
               <th className="border px-3 py-2">Qty</th>
-              <th className="border px-3 py-2">Before</th>
-              <th className="border px-3 py-2">After</th>
+              <th className="border px-3 py-2">Unit Cost</th>
               <th className="border px-3 py-2">Updated By</th>
             </tr>
           </thead>
           <tbody>
-            {adjustments.map((a) => (
+            {ledgerRows.map((a) => (
               <tr key={a._id}>
                 <td className="border px-3 py-2">{new Date(a.createdAt).toLocaleString()}</td>
-                <td className="border px-3 py-2">{a.siteName}</td>
+                <td className="border px-3 py-2 capitalize">{a.holderType}</td>
+                <td className="border px-3 py-2">{a.holderName}</td>
                 <td className="border px-3 py-2">{a.productName}</td>
-                <td className="border px-3 py-2 capitalize">{a.adjustmentType}</td>
-                <td className="border px-3 py-2">{a.quantityChange}</td>
-                <td className="border px-3 py-2">{a.quantityBefore}</td>
-                <td className="border px-3 py-2">{a.quantityAfter}</td>
-                <td className="border px-3 py-2">{a.updatedByName || '-'}</td>
+                <td className="border px-3 py-2 capitalize">{String(a.movementType || '').replaceAll('_', ' ')}</td>
+                <td className="border px-3 py-2">{a.lotCode || '-'}</td>
+                <td className="border px-3 py-2">{a.quantity}</td>
+                <td className="border px-3 py-2">{a.unitCost ?? 0}</td>
+                <td className="border px-3 py-2">{a.createdByName || '-'}</td>
               </tr>
             ))}
-            {adjustments.length === 0 && (
+            {ledgerRows.length === 0 && (
               <tr>
-                <td colSpan={8} className="border px-3 py-3 text-center text-gray-500">
+                <td colSpan={9} className="border px-3 py-3 text-center text-gray-500">
                   No stock update transactions found.
                 </td>
               </tr>

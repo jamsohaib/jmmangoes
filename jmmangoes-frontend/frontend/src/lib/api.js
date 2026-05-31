@@ -24,7 +24,7 @@ api.interceptors.response.use(
     const requestUrl = String(error?.config?.url || '');
     const isAuthRequest = requestUrl.includes('/login') || requestUrl.includes('/register');
 
-    if ((status === 401 || status === 403) && !isAuthRequest) {
+    if (status === 401 && !isAuthRequest) {
       useAuthStore.getState().clearUser();
       if (!isRedirectingToLogin) {
         isRedirectingToLogin = true;

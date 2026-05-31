@@ -6,6 +6,7 @@ import useAuthStore from '../store/authStore';
 
 const OrderManagement = () => {
   const user = useAuthStore((s) => s.user);
+  const isSuperAdmin = user?.id === 'super-admin' || String(user?.username || '').toLowerCase() === 'admin';
   const canView = user?.role === 'admin' || user?.permissions?.orderManagement?.view;
   const [orders, setOrders] = useState([]);
   const [couriers, setCouriers] = useState([]);
@@ -14,26 +15,66 @@ const OrderManagement = () => {
   const [rejectModal, setRejectModal] = useState({ open: false, orderId: '', reason: 'Order cancelled due to stock unavailability' });
   const [cancelModal, setCancelModal] = useState({ open: false, orderId: '', reason: '' });
   const [returnModal, setReturnModal] = useState({ open: false, orderId: '', reason: 'Customer return request' });
-  const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [] });
+  const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false });
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
+  const [redirectModal, setRedirectModal] = useState({
+    open: false,
+    order: null,
+    customer: { name: '', email: '', mobile: '', address: '', city: '' },
+    courierId: '',
+    trackingNumber: '',
+    paymentMode: 'prepaid',
+    paymentMethodName: '',
+    remarks: '',
+  });
   const [products, setProducts] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
+  const [publicSites, setPublicSites] = useState([]);
+  const [stockOptionsModal, setStockOptionsModal] = useState({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
   const [newItem, setNewItem] = useState({ productId: '', quantity: 1 });
+  const [fulfilmentProducts, setFulfilmentProducts] = useState([]);
+  const [loadingFulfilmentProducts, setLoadingFulfilmentProducts] = useState(false);
   const [tableSearch, setTableSearch] = useState({});
   const formatDateTime = (v) => (v ? new Date(v).toLocaleString() : '-');
+  const getConfirmedAtForView = (order) => {
+    const explicit = order?.statusTimeline?.confirmedAt;
+    if (explicit) return explicit;
+    if (order?.status === 'confirmed' || order?.status === 'dispatched' || order?.status === 'delivered' || order?.status === 'returned') {
+      return order?.updatedAt || null;
+    }
+    return null;
+  };
+  const orderItemsText = (o) => (o?.items || [])
+    .map((it) => `${it?.name || 'Product'} x ${Number(it?.quantity || 0)}`)
+    .join(', ');
+  const fulfillmentSourceLabel = (o) => {
+    const name = o?.stockReservation?.reservedSiteName || '';
+    if (name) return name;
+    if (o?.stockReservation?.isReserved) return 'Reserved (source unspecified)';
+    return '-';
+  };
 
   const load = async () => {
-    const [o, c] = await Promise.all([api.get('/orders'), api.get('/couriers')]);
-    setOrders(o.data || []);
-    setCouriers(c.data || []);
+    const ordersRes = await api.get('/orders');
+    setOrders(ordersRes.data || []);
+    try {
+      const couriersRes = await api.get('/couriers');
+      setCouriers(couriersRes.data || []);
+    } catch (_) {
+      setCouriers([]);
+    }
   };
   useEffect(() => { if (canView) load().catch(console.error); }, [canView]);
   useEffect(() => {
     if (!canView) return;
-    api.get('/payment-methods')
+    api.get('/payment-methods/public')
       .then((res) => setPaymentMethods(res.data || []))
       .catch(() => {});
+  }, [canView]);
+  useEffect(() => {
+    if (!canView) return;
+    api.get('/sites/public').then((res) => setPublicSites(res.data || [])).catch(() => setPublicSites([]));
   }, [canView]);
   useEffect(() => {
     if (!canView) return;
@@ -84,15 +125,135 @@ const OrderManagement = () => {
     await load();
   };
 
+  const openStockOptions = async (order) => {
+    setStockOptionsModal({ open: true, order, options: [], loading: true, reservingSiteId: '' });
+    try {
+      const res = await api.get(`/orders/${order._id}/stock-options`);
+      setStockOptionsModal((p) => ({ ...p, options: res.data?.options || [], loading: false }));
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to load stock options.');
+      setStockOptionsModal((p) => ({ ...p, loading: false }));
+    }
+  };
+
+  const reserveStock = async (siteId) => {
+    const order = stockOptionsModal.order;
+    if (!order?._id) return;
+    setStockOptionsModal((p) => ({ ...p, reservingSiteId: siteId }));
+    try {
+      await api.put(`/orders/${order._id}/reserve-stock`, { siteId });
+      toast.success('Stock reserved for this order.');
+      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to reserve stock.');
+      setStockOptionsModal((p) => ({ ...p, reservingSiteId: '' }));
+    }
+  };
+
+  const createStockRequest = async (orderId, sourceSiteId) => {
+    try {
+      await api.post(`/orders/${orderId}/stock-request`, { sourceSiteId });
+      toast.success('Stock request sent.');
+      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to request stock.');
+    }
+  };
+
+  const cancelStockRequest = async (orderId) => {
+    if (!window.confirm('Cancel this stock request?')) return;
+    try {
+      await api.put(`/orders/${orderId}/stock-request/cancel`, {});
+      toast.success('Stock request cancelled.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to cancel stock request.');
+    }
+  };
+
   const dispatch = async (id) => {
     const order = orders.find((o) => String(o._id) === String(id));
     const f = dispatchForm[id] || {};
-    if (!f.courierId) return toast.warn('Select courier.');
-    const payload = { ...f, paymentMode: f.paymentMode || order?.paymentMode || 'cod' };
+    const courierId = f.courierId || order?.courier?.courierId || '';
+    const trackingNumber = f.trackingNumber ?? order?.courier?.trackingNumber ?? '';
+    if (!courierId) return toast.warn('Select courier.');
+    const payload = {
+      courierId,
+      trackingNumber,
+      paymentMode: f.paymentMode || order?.paymentMode || 'cod',
+    };
     if (!window.confirm('Dispatch this order?')) return;
     await api.put(`/orders/${id}/dispatch`, payload);
     toast.success('Order dispatched.');
     await load();
+  };
+
+  const assignCourier = async (id) => {
+    const order = orders.find((o) => String(o._id) === String(id));
+    const f = dispatchForm[id] || {};
+    if (!f.courierId) return toast.warn('Select courier.');
+    const payload = { ...f, paymentMode: f.paymentMode || order?.paymentMode || 'cod' };
+    await api.put(`/orders/${id}/assign-courier`, payload);
+    toast.success('Courier assigned.');
+    await load();
+  };
+
+  const printCourierLabels = (order) => {
+    const w = window.open('', '_blank');
+    if (!w) return toast.warn('Popup blocked. Please allow popups to print.');
+    const orderDate = new Date(order?.createdAt || Date.now()).toLocaleString();
+    const city = order?.customer?.city || '-';
+    const customerName = order?.customer?.name || '-';
+    const customerMobile = order?.customer?.mobile || '-';
+    const address = order?.customer?.address || '-';
+    const courierName = order?.courier?.courierName || '-';
+    const tracking = order?.courier?.trackingNumber || '-';
+    const courierHelp = order?.courier?.courierHelpline || '-';
+    const processedBy = user?.name || user?.username || '-';
+    const slips = [];
+    const orderItemsSummary = (order?.items || [])
+      .map((it) => `${it?.name || 'Product'} x ${Number(it?.quantity || 0)}`)
+      .join(', ');
+    (order?.items || []).forEach((it) => {
+      const qty = Number(it.quantity || 0);
+      for (let i = 1; i <= qty; i += 1) {
+        slips.push({});
+      }
+    });
+    const totalPieces = slips.length;
+    const html = `
+      <html><head><title>Courier Slips - ${order?.orderNumber || ''}</title>
+      <style>
+        body{font-family:Arial,sans-serif;margin:0;padding:8px}
+        .slip{width:72mm;margin:0 auto 8mm auto;padding:6px;border:1px dashed #444;box-sizing:border-box;page-break-inside:avoid}
+        .row{margin:2px 0;font-size:11px;line-height:1.25}
+        .bold{font-weight:700}
+        .city{font-weight:800;font-size:14px}
+      </style></head><body>
+      ${slips.map((s, index) => `
+        <div class="slip">
+          <div class="row bold">Order: ${order?.orderNumber || '-'}</div>
+          <div class="row">Tracking: ${tracking}</div>
+          <div class="row">Date: ${orderDate}</div>
+          <div class="row">Customer: ${customerName}</div>
+          <div class="row">Mobile: ${customerMobile}</div>
+          <div class="row">Address: ${address}</div>
+          <div class="row city">City: ${city}</div>
+          <div class="row">Courier: ${courierName}</div>
+          <div class="row">Courier Contact: ${courierHelp}</div>
+          <div class="row">Processed By: ${processedBy}</div>
+          <div class="row bold">Order Items: ${orderItemsSummary || '-'}</div>
+          <div class="row bold">Piece ${index + 1} out of ${totalPieces}</div>
+        </div>
+      `).join('')}
+      <script>window.onload=()=>window.print();</script>
+      </body></html>
+    `;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   };
 
   const markDelivered = async (id) => {
@@ -120,22 +281,63 @@ const OrderManagement = () => {
       discountAmount: String(order.discountAmount || 0),
       paymentMethodId: order?.paymentDetails?.methodId ? String(order.paymentDetails.methodId) : '',
       items: (order.items || []).map((i) => ({ ...i, quantity: Number(i.quantity || 1) })),
+      fulfilmentSiteId: '',
+      fulfilmentOptions: [],
+      loadingSites: false,
     });
+    setFulfilmentProducts([]);
     setNewItem({ productId: '', quantity: 1 });
   };
 
+  const refreshFulfilmentSites = async (items) => {
+    setModifyModal((p) => ({ ...p, loadingSites: true }));
+    try {
+      const res = await api.post('/orders/preview-fulfilment-sites', { items });
+      const options = (res.data?.options || []).filter((o) => o.canFulfill);
+      setModifyModal((p) => ({
+        ...p,
+        fulfilmentOptions: options,
+        fulfilmentSiteId: options.some((x) => String(x.siteId) === String(p.fulfilmentSiteId)) ? p.fulfilmentSiteId : '',
+        loadingSites: false,
+      }));
+    } catch (err) {
+      setModifyModal((p) => ({ ...p, fulfilmentOptions: [], fulfilmentSiteId: '', loadingSites: false }));
+      toast.error(err?.response?.data?.message || 'Failed to load fulfilment sites.');
+    }
+  };
+
+  const loadFulfilmentProducts = async (siteId) => {
+    if (!siteId) {
+      setFulfilmentProducts([]);
+      return;
+    }
+    setLoadingFulfilmentProducts(true);
+    try {
+      const res = await api.get('/orders/fulfilment-site-products', { params: { siteId } });
+      setFulfilmentProducts(res.data || []);
+    } catch (err) {
+      setFulfilmentProducts([]);
+      toast.error(err?.response?.data?.message || 'Failed to load site products.');
+    } finally {
+      setLoadingFulfilmentProducts(false);
+    }
+  };
+
   const saveModify = async () => {
-    const { order, items, discountAmount, paymentMethodId } = modifyModal;
+    const { order, items, discountAmount, paymentMethodId, fulfilmentSiteId } = modifyModal;
     if (!order) return;
+    if (!fulfilmentSiteId) return toast.warn('Select a fulfilment site with sufficient stock.');
     if (!window.confirm('Save modified order and send email?')) return;
     try {
-      await api.put(`/orders/${order._id}/modify`, {
+      const modifyRes = await api.put(`/orders/${order._id}/modify`, {
         items,
         discountAmount: Number(discountAmount || 0),
         paymentMethodId: paymentMethodId || undefined,
+        fulfilmentSiteId,
       });
+      await api.post(`/orders/${order._id}/stock-request`, { sourceSiteId: fulfilmentSiteId });
       toast.success('Order modified.');
-      setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [] });
+      setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false });
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to modify order.');
@@ -143,19 +345,20 @@ const OrderManagement = () => {
   };
 
   const addProductToModifyOrder = () => {
-    const product = products.find((p) => String(p._id) === String(newItem.productId));
+    const product = fulfilmentProducts.find((p) => String(p._id) === String(newItem.productId));
     const qtyToAdd = Number(newItem.quantity || 0);
+    if (!modifyModal.fulfilmentSiteId) return toast.warn('Select fulfilment site first.');
     if (!product) return toast.warn('Select a product.');
     if (qtyToAdd < 1) return toast.warn('Quantity must be at least 1.');
-    if (qtyToAdd > Number(product.quantity || 0)) {
-      return toast.warn(`Insufficient stock. Available: ${Number(product.quantity || 0)}`);
+    if (qtyToAdd > Number(product.availableQty || 0)) {
+      return toast.warn(`Insufficient stock. Available: ${Number(product.availableQty || 0)}`);
     }
 
     const existing = modifyModal.items.find((it) => String(it.productId) === String(product._id));
     if (existing) {
       const updatedQty = Number(existing.quantity || 0) + qtyToAdd;
-      if (updatedQty > Number(product.quantity || 0)) {
-        return toast.warn(`Cannot exceed stock for ${product.name}. Available: ${Number(product.quantity || 0)}`);
+      if (updatedQty > Number(product.availableQty || 0)) {
+        return toast.warn(`Cannot exceed stock for ${product.name}. Available: ${Number(product.availableQty || 0)}`);
       }
       setModifyModal((p) => ({
         ...p,
@@ -170,6 +373,17 @@ const OrderManagement = () => {
 
     setNewItem({ productId: '', quantity: 1 });
   };
+
+  useEffect(() => {
+    if (!modifyModal.open) return;
+    if (!Array.isArray(modifyModal.items) || modifyModal.items.length === 0) return;
+    refreshFulfilmentSites(modifyModal.items);
+  }, [modifyModal.open, JSON.stringify(modifyModal.items)]);
+
+  useEffect(() => {
+    if (!modifyModal.open) return;
+    loadFulfilmentProducts(modifyModal.fulfilmentSiteId);
+  }, [modifyModal.open, modifyModal.fulfilmentSiteId]);
 
   const submitReject = async () => {
     await api.put(`/orders/${rejectModal.orderId}/reject`, { reason: rejectModal.reason || 'Order cancelled due to stock unavailability' });
@@ -200,6 +414,73 @@ const OrderManagement = () => {
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to send reminder.');
     }
+  };
+
+  const markReturnWasted = async (orderId) => {
+    const reason = window.prompt('Reason for marking wasted:', 'Damaged return') || 'Damaged return';
+    await api.put(`/orders/${orderId}/returned/mark-wasted`, { reason });
+    toast.success('Returned order marked wasted.');
+    await load();
+  };
+
+  const returnToStore = async (orderId) => {
+    const siteNames = publicSites.map((s, i) => `${i + 1}. ${s.name}`).join('\n');
+    const pick = window.prompt(`Select site number to return stock:\n${siteNames}`);
+    const idx = Number(pick || 0) - 1;
+    const site = publicSites[idx];
+    if (!site) return toast.warn('Invalid site selection.');
+    await api.put(`/orders/${orderId}/returned/return-to-store`, { siteId: site._id });
+    toast.success(`Stock returned to ${site.name}.`);
+    await load();
+  };
+
+  const openRedirectModal = (order) => {
+    setRedirectModal({
+      open: true,
+      order,
+      customer: {
+        name: '',
+        email: '',
+        mobile: '',
+        address: '',
+        city: '',
+      },
+      courierId: '',
+      trackingNumber: '',
+      paymentMode: 'prepaid',
+      paymentMethodName: order?.paymentDetails?.methodName || '',
+      remarks: '',
+    });
+  };
+
+  const submitRedirectReturnedOrder = async () => {
+    const { order, customer, courierId, trackingNumber, paymentMode, paymentMethodName, remarks } = redirectModal;
+    if (!order?._id) return;
+    if (!customer?.name?.trim()) return toast.warn('Customer name is required.');
+    if (!customer?.mobile?.trim()) return toast.warn('Customer mobile is required.');
+    if (!customer?.address?.trim()) return toast.warn('Customer address is required.');
+    if (!customer?.city?.trim()) return toast.warn('Customer city is required.');
+    if (!courierId) return toast.warn('Courier is required.');
+    await api.post(`/orders/${order._id}/returned/redirect`, {
+      customer,
+      courierId,
+      trackingNumber,
+      paymentMode,
+      paymentMethodName,
+      remarks,
+    });
+    toast.success('Returned order redirected and dispatched.');
+    setRedirectModal({
+      open: false,
+      order: null,
+      customer: { name: '', email: '', mobile: '', address: '', city: '' },
+      courierId: '',
+      trackingNumber: '',
+      paymentMode: 'prepaid',
+      paymentMethodName: '',
+      remarks: '',
+    });
+    await load();
   };
 
   const csvEscape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -276,6 +557,29 @@ const OrderManagement = () => {
             ),
           },
           {
+            name: 'Items',
+            selector: (o) => orderItemsText(o),
+            sortable: false,
+            wrap: true,
+            grow: 1.4,
+            cell: (o) => <span>{orderItemsText(o) || '-'}</span>,
+          },
+          { name: 'City', selector: (o) => o.customer?.city || '-', sortable: true, wrap: true },
+          { name: 'Fulfilment Source', selector: (o) => fulfillmentSourceLabel(o), sortable: true, wrap: true, grow: 1.1 },
+          ...((tableKey === 'dispatched' || tableKey === 'returned') ? [{
+            name: 'Courier / Tracking',
+            selector: (o) => `${o?.courier?.courierName || '-'} ${o?.courier?.trackingNumber || '-'}`.trim(),
+            sortable: true,
+            wrap: true,
+            grow: 1.2,
+            cell: (o) => (
+              <div>
+                <div>{o?.courier?.courierName || '-'}</div>
+                <div className="text-xs text-gray-600">{o?.courier?.trackingNumber || '-'}</div>
+              </div>
+            ),
+          }] : []),
+          {
             name: 'Amount',
             selector: (o) => Number(o.finalAmount || o.totalCost || 0),
             sortable: true,
@@ -305,9 +609,9 @@ const OrderManagement = () => {
             allowOverflow: true,
             button: true,
             grow: 0,
-            width: tableKey === 'courier' ? '300px' : '240px',
-            minWidth: tableKey === 'courier' ? '300px' : '240px',
-            maxWidth: tableKey === 'courier' ? '300px' : '240px',
+            width: tableKey === 'courier' ? '340px' : '240px',
+            minWidth: tableKey === 'courier' ? '340px' : '240px',
+            maxWidth: tableKey === 'courier' ? '340px' : '240px',
           },
         ]}
         data={filteredRows}
@@ -329,36 +633,60 @@ const OrderManagement = () => {
       {renderTable('pending', 'Pending For Confirmation', grouped.pending, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          <button onClick={() => openStockOptions(o)} className="text-blue-700 hover:underline">View Stock Options</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
-          <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
+          {o?.stockReservation?.isReserved ? (
+            <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
+          ) : (
+            <span className="text-amber-700">Reserve stock first</span>
+          )}
+          {o?.stockRequest?.status === 'pending' ? (
+            <>
+              <span className="text-amber-700">
+                Stock transfer awaited{ o?.stockRequest?.sourceSiteName ? ` from ${o.stockRequest.sourceSiteName}` : '' }
+              </span>
+              <button onClick={() => cancelStockRequest(o._id)} className="text-red-700 hover:underline">Cancel Stock Request</button>
+            </>
+          ) : null}
+          {o?.stockRequest?.status === 'rejected' ? (
+            <span className="text-red-700">
+              Stock request rejected{ o?.stockRequest?.sourceSiteName ? ` by ${o.stockRequest.sourceSiteName}` : '' }
+            </span>
+          ) : null}
           <button onClick={() => setRejectModal({ open: true, orderId: o._id, reason: 'Order cancelled due to stock unavailability' })} className="text-red-600 hover:underline">Cancel Order</button>
           <button onClick={() => openModify(o)} className="text-blue-600 hover:underline">Modify</button>
         </div>
       ))}
 
       {renderTable('courier', 'Enter Courier Details', grouped.courier, (o) => (
-        <div className="space-y-3 w-full">
-          <div className="flex gap-2">
+        <div className="space-y-2 w-full">
+          <div className="flex flex-wrap gap-2">
             <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+            <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
+            <button onClick={() => setCancelModal({ open: true, orderId: o._id, reason: '' })} className="text-red-600 hover:underline">Cancel Order</button>
           </div>
-          <div className="grid grid-cols-1 gap-2">
-            <select className="border p-2 rounded text-sm w-full" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierId: e.target.value } }))}>
+          <div className="grid grid-cols-1 gap-1.5">
+            <select
+              className="border px-2 py-1.5 rounded text-xs w-full"
+              value={dispatchForm[o._id]?.courierId ?? o?.courier?.courierId ?? ''}
+              onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), courierId: e.target.value } }))}
+            >
               <option value="">Courier</option>
               {couriers.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
             </select>
-            <input className="border p-2 rounded text-sm w-full" placeholder="Tracking #" onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
+            <input className="border px-2 py-1.5 rounded text-xs w-full" placeholder="Tracking #" defaultValue={o?.courier?.trackingNumber || ''} onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
             <select
-              className="border p-2 rounded text-sm w-full"
+              className="border px-2 py-1.5 rounded text-xs w-full"
               value={dispatchForm[o._id]?.paymentMode ?? o.paymentMode ?? 'cod'}
               onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), paymentMode: e.target.value } }))}
             >
               <option value="cod">Cash On Delivery</option><option value="prepaid">Prepaid</option><option value="free">Free</option>
             </select>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => assignCourier(o._id)} className="text-indigo-700 hover:underline">Assign Courier</button>
+            <button onClick={() => printCourierLabels(o)} className="text-purple-700 hover:underline">Print Courier Slip</button>
             {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
-            <button onClick={() => setCancelModal({ open: true, orderId: o._id, reason: '' })} className="text-red-600 hover:underline">Cancel Order</button>
           </div>
         </div>
       ))}
@@ -383,10 +711,22 @@ const OrderManagement = () => {
         </div>
       ))}
       {renderTable('returned', 'Returned Orders', grouped.returned, (o) => (
-        <div className="flex flex-col gap-1">
-          <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
-          <span>{o.adminRemarks || '-'}</span>
-        </div>
+        (() => {
+          const isResolved = String(o?.adminRemarks || '').includes('[Return Resolution:');
+          return (
+            <div className="flex flex-col gap-1">
+              <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
+              {!isResolved ? (
+                <>
+                  <button onClick={() => markReturnWasted(o._id)} className="text-red-700 hover:underline text-left">Mark Wasted</button>
+                  <button onClick={() => returnToStore(o._id)} className="text-blue-700 hover:underline text-left">Return To Store</button>
+                  <button onClick={() => openRedirectModal(o)} className="text-green-700 hover:underline text-left">Redirect Order</button>
+                </>
+              ) : null}
+              <span>{o.adminRemarks || '-'}</span>
+            </div>
+          );
+        })()
       ))}
       {renderTable('cancelled', 'Cancelled Orders', grouped.cancelled, (o) => (
         <div className="flex flex-col gap-1">
@@ -428,6 +768,39 @@ const OrderManagement = () => {
                   </div>
                 </div>
               ))}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                <label className="flex items-center gap-2">
+                  Fulfilment Site
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={modifyModal.fulfilmentSiteId || ''}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setModifyModal((p) => ({ ...p, fulfilmentSiteId: val }));
+                      setNewItem({ productId: '', quantity: 1 });
+                    }}
+                  >
+                    <option value="">{modifyModal.loadingSites ? 'Checking stock...' : 'Select site with sufficient stock'}</option>
+                    {(modifyModal.fulfilmentOptions || []).map((s) => (
+                      <option key={s.siteId} value={s.siteId}>{s.siteName}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">Discount Amount<input type="number" min={0} value={modifyModal.discountAmount} onChange={(e) => setModifyModal((p) => ({ ...p, discountAmount: e.target.value }))} className="border p-2 rounded w-full" /></label>
+                <label className="flex items-center gap-2 md:col-span-2">
+                  Payment Method
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={modifyModal.paymentMethodId || ''}
+                    onChange={(e) => setModifyModal((p) => ({ ...p, paymentMethodId: e.target.value }))}
+                  >
+                    <option value="">Keep current</option>
+                    {paymentMethods.map((m) => (
+                      <option key={m._id} value={m._id}>{m.name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <div className="border rounded p-3 mt-2">
                 <div className="font-medium mb-2">Add Product</div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2 items-center">
@@ -435,11 +808,18 @@ const OrderManagement = () => {
                     className="border p-2 rounded md:col-span-2"
                     value={newItem.productId}
                     onChange={(e) => setNewItem((p) => ({ ...p, productId: e.target.value }))}
+                    disabled={!modifyModal.fulfilmentSiteId || loadingFulfilmentProducts}
                   >
-                    <option value="">Select product</option>
-                    {products.map((p) => (
+                    <option value="">
+                      {!modifyModal.fulfilmentSiteId
+                        ? 'Select fulfilment site first'
+                        : loadingFulfilmentProducts
+                          ? 'Loading products...'
+                          : 'Select product'}
+                    </option>
+                    {fulfilmentProducts.map((p) => (
                       <option key={p._id} value={p._id}>
-                        {p.name} (Stock: {Number(p.quantity || 0)})
+                        {p.name} (Available: {Number(p.availableQty || 0)})
                       </option>
                     ))}
                   </select>
@@ -454,22 +834,6 @@ const OrderManagement = () => {
                     Add
                   </button>
                 </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
-                <label className="flex items-center gap-2">Discount Amount<input type="number" min={0} value={modifyModal.discountAmount} onChange={(e) => setModifyModal((p) => ({ ...p, discountAmount: e.target.value }))} className="border p-2 rounded w-full" /></label>
-                <label className="flex items-center gap-2">
-                  Payment Method
-                  <select
-                    className="border p-2 rounded w-full"
-                    value={modifyModal.paymentMethodId || ''}
-                    onChange={(e) => setModifyModal((p) => ({ ...p, paymentMethodId: e.target.value }))}
-                  >
-                    <option value="">Keep current</option>
-                    {paymentMethods.map((m) => (
-                      <option key={m._id} value={m._id}>{m.name}</option>
-                    ))}
-                  </select>
-                </label>
               </div>
               <div className="mt-3 border rounded p-3 bg-gray-50 text-sm space-y-1">
                 <div><strong>Products Subtotal:</strong> PKR {modifySubtotal.toFixed(2)}</div>
@@ -501,6 +865,8 @@ const OrderManagement = () => {
               <div><strong>Status:</strong> {viewOrderModal.order.status}</div>
               <div><strong>Payment Mode:</strong> {viewOrderModal.order.paymentMode}</div>
               <div><strong>Payment Method:</strong> {viewOrderModal.order.paymentDetails?.methodName || '-'}</div>
+              <div><strong>Courier Company:</strong> {viewOrderModal.order.courier?.courierName || '-'}</div>
+              <div><strong>Tracking Number:</strong> {viewOrderModal.order.courier?.trackingNumber || '-'}</div>
               {viewOrderModal.order.paymentDetails?.receiptUrl ? (
                 <div>
                   <strong>Receipt:</strong>{' '}
@@ -510,12 +876,13 @@ const OrderManagement = () => {
                 </div>
               ) : null}
               <div><strong>Payment Verified:</strong> {viewOrderModal.order.paymentDetails?.isVerified ? 'Yes' : 'No'}</div>
+              <div><strong>Remarks:</strong> {viewOrderModal.order.adminRemarks || '-'}</div>
             </div>
 
             <div className="mb-3 text-sm border rounded p-3 bg-gray-50">
               <div className="font-semibold mb-2">Order Timeline</div>
               <div><strong>Order Placed:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.placedAt || viewOrderModal.order?.createdAt)}</div>
-              <div><strong>Order Confirmed:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.confirmedAt)}</div>
+              <div><strong>Order Confirmed:</strong> {formatDateTime(getConfirmedAtForView(viewOrderModal.order))}</div>
               <div><strong>Order Dispatched:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.dispatchedAt)}</div>
               <div><strong>Order Delivered:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.deliveredAt)}</div>
               <div><strong>Order Cancelled:</strong> {formatDateTime(viewOrderModal.order?.statusTimeline?.cancelledAt)}</div>
@@ -580,6 +947,98 @@ const OrderManagement = () => {
             </div>
             <div className="flex justify-end mt-4">
               <button className="border px-4 py-2 rounded" onClick={() => setFeedbackModal({ open: false, order: null })}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {stockOptionsModal.open && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow w-full max-w-3xl p-4 max-h-[90vh] overflow-auto">
+            <h3 className="text-xl font-semibold mb-3">Stock Options: {stockOptionsModal.order?.orderNumber || '-'}</h3>
+            {stockOptionsModal.loading ? (
+              <div className="text-sm text-gray-600">Loading...</div>
+            ) : (
+              <div className="space-y-3">
+                {stockOptionsModal.order?.stockRequest?.status === 'pending' ? (
+                  <div className="border rounded p-3 bg-amber-50 text-amber-800 text-sm">
+                    Stock request is already pending
+                    {stockOptionsModal.order?.stockRequest?.sourceSiteName ? ` from ${stockOptionsModal.order.stockRequest.sourceSiteName}` : ''}.
+                    Cancel the current request first if you want to request another site.
+                  </div>
+                ) : null}
+                {stockOptionsModal.options.map((opt) => (
+                  <div key={opt.siteId} className="border rounded p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold">{opt.siteName}</div>
+                      <div className={opt.canFulfill ? 'text-green-700' : 'text-red-700'}>
+                        {opt.canFulfill ? 'Can Fulfill' : 'Insufficient'}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm">
+                      {opt.items.map((it, idx) => (
+                        <div key={idx}>
+                          {it.productName}: required {it.requiredQty}, available {it.availableQty}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2">
+                      <div className="flex gap-4">
+                        {isSuperAdmin ? (
+                          <button
+                            disabled={!opt.canFulfill || !!stockOptionsModal.reservingSiteId}
+                            onClick={() => reserveStock(opt.siteId)}
+                            className="text-blue-700 hover:underline disabled:opacity-50"
+                          >
+                            {stockOptionsModal.reservingSiteId === String(opt.siteId) ? 'Reserving...' : 'Reserve From This Site'}
+                          </button>
+                        ) : null}
+                        <button
+                          disabled={!opt.canFulfill || !!stockOptionsModal.reservingSiteId || stockOptionsModal.order?.stockRequest?.status === 'pending'}
+                          onClick={() => createStockRequest(stockOptionsModal.order?._id, opt.siteId)}
+                          className="text-purple-700 hover:underline disabled:opacity-50"
+                        >
+                          Request Stock From Site
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-end mt-4">
+              <button onClick={() => setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' })} className="px-4 py-2 rounded border">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {redirectModal.open && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow p-4 w-full max-w-2xl max-h-[90vh] overflow-auto">
+            <h3 className="text-lg font-semibold mb-3">Redirect Returned Order</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input className="border p-2 rounded" placeholder="Customer Name *" value={redirectModal.customer.name} onChange={(e) => setRedirectModal((p) => ({ ...p, customer: { ...p.customer, name: e.target.value } }))} />
+              <input className="border p-2 rounded" placeholder="Customer Email" value={redirectModal.customer.email} onChange={(e) => setRedirectModal((p) => ({ ...p, customer: { ...p.customer, email: e.target.value } }))} />
+              <input className="border p-2 rounded" placeholder="Customer Mobile *" value={redirectModal.customer.mobile} onChange={(e) => setRedirectModal((p) => ({ ...p, customer: { ...p.customer, mobile: e.target.value } }))} />
+              <input className="border p-2 rounded" placeholder="Customer City *" value={redirectModal.customer.city} onChange={(e) => setRedirectModal((p) => ({ ...p, customer: { ...p.customer, city: e.target.value } }))} />
+              <input className="border p-2 rounded md:col-span-2" placeholder="Customer Address *" value={redirectModal.customer.address} onChange={(e) => setRedirectModal((p) => ({ ...p, customer: { ...p.customer, address: e.target.value } }))} />
+              <select className="border p-2 rounded" value={redirectModal.paymentMode} onChange={(e) => setRedirectModal((p) => ({ ...p, paymentMode: e.target.value }))}>
+                <option value="cod">Cash On Delivery</option>
+                <option value="prepaid">Prepaid</option>
+                <option value="free">Free</option>
+              </select>
+              <input className="border p-2 rounded" placeholder="Payment Method Name" value={redirectModal.paymentMethodName} onChange={(e) => setRedirectModal((p) => ({ ...p, paymentMethodName: e.target.value }))} />
+              <input className="border p-2 rounded" placeholder="Remarks" value={redirectModal.remarks} onChange={(e) => setRedirectModal((p) => ({ ...p, remarks: e.target.value }))} />
+              <select className="border p-2 rounded" value={redirectModal.courierId} onChange={(e) => setRedirectModal((p) => ({ ...p, courierId: e.target.value }))}>
+                <option value="">Select Courier *</option>
+                {couriers.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </select>
+              <input className="border p-2 rounded" placeholder="Tracking Number" value={redirectModal.trackingNumber} onChange={(e) => setRedirectModal((p) => ({ ...p, trackingNumber: e.target.value }))} />
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button className="border px-3 py-2 rounded" onClick={() => setRedirectModal({ open: false, order: null, customer: { name: '', email: '', mobile: '', address: '', city: '' }, courierId: '', trackingNumber: '', paymentMode: 'prepaid', paymentMethodName: '', remarks: '' })}>Cancel</button>
+              <button className="bg-green-600 text-white px-3 py-2 rounded" onClick={submitRedirectReturnedOrder}>Redirect & Dispatch</button>
             </div>
           </div>
         </div>

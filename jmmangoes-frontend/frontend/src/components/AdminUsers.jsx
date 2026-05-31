@@ -19,6 +19,10 @@ const permissionKeys = [
   { key: 'courierManagement', label: 'Courier Management' },
   { key: 'orderManagement', label: 'Order Management' },
   { key: 'feedbackReport', label: 'Feedback Report' },
+  { key: 'salesDashboard', label: 'Sales Dashboard' },
+  { key: 'warehouseManagement', label: 'Warehouse Management' },
+  { key: 'wholesellerManagement', label: 'Wholeseller Management' },
+  { key: 'stockTransfer', label: 'Stock Transfer' },
   { key: 'userManagement', label: 'User Management' },
   { key: 'farmBlocks', label: 'Farm Blocks' },
   { key: 'farmBlockDetails', label: 'Farm Block Details' },
@@ -47,6 +51,8 @@ const createEmptyForm = () => ({
   password: '',
   confirmPassword: '',
   siteAccess: [],
+  warehouseAccess: [],
+  wholesellerAccess: [],
   farmBlockAccess: [],
   isFarmUser: false,
   isSalesUser: true,
@@ -60,15 +66,19 @@ const AdminUsers = () => {
   const canManage = authUser?.role === 'admin' || authUser?.permissions?.userManagement?.manage;
   const [users, setUsers] = useState([]);
   const [sites, setSites] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [wholesellers, setWholesellers] = useState([]);
   const [farmBlocks, setFarmBlocks] = useState([]);
   const [form, setForm] = useState(createEmptyForm());
   const [editingId, setEditingId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
 
   const loadData = async () => {
-    const [usersRes, sitesRes, blocksRes] = await Promise.all([api.get('/users'), api.get('/sites'), api.get('/farm/blocks/assignable')]);
+    const [usersRes, sitesRes, warehousesRes, wholesellersRes, blocksRes] = await Promise.all([api.get('/users'), api.get('/sites'), api.get('/warehouses'), api.get('/wholesellers'), api.get('/farm/blocks/assignable')]);
     setUsers(usersRes.data || []);
     setSites((sitesRes.data || []).filter((s) => s.isActive));
+    setWarehouses((warehousesRes.data || []).filter((w) => w.isActive));
+    setWholesellers((wholesellersRes.data || []).filter((w) => w.isActive));
     setFarmBlocks((blocksRes.data || []).filter((b) => b.isActive !== false));
   };
 
@@ -80,7 +90,11 @@ const AdminUsers = () => {
     e.preventDefault();
     if (!canManage) return toast.warn('No manage permission.');
     try {
-      await api.post('/users', form);
+      const payload = { ...form };
+      if (!String(payload.email || '').trim()) {
+        delete payload.email;
+      }
+      await api.post('/users', payload);
       toast.success('User created.');
       setForm(createEmptyForm());
       await loadData();
@@ -101,6 +115,8 @@ const AdminUsers = () => {
       email: u.email || '',
       role: u.role || 'user',
       siteAccess: (u.siteAccess || []).map((s) => (typeof s === 'string' ? s : s._id)),
+      warehouseAccess: (u.warehouseAccess || []).map((w) => (typeof w === 'string' ? w : w._id)),
+      wholesellerAccess: (u.wholesellerAccess || []).map((w) => (typeof w === 'string' ? w : w._id)),
       farmBlockAccess: (u.farmBlockAccess || []).map((b) => (typeof b === 'string' ? b : b._id)),
       isFarmUser: !!u.isFarmUser,
       isSalesUser: !!u.isSalesUser,
@@ -157,6 +173,48 @@ const AdminUsers = () => {
     }
   };
 
+  const downloadAccessSnapshot = (u) => {
+    const resolveName = (v) => (typeof v === 'string' ? v : v?.name || v?.code || v?._id || '');
+    const permissionLines = permissionKeys.map((p) => {
+      const view = !!u?.permissions?.[p.key]?.view;
+      const manage = !!u?.permissions?.[p.key]?.manage;
+      return `${p.key}: view=${view ? 'yes' : 'no'}, manage=${manage ? 'yes' : 'no'}`;
+    });
+    const lines = [
+      `Generated At: ${new Date().toISOString()}`,
+      `User ID: ${u._id || ''}`,
+      `Name: ${u.name || ''}`,
+      `Username: ${u.username || ''}`,
+      `Email: ${u.email || ''}`,
+      `Role: ${u.role || ''}`,
+      `Active: ${u.isActive ? 'yes' : 'no'}`,
+      `Farm User: ${u.isFarmUser ? 'yes' : 'no'}`,
+      `Sales User: ${u.isSalesUser ? 'yes' : 'no'}`,
+      `Site Access Count: ${(u.siteAccess || []).length}`,
+      `Site Access: ${(u.siteAccess || []).map(resolveName).join(', ') || '-'}`,
+      `Farm Block Access Count: ${(u.farmBlockAccess || []).length}`,
+      `Farm Block Access: ${(u.farmBlockAccess || []).map(resolveName).join(', ') || '-'}`,
+      `Warehouse Access Count: ${(u.warehouseAccess || []).length}`,
+      `Warehouse Access: ${(u.warehouseAccess || []).map((w) => (typeof w === 'string' ? w : `${w.code || ''} ${w.name || ''}`.trim())).join(', ') || '-'}`,
+      `Wholeseller Access Count: ${(u.wholesellerAccess || []).length}`,
+      `Wholeseller Access: ${(u.wholesellerAccess || []).map((w) => (typeof w === 'string' ? w : `${w.code || ''} ${w.name || ''}`.trim())).join(', ') || '-'}`,
+      '',
+      'Permissions:',
+      ...permissionLines,
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const safeUsername = String(u.username || 'user').replace(/[^a-zA-Z0-9-_]/g, '_');
+    const fileName = `user-access-${safeUsername}-${new Date().toISOString().slice(0, 10)}.txt`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const toggleSiteAccess = (siteId) => {
     setForm((prev) => ({
       ...prev,
@@ -172,6 +230,24 @@ const AdminUsers = () => {
       farmBlockAccess: prev.farmBlockAccess.includes(blockId)
         ? prev.farmBlockAccess.filter((id) => id !== blockId)
         : [...prev.farmBlockAccess, blockId],
+    }));
+  };
+
+  const toggleWarehouseAccess = (warehouseId) => {
+    setForm((prev) => ({
+      ...prev,
+      warehouseAccess: prev.warehouseAccess.includes(warehouseId)
+        ? prev.warehouseAccess.filter((id) => id !== warehouseId)
+        : [...prev.warehouseAccess, warehouseId],
+    }));
+  };
+
+  const toggleWholesellerAccess = (wholesellerId) => {
+    setForm((prev) => ({
+      ...prev,
+      wholesellerAccess: prev.wholesellerAccess.includes(wholesellerId)
+        ? prev.wholesellerAccess.filter((id) => id !== wholesellerId)
+        : [...prev.wholesellerAccess, wholesellerId],
     }));
   };
 
@@ -206,6 +282,8 @@ const AdminUsers = () => {
               <th className="border px-3 py-2">Farm Access</th>
               <th className="border px-3 py-2">Sales Access</th>
               <th className="border px-3 py-2">Farm Blocks</th>
+              <th className="border px-3 py-2">Warehouses</th>
+              <th className="border px-3 py-2">Wholesellers</th>
               <th className="border px-3 py-2">Status</th>
               <th className="border px-3 py-2">Actions</th>
             </tr>
@@ -221,9 +299,12 @@ const AdminUsers = () => {
                 <td className="border px-3 py-2">{u.isFarmUser ? 'Yes' : 'No'}</td>
                 <td className="border px-3 py-2">{u.isSalesUser ? 'Yes' : 'No'}</td>
                 <td className="border px-3 py-2">{(u.farmBlockAccess || []).length}</td>
+                <td className="border px-3 py-2">{(u.warehouseAccess || []).length}</td>
+                <td className="border px-3 py-2">{(u.wholesellerAccess || []).length}</td>
                 <td className="border px-3 py-2">{u.isActive ? 'Active' : 'Disabled'}</td>
                 <td className="border px-3 py-2">
                   <div className="flex gap-2">
+                    <button onClick={() => downloadAccessSnapshot(u)} className="text-indigo-700 hover:underline">Download Access</button>
                     <button onClick={() => openEdit(u)} className="text-blue-600 hover:underline">Edit</button>
                     <button onClick={() => handleToggle(u)} className="text-yellow-700 hover:underline">{u.isActive ? 'Disable' : 'Enable'}</button>
                     <button onClick={() => handleDelete(u._id)} className="text-red-600 hover:underline">Remove</button>
@@ -278,6 +359,28 @@ const AdminUsers = () => {
               <label key={b._id} className="inline-flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={form.farmBlockAccess.includes(b._id)} onChange={() => toggleFarmBlockAccess(b._id)} />
                 {b.code} - {b.name}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Warehouse Access</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {warehouses.map((w) => (
+              <label key={w._id} className="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.warehouseAccess.includes(w._id)} onChange={() => toggleWarehouseAccess(w._id)} />
+                {w.code} - {w.name}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="font-semibold mb-1">Wholeseller Access</div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {wholesellers.map((w) => (
+              <label key={w._id} className="inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.wholesellerAccess.includes(w._id)} onChange={() => toggleWholesellerAccess(w._id)} />
+                {w.code} - {w.name}
               </label>
             ))}
           </div>
@@ -378,6 +481,28 @@ const AdminUsers = () => {
                     <label key={b._id} className="inline-flex items-center gap-2 text-sm">
                       <input type="checkbox" checked={form.farmBlockAccess.includes(b._id)} onChange={() => toggleFarmBlockAccess(b._id)} />
                       {b.code} - {b.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold mb-1">Warehouse Access</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {warehouses.map((w) => (
+                    <label key={w._id} className="inline-flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={form.warehouseAccess.includes(w._id)} onChange={() => toggleWarehouseAccess(w._id)} />
+                      {w.code} - {w.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold mb-1">Wholeseller Access</div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {wholesellers.map((w) => (
+                    <label key={w._id} className="inline-flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={form.wholesellerAccess.includes(w._id)} onChange={() => toggleWholesellerAccess(w._id)} />
+                      {w.code} - {w.name}
                     </label>
                   ))}
                 </div>

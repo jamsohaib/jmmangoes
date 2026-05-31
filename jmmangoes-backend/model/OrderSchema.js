@@ -67,6 +67,29 @@ const orderSchema = new mongoose.Schema({
     cancelledAt: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
   },
+  stockReservation: {
+    isReserved: { type: Boolean, default: false },
+    reservedSiteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },
+    reservedSiteName: { type: String, default: '' },
+    reservedAt: { type: Date, default: null },
+    reservedByName: { type: String, default: '' },
+    items: [{
+      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+      productName: { type: String, default: '' },
+      requestedQty: { type: Number, default: 0 },
+      reservedQty: { type: Number, default: 0 },
+    }],
+  },
+  stockRequest: {
+    requestId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    status: { type: String, enum: ['none', 'pending', 'accepted', 'rejected', 'cancelled'], default: 'none' },
+    sourceSiteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },
+    sourceSiteName: { type: String, default: '' },
+    requestedAt: { type: Date, default: null },
+    requestedByName: { type: String, default: '' },
+    respondedAt: { type: Date, default: null },
+    respondedByName: { type: String, default: '' },
+  },
   createdAt: { type: Date, default: Date.now }
 });
 
