@@ -402,7 +402,7 @@ const StockTransfer = () => {
     {
       name: 'Items',
       cell: (r) => (
-        <div className="space-y-2 py-1 min-w-[360px]">
+        <div className="space-y-2 py-1 w-full">
           {(r.items || []).map((i, idx) => {
             const siteLots = orderRequestLotsBySite[String(r.sourceSiteId || '')] || [];
             const productLots = siteLots.filter((l) =>
@@ -413,14 +413,14 @@ const StockTransfer = () => {
                 <div className="text-xs mb-1">{i.productName} x {i.quantity}</div>
                 <div className="space-y-1">
                   {productLots.map((l) => (
-                    <div key={l._id} className="flex items-center gap-2 text-xs">
-                      <div className="flex-1">{l.lotCode} (Avail: {Number(l.quantityAvailable || 0)})</div>
+                    <div key={l._id} className="flex flex-col gap-2 text-xs">
+                      <div className="flex-1 break-all">{l.lotCode} (Avail: {Number(l.quantityAvailable || 0)})</div>
                       <input
                         type="number"
                         min="0"
                         step="1"
                         max={Number(l.quantityAvailable || 0)}
-                        className="border p-1 rounded w-20"
+                        className="border rounded w-full h-10 px-2 text-base"
                         placeholder="Qty"
                         value={orderRequestLotSelection[`${r._id}:${idx}:${l._id}`] ?? ''}
                         onWheel={preventNumberScroll}
@@ -440,7 +440,8 @@ const StockTransfer = () => {
           })}
         </div>
       ),
-      grow: 2.8,
+      grow: 2.2,
+      minWidth: '300px',
       getter: (r) => (r.items || []).map((i) => `${i.productName} x ${i.quantity}`).join('; '),
     },
     { name: 'Requested By', selector: (r) => r.requestedByName || '-', sortable: true, wrap: true, getter: (r) => r.requestedByName || '-' },
@@ -502,6 +503,34 @@ const StockTransfer = () => {
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
+  const requestTableStyles = {
+    tableWrapper: {
+      style: {
+        display: 'block',
+        overflowX: 'auto',
+      },
+    },
+    rows: {
+      style: {
+        minHeight: '84px',
+        alignItems: 'flex-start',
+      },
+    },
+    cells: {
+      style: {
+        paddingTop: '10px',
+        paddingBottom: '10px',
+        overflow: 'visible',
+        alignItems: 'flex-start',
+      },
+    },
+    headCells: {
+      style: {
+        fontSize: '13px',
+      },
+    },
+  };
+
   return (
     <div className="p-3 md:p-4 text-black">
       <h2 className="text-2xl font-bold mb-4">Stock Transfer & Receiving (Lot Based)</h2>
@@ -546,7 +575,18 @@ const StockTransfer = () => {
             <button className="border px-3 py-1 rounded" onClick={() => downloadCsv('order-stock-requests-all.csv', requestColumns, orderRequests)}>Download All</button>
           </div>
         </div>
-        <DataTable columns={requestColumns} data={requestFiltered} pagination highlightOnHover dense responsive persistTableHead noDataComponent="No pending requests." />
+        <div className="overflow-x-auto">
+          <DataTable
+            columns={requestColumns}
+            data={requestFiltered}
+            pagination
+            highlightOnHover
+            responsive
+            persistTableHead
+            customStyles={requestTableStyles}
+            noDataComponent="No pending requests."
+          />
+        </div>
       </div>
 
       {modifyModal.open && (
