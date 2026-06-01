@@ -127,7 +127,7 @@ const SalesDashboard = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         {siteCards.map((card) => (
-          <div key={card.siteName} className="bg-white rounded shadow p-4 border border-gray-200">
+          <div key={`${card.holderType || 'site'}-${card.siteId || card.siteName}`} className="bg-white rounded shadow p-4 border border-gray-200">
             <h3 className="text-lg font-semibold capitalize">{card.siteName}</h3>
             <div className="mt-2 text-sm">
               <div><span className="font-semibold">Overall Sales:</span> {formatCurrency(card.overall.salesAmount)}</div>
@@ -167,4 +167,3 @@ const SalesDashboard = () => {
 };
 
 export default SalesDashboard;
-

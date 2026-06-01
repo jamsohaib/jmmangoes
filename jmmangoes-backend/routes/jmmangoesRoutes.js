@@ -217,12 +217,17 @@ jmm_route.put('/orders/:id/verify-payment', authenticateUser, authorizePage('ord
 jmm_route.put('/orders/:id/feedback-reminder', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleSendFeedbackReminder);
 jmm_route.get('/orders/feedback-report', authenticateUser, authorizePage('feedbackReport', 'view'), jmm_controller.handleFeedbackReport);
 jmm_route.get('/expenses/sites', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetAssignedSites);
+jmm_route.get('/expenses/holders', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetExpenseHolders);
 jmm_route.get('/expense-heads', authenticateUser, authorizePage('manageExpense', 'view'), jmm_controller.handleGetExpenseHeads);
 jmm_route.get('/expense-heads/for-entry', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetExpenseHeads);
 jmm_route.post('/expense-heads', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleCreateExpenseHead);
+jmm_route.put('/expense-heads/:id', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleUpdateExpenseHead);
+jmm_route.delete('/expense-heads/:id', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleDeleteExpenseHead);
 jmm_route.get('/expense-items/manage', authenticateUser, authorizePage('manageExpense', 'view'), jmm_controller.handleGetExpenseItems);
 jmm_route.get('/expense-items', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetExpenseItems);
 jmm_route.post('/expense-items', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleCreateExpenseItem);
+jmm_route.put('/expense-items/:id', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleUpdateExpenseItem);
+jmm_route.delete('/expense-items/:id', authenticateUser, authorizePage('manageExpense', 'manage'), jmm_controller.handleDeleteExpenseItem);
 jmm_route.post('/expense-entries', authenticateUser, authorizePage('addExpense', 'manage'), jmm_controller.handleCreateExpenseEntry);
 jmm_route.get('/expense-entries', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetExpenseEntries);
 jmm_route.put('/expense-entries/:id', authenticateUser, authorizePage('addExpense', 'manage'), jmm_controller.handleUpdateExpenseEntry);

@@ -51,6 +51,58 @@ const ManageExpense = () => {
     }
   };
 
+  const handleEditHead = async (head) => {
+    if (!canManage) return;
+    const name = window.prompt('Update expense head name:', head.name || '');
+    if (name === null) return;
+    const color = window.prompt('Update color code (hex):', head.colorCode || '#6B7280');
+    if (color === null) return;
+    try {
+      await api.put(`/expense-heads/${head._id}`, { name: String(name || '').trim(), colorCode: String(color || '').trim() || '#6B7280' });
+      toast.success('Expense head updated.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to update expense head.');
+    }
+  };
+
+  const handleDeleteHead = async (head) => {
+    if (!canManage) return;
+    if (!window.confirm(`Delete expense head "${head.name}"?`)) return;
+    try {
+      await api.delete(`/expense-heads/${head._id}`);
+      toast.success('Expense head removed.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to remove expense head.');
+    }
+  };
+
+  const handleEditItem = async (item) => {
+    if (!canManage) return;
+    const name = window.prompt('Update expense name:', item.name || '');
+    if (name === null) return;
+    try {
+      await api.put(`/expense-items/${item._id}`, { name: String(name || '').trim(), headId: item.headId });
+      toast.success('Expense name updated.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to update expense name.');
+    }
+  };
+
+  const handleDeleteItem = async (item) => {
+    if (!canManage) return;
+    if (!window.confirm(`Delete expense name "${item.name}"?`)) return;
+    try {
+      await api.delete(`/expense-items/${item._id}`);
+      toast.success('Expense name removed.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to remove expense name.');
+    }
+  };
+
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
@@ -63,6 +115,7 @@ const ManageExpense = () => {
             <tr>
               <th className="border px-3 py-2">Expense Head</th>
               <th className="border px-3 py-2">Color Code</th>
+              <th className="border px-3 py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -75,10 +128,16 @@ const ManageExpense = () => {
                     {h.colorCode}
                   </span>
                 </td>
+                <td className="border px-3 py-2">
+                  <div className="flex gap-3">
+                    <button onClick={() => handleEditHead(h)} className="text-blue-600 hover:underline">Edit</button>
+                    <button onClick={() => handleDeleteHead(h)} className="text-red-600 hover:underline">Remove</button>
+                  </div>
+                </td>
               </tr>
             ))}
             {heads.length === 0 && (
-              <tr><td colSpan={2} className="border px-3 py-3 text-center text-gray-500">No expense heads found.</td></tr>
+              <tr><td colSpan={3} className="border px-3 py-3 text-center text-gray-500">No expense heads found.</td></tr>
             )}
           </tbody>
         </table>
@@ -102,7 +161,7 @@ const ManageExpense = () => {
       <div className="overflow-x-auto bg-white rounded shadow">
         <div className="px-4 py-3 border-b font-semibold">Expense Names</div>
         <table className="min-w-full text-sm">
-          <thead><tr><th className="border px-3 py-2">Head</th><th className="border px-3 py-2">Expense Name</th></tr></thead>
+          <thead><tr><th className="border px-3 py-2">Head</th><th className="border px-3 py-2">Expense Name</th><th className="border px-3 py-2">Actions</th></tr></thead>
           <tbody>
             {items.map((it) => {
               const head = heads.find((h) => h._id === it.headId);
@@ -110,10 +169,16 @@ const ManageExpense = () => {
                 <tr key={it._id}>
                   <td className="border px-3 py-2">{head?.name || '-'}</td>
                   <td className="border px-3 py-2">{it.name}</td>
+                  <td className="border px-3 py-2">
+                    <div className="flex gap-3">
+                      <button onClick={() => handleEditItem(it)} className="text-blue-600 hover:underline">Edit</button>
+                      <button onClick={() => handleDeleteItem(it)} className="text-red-600 hover:underline">Remove</button>
+                    </div>
+                  </td>
                 </tr>
               );
             })}
-            {items.length === 0 && <tr><td colSpan={2} className="border px-3 py-3 text-center text-gray-500">No expense names found.</td></tr>}
+            {items.length === 0 && <tr><td colSpan={3} className="border px-3 py-3 text-center text-gray-500">No expense names found.</td></tr>}
           </tbody>
         </table>
       </div>

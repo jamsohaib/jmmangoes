@@ -145,9 +145,9 @@ const ProductsPage = () => {
     }
   };
 
-  const handleRemoveStoreAssignment = async (productId, siteId) => {
+  const handleRemoveStoreAssignment = async (productId, siteId, productName = 'this product', storeName = 'this store') => {
     if (!canManage) return toast.warn('No manage permission.');
-    if (!window.confirm('Remove this store assignment?')) return;
+    if (!window.confirm(`Remove "${productName}" from "${storeName}"?`)) return;
     try {
       await api.post(`/products/${productId}/remove-location-price`, { siteId });
       toast.success('Store assignment removed.');
@@ -157,9 +157,9 @@ const ProductsPage = () => {
     }
   };
 
-  const handleDeleteProduct = async (id) => {
+  const handleDeleteProduct = async (id, productName = 'this product item') => {
     if (!canManage) return toast.warn('No manage permission.');
-    if (!window.confirm('Delete this product item completely?')) return;
+    if (!window.confirm(`Delete "${productName}" from Farm Product Item List (Master)? This removes it completely from all stores.`)) return;
     try {
       await api.delete(`/products/${id}`);
       toast.success('Product deleted.');
@@ -351,8 +351,7 @@ const ProductsPage = () => {
                           <button className="text-blue-600 hover:underline" onClick={() => openEditModal(products.find((p) => p._id === r.productId))}>Edit Item</button>
                           <button className="text-yellow-700 hover:underline" onClick={() => handleToggleProductActive(r.productId, r.isActive)}>{r.isActive ? 'Disable' : 'Enable'}</button>
                           <button className="text-orange-700 hover:underline" onClick={() => handleToggleAvailability(r.productId, r.isAvailableForCart)}>{r.isAvailableForCart ? 'Mark Unavailable' : 'Mark Available'}</button>
-                          {r.siteId ? <button className="text-red-600 hover:underline" onClick={() => handleRemoveStoreAssignment(r.productId, r.siteId)}>Remove From Store</button> : null}
-                          <button className="text-red-700 hover:underline" onClick={() => handleDeleteProduct(r.productId)}>Delete Item</button>
+                          {r.siteId ? <button className="text-red-600 hover:underline" onClick={() => handleRemoveStoreAssignment(r.productId, r.siteId, r.productName, r.siteName || storeName)}>Remove From Store</button> : null}
                         </div>
                       </td>
                     </tr>
@@ -386,7 +385,7 @@ const ProductsPage = () => {
                 <td className="border px-3 py-2">
                   <div className="flex gap-2">
                     <button className="text-blue-600 hover:underline" onClick={() => openEditModal(p)}>Edit</button>
-                    <button className="text-red-600 hover:underline" onClick={() => handleDeleteProduct(p._id)}>Delete</button>
+                    <button className="text-red-600 hover:underline" onClick={() => handleDeleteProduct(p._id, p.name)}>Delete</button>
                   </div>
                 </td>
               </tr>

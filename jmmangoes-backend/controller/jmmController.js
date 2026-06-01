@@ -2445,11 +2445,15 @@ async function handleGetSalesDashboardSummary(req, res) {
 
     let allowedSiteIds = null;
     let allowOnline = true;
+    let activeSites = await Site.find({ isActive: true }).select('_id name').sort({ name: 1 });
     if (req.user.role !== 'admin') {
       allowedSiteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
-      const allowedSites = await Site.find({ _id: { $in: allowedSiteIds } }).select('name');
+      activeSites = activeSites.filter((s) => allowedSiteIds.some((id) => String(id) === String(s._id)));
+      const allowedSites = activeSites;
       allowOnline = allowedSites.some((s) => String(s.name || '').trim().toLowerCase() === 'online');
     }
+    const siteIdToName = new Map(activeSites.map((s) => [String(s._id), s.name]));
+    const onlineSite = activeSites.find((s) => String(s.name || '').trim().toLowerCase() === 'online') || null;
 
     const baseSiteMatch = (range) => {
       const match = {};
@@ -2462,7 +2466,7 @@ async function handleGetSalesDashboardSummary(req, res) {
       { $match: baseSiteMatch(range) },
       {
         $group: {
-          _id: '$siteName',
+          _id: '$siteId',
           salesAmount: {
             $sum: {
               $cond: [
@@ -2485,11 +2489,45 @@ async function handleGetSalesDashboardSummary(req, res) {
       },
     ]);
 
+    const baseExpenseMatch = (range) => {
+      const match = {};
+      if (range) match.date = range;
+      if (req.user.role !== 'admin') {
+        const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        const warehouseIds = (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        const wholesellerIds = (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        match.$or = [
+          { holderType: 'site', holderId: { $in: siteIds } },
+          { holderType: 'online', holderId: { $in: siteIds } },
+          { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+          { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
+          { siteId: { $in: siteIds } }, // backward compatibility for old expense rows
+        ];
+      }
+      return match;
+    };
+
     const expenseGroupPipeline = (range) => ([
-      { $match: baseSiteMatch(range) },
+      { $match: baseExpenseMatch(range) },
+      {
+        $addFields: {
+          effectiveHolderType: {
+            $ifNull: [
+              '$holderType',
+              {
+                $cond: [{ $eq: [{ $toLower: { $ifNull: ['$siteName', ''] } }, 'online'] }, 'online', 'site'],
+              },
+            ],
+          },
+          effectiveHolderId: { $ifNull: ['$holderId', '$siteId'] },
+        },
+      },
       {
         $group: {
-          _id: '$siteName',
+          _id: {
+            holderType: '$effectiveHolderType',
+            holderId: '$effectiveHolderId',
+          },
           expenseAmount: { $sum: '$amount' },
         },
       },
@@ -2552,14 +2590,40 @@ async function handleGetSalesDashboardSummary(req, res) {
     const onlineDaily = onlineDailyAgg[0] || { salesAmount: 0, salesQty: 0 };
     const onlineRange = onlineRangeAgg[0] || { salesAmount: 0, salesQty: 0 };
 
-    const allSiteNames = new Set();
-    const collectSiteNames = (rows) => rows.forEach((r) => allSiteNames.add(String(r._id || '').trim()));
-    [salesOverall, salesDaily, salesRange, expenseOverall, expenseDaily, expenseRange].forEach(collectSiteNames);
-    if (allowOnline) allSiteNames.add('online');
+    const allHolderKeys = new Set(activeSites.map((s) => `site:${String(s._id)}`));
+    const warehouseHolders = req.user.role === 'admin'
+      ? await Warehouse.find({ isActive: true }).select('_id name')
+      : await Warehouse.find({ _id: { $in: (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
+    const wholesellerHolders = req.user.role === 'admin'
+      ? await Wholeseller.find({ isActive: true }).select('_id name')
+      : await Wholeseller.find({ _id: { $in: (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
+    const holderNameMap = new Map();
+    activeSites.forEach((s) => {
+      holderNameMap.set(`site:${String(s._id)}`, s.name);
+      holderNameMap.set(`online:${String(s._id)}`, s.name);
+    });
+    warehouseHolders.forEach((w) => {
+      holderNameMap.set(`warehouse:${String(w._id)}`, w.name);
+      allHolderKeys.add(`warehouse:${String(w._id)}`);
+    });
+    wholesellerHolders.forEach((w) => {
+      holderNameMap.set(`wholeseller:${String(w._id)}`, w.name);
+      allHolderKeys.add(`wholeseller:${String(w._id)}`);
+    });
 
     const toMap = (rows, valueKey) => {
       const m = new Map();
       rows.forEach((r) => m.set(String(r._id || '').trim(), Number(r[valueKey] || 0)));
+      return m;
+    };
+    const toExpenseMap = (rows) => {
+      const m = new Map();
+      rows.forEach((r) => {
+        const type = String(r?._id?.holderType || '').trim();
+        const id = String(r?._id?.holderId || '').trim();
+        if (!type || !id) return;
+        m.set(`${type}:${id}`, Number(r.expenseAmount || 0));
+      });
       return m;
     };
     const toDualMap = (rows) => {
@@ -2574,27 +2638,48 @@ async function handleGetSalesDashboardSummary(req, res) {
     const salesOverallMap = toDualMap(salesOverall);
     const salesDailyMap = toDualMap(salesDaily);
     const salesRangeMap = toDualMap(salesRange);
-    const expenseOverallMap = toMap(expenseOverall, 'expenseAmount');
-    const expenseDailyMap = toMap(expenseDaily, 'expenseAmount');
-    const expenseRangeMap = toMap(expenseRange, 'expenseAmount');
+    const expenseOverallMap = toExpenseMap(expenseOverall);
+    const expenseDailyMap = toExpenseMap(expenseDaily);
+    const expenseRangeMap = toExpenseMap(expenseRange);
 
-    if (allowOnline) {
-      salesOverallMap.set('online', onlineOverall);
-      salesDailyMap.set('online', onlineDaily);
-      if (selectedRange) salesRangeMap.set('online', onlineRange);
+    if (allowOnline && onlineSite?._id) {
+      const onlineSiteId = String(onlineSite._id);
+      const existingOverall = salesOverallMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
+      const existingDaily = salesDailyMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
+      const existingRange = salesRangeMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
+      salesOverallMap.set(onlineSiteId, {
+        salesAmount: Number(existingOverall.salesAmount || 0) + Number(onlineOverall.salesAmount || 0),
+        salesQty: Number(existingOverall.salesQty || 0) + Number(onlineOverall.salesQty || 0),
+      });
+      salesDailyMap.set(onlineSiteId, {
+        salesAmount: Number(existingDaily.salesAmount || 0) + Number(onlineDaily.salesAmount || 0),
+        salesQty: Number(existingDaily.salesQty || 0) + Number(onlineDaily.salesQty || 0),
+      });
+      if (selectedRange) {
+        salesRangeMap.set(onlineSiteId, {
+          salesAmount: Number(existingRange.salesAmount || 0) + Number(onlineRange.salesAmount || 0),
+          salesQty: Number(existingRange.salesQty || 0) + Number(onlineRange.salesQty || 0),
+        });
+      }
+      allHolderKeys.add(`site:${onlineSiteId}`);
     }
 
-    const siteCards = Array.from(allSiteNames)
+    const siteCards = Array.from(allHolderKeys)
       .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b))
-      .map((siteName) => {
-        const ovSales = salesOverallMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
-        const dySales = salesDailyMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
-        const rgSales = salesRangeMap.get(siteName) || { salesAmount: 0, salesQty: 0 };
-        const ovExp = Number(expenseOverallMap.get(siteName) || 0);
-        const dyExp = Number(expenseDailyMap.get(siteName) || 0);
-        const rgExp = Number(expenseRangeMap.get(siteName) || 0);
+      .sort((a, b) => String(holderNameMap.get(a) || '').localeCompare(String(holderNameMap.get(b) || '')))
+      .map((holderKey) => {
+        const [holderType, siteId] = String(holderKey).split(':');
+        const siteName = holderNameMap.get(holderKey) || siteIdToName.get(siteId) || 'Unknown Site';
+        const isSiteLike = holderType === 'site' || holderType === 'online';
+        const ovSales = isSiteLike ? (salesOverallMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
+        const dySales = isSiteLike ? (salesDailyMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
+        const rgSales = isSiteLike ? (salesRangeMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
+        const ovExp = Number(expenseOverallMap.get(holderKey) || 0);
+        const dyExp = Number(expenseDailyMap.get(holderKey) || 0);
+        const rgExp = Number(expenseRangeMap.get(holderKey) || 0);
         return {
+          holderType,
+          siteId,
           siteName,
           overall: {
             salesAmount: ovSales.salesAmount,
@@ -2841,6 +2926,59 @@ async function handleCreateExpenseHead(req, res) {
   }
 }
 
+async function handleUpdateExpenseHead(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, colorCode, isActive } = req.body;
+    const head = await ExpenseHead.findById(id);
+    if (!head) return res.status(404).json({ message: 'Expense head not found' });
+
+    if (typeof name !== 'undefined') {
+      const safeName = String(name || '').trim();
+      if (!safeName) return res.status(400).json({ message: 'Expense head name is required' });
+      const exists = await ExpenseHead.findOne({
+        _id: { $ne: id },
+        name: { $regex: new RegExp(`^${safeName}$`, 'i') },
+      });
+      if (exists) return res.status(400).json({ message: 'Expense head already exists' });
+      head.name = safeName;
+    }
+    if (typeof colorCode !== 'undefined') head.colorCode = String(colorCode || '').trim() || '#6B7280';
+    if (typeof isActive !== 'undefined') head.isActive = !!isActive;
+    await head.save();
+
+    if (typeof name !== 'undefined') {
+      await ExpenseEntry.updateMany({ headId: head._id }, { $set: { headName: head.name } });
+    }
+
+    return res.status(200).json({ success: true, head });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteExpenseHead(req, res) {
+  try {
+    const { id } = req.params;
+    const head = await ExpenseHead.findById(id);
+    if (!head) return res.status(404).json({ message: 'Expense head not found' });
+
+    const itemCount = await ExpenseItem.countDocuments({ headId: id });
+    if (itemCount > 0) {
+      return res.status(400).json({ message: 'Cannot delete head with linked expense names. Remove/shift names first.' });
+    }
+    const entryCount = await ExpenseEntry.countDocuments({ headId: id });
+    if (entryCount > 0) {
+      return res.status(400).json({ message: 'Cannot delete head with expense history.' });
+    }
+
+    await ExpenseHead.findByIdAndDelete(id);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetExpenseItems(req, res) {
   try {
     await ensureDefaultExpenseSetup();
@@ -2868,19 +3006,76 @@ async function handleCreateExpenseItem(req, res) {
   }
 }
 
+async function handleUpdateExpenseItem(req, res) {
+  try {
+    const { id } = req.params;
+    const { headId, name, isActive } = req.body;
+    const item = await ExpenseItem.findById(id);
+    if (!item) return res.status(404).json({ message: 'Expense item not found' });
+
+    const nextHeadId = headId || item.headId;
+    const nextName = typeof name !== 'undefined' ? String(name || '').trim() : item.name;
+    if (!nextName) return res.status(400).json({ message: 'Expense name is required' });
+
+    const exists = await ExpenseItem.findOne({
+      _id: { $ne: id },
+      headId: nextHeadId,
+      name: { $regex: new RegExp(`^${nextName}$`, 'i') },
+    });
+    if (exists) return res.status(400).json({ message: 'Expense name already exists in this head' });
+
+    const head = await ExpenseHead.findById(nextHeadId);
+    if (!head) return res.status(404).json({ message: 'Expense head not found' });
+
+    item.headId = nextHeadId;
+    item.name = nextName;
+    if (typeof isActive !== 'undefined') item.isActive = !!isActive;
+    await item.save();
+
+    await ExpenseEntry.updateMany({ itemId: item._id }, { $set: { itemName: item.name, headId: head._id, headName: head.name } });
+
+    return res.status(200).json({ success: true, item });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteExpenseItem(req, res) {
+  try {
+    const { id } = req.params;
+    const item = await ExpenseItem.findById(id);
+    if (!item) return res.status(404).json({ message: 'Expense item not found' });
+
+    const used = await ExpenseEntry.countDocuments({ itemId: item._id });
+    if (used > 0) return res.status(400).json({ message: 'Cannot delete expense name with existing history.' });
+
+    await ExpenseItem.findByIdAndDelete(id);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateExpenseEntry(req, res) {
   try {
-    const { siteId, date, headId, itemId, itemName, amount, remarks = '' } = req.body;
+    const { siteId, holderType, holderId, date, headId, itemId, itemName, amount, remarks = '' } = req.body;
     const value = Number(amount);
-    if (!siteId || !headId || Number.isNaN(value) || value < 0) {
+    if (!headId || Number.isNaN(value) || value < 0) {
       return res.status(400).json({ message: 'Invalid expense entry data' });
     }
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
+    let holder = null;
+    if (holderType && holderId) {
+      holder = await resolveEntity(holderType, holderId, { allowOnlineName: true });
+      if (!holder) return res.status(404).json({ message: 'Expense holder not found' });
+      if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
+    } else if (siteId) {
+      const site = await Site.findById(siteId);
+      if (!site) return res.status(404).json({ message: 'Site not found' });
+      holder = { type: String(site.name || '').trim().toLowerCase() === 'online' ? 'online' : 'site', id: site._id, name: site.name };
+      if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Site access denied' });
+    } else {
+      return res.status(400).json({ message: 'holderType and holderId are required' });
     }
-    const site = await Site.findById(siteId);
-    if (!site) return res.status(404).json({ message: 'Site not found' });
     const head = await ExpenseHead.findById(headId);
     if (!head) return res.status(404).json({ message: 'Expense head not found' });
 
@@ -2895,8 +3090,11 @@ async function handleCreateExpenseEntry(req, res) {
     if (!resolvedItemName) return res.status(400).json({ message: 'Expense name is required' });
 
     const entry = await ExpenseEntry.create({
-      siteId: site._id,
-      siteName: site.name,
+      siteId: holder.type === 'site' || holder.type === 'online' ? holder.id : null,
+      siteName: holder.type === 'site' || holder.type === 'online' ? holder.name : '',
+      holderType: holder.type,
+      holderId: holder.id,
+      holderName: holder.name,
       date: date ? new Date(date) : new Date(),
       headId: head._id,
       headName: head.name,
@@ -2915,9 +3113,15 @@ async function handleCreateExpenseEntry(req, res) {
 
 async function handleGetExpenseEntries(req, res) {
   try {
-    const { siteId, dateFrom, dateTo } = req.query;
+    const { siteId, holderType, holderId, dateFrom, dateTo } = req.query;
     const query = {};
-    if (siteId) query.siteId = siteId;
+    const normalizedHolderType = normalizeEntityType(holderType);
+    if (normalizedHolderType && holderId) {
+      query.holderType = normalizedHolderType;
+      query.holderId = holderId;
+    } else if (siteId) {
+      query.siteId = siteId;
+    }
     if (dateFrom || dateTo) {
       const range = {};
       if (dateFrom) {
@@ -2933,12 +3137,50 @@ async function handleGetExpenseEntries(req, res) {
       query.date = range;
     }
     if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (siteId && !allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-      if (!siteId) query.siteId = { $in: Array.from(allowedSet) };
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+      const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+
+      if (query.holderType && query.holderId) {
+        if (!userCanAccessEntity(req, query.holderType, query.holderId)) {
+          return res.status(403).json({ message: 'Holder access denied' });
+        }
+      } else if (siteId) {
+        if (!siteSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
+      } else {
+        query.$or = [
+          { holderType: 'site', holderId: { $in: Array.from(siteSet) } },
+          { holderType: 'online', holderId: { $in: Array.from(siteSet) } },
+          { holderType: 'warehouse', holderId: { $in: Array.from(warehouseSet) } },
+          { holderType: 'wholeseller', holderId: { $in: Array.from(wholesellerSet) } },
+          { siteId: { $in: Array.from(siteSet) } }, // backward compatibility
+        ];
+      }
     }
     const entries = await ExpenseEntry.find(query).sort({ date: -1, createdAt: -1 }).limit(1000);
     return res.status(200).json(entries);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetExpenseHolders(req, res) {
+  try {
+    await ensureOnlineSite();
+    let sites = await Site.find({ isActive: true }).sort({ name: 1 });
+    let warehouses = await Warehouse.find({ isActive: true }).sort({ name: 1 });
+    let wholesellers = await Wholeseller.find({ isActive: true }).sort({ name: 1 });
+
+    if (req.user.role !== 'admin') {
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+      const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+      sites = sites.filter((s) => siteSet.has(String(s._id)));
+      warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
+      wholesellers = wholesellers.filter((w) => wholesellerSet.has(String(w._id)));
+    }
+
+    return res.status(200).json({ sites, warehouses, wholesellers });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -3700,12 +3942,29 @@ async function handleRespondOrderStockRequest(req, res) {
     request.respondedByName = req.user.name || req.user.username || '';
     await request.save();
 
-    const toEmail = order.customer?.email;
-    const subject = `Order ${order.orderNumber} Stock Request ${action === 'accepted' ? 'Accepted' : 'Rejected'}`;
+    const deskName = request.requestedByName || 'order-desk';
+    const subject = `[Order Desk: ${deskName}] Order ${order.orderNumber} Stock Request ${action === 'accepted' ? 'Accepted' : 'Rejected'}`;
     const text = action === 'accepted'
       ? `Stock request for order ${order.orderNumber} has been accepted by ${request.sourceSiteName}. You may now confirm the order.`
       : `Stock request for order ${order.orderNumber} has been rejected by ${request.sourceSiteName}. You can cancel or request from another store.`;
-    await sendOrderAlertEmails(subject, text, toEmail);
+    const fallbackEmail = 'engr.dr.ahmed.sohaib@gmail.com';
+    const recipients = new Set();
+
+    // Always notify the original requester (if email exists)
+    let targetEmail = '';
+    if (request?.requestedBy) {
+      const requesterUser = await userDetails.findById(request.requestedBy).select('email');
+      targetEmail = String(requesterUser?.email || '').trim().toLowerCase();
+    }
+    if (targetEmail) recipients.add(targetEmail);
+
+    // Also notify directed online admin users (stock-transfer manage + online access)
+    const onlineSite = await ensureOnlineSite();
+    const onlineRecipients = await getStockTransferRecipientsByEntity('online', onlineSite?._id);
+    (onlineRecipients || []).forEach((em) => { if (em) recipients.add(String(em).trim().toLowerCase()); });
+
+    if (!recipients.size) recipients.add(fallbackEmail);
+    await sendMail({ to: Array.from(recipients).join(','), subject, text });
 
     return res.status(200).json({ success: true, request, order });
   } catch (err) {
@@ -6008,6 +6267,7 @@ module.exports = {
     handleGetStockHolders,
     handleGetStockTransferHolders,
     handleGetAssignedSites,
+    handleGetExpenseHolders,
     handleGetSiteStock,
     handleCreateSalePointEntry,
     handleCreateSaleCheckout,
@@ -6032,8 +6292,12 @@ module.exports = {
     handleCustomerDirectory,
     handleGetExpenseHeads,
     handleCreateExpenseHead,
+    handleUpdateExpenseHead,
+    handleDeleteExpenseHead,
     handleGetExpenseItems,
     handleCreateExpenseItem,
+    handleUpdateExpenseItem,
+    handleDeleteExpenseItem,
     handleCreateExpenseEntry,
     handleGetExpenseEntries,
     handleUpdateExpenseEntry,

@@ -11,12 +11,13 @@ const AddExpenses = () => {
   const canView = user?.role === 'admin' || user?.permissions?.addExpense?.view;
   const canManage = user?.role === 'admin' || user?.permissions?.addExpense?.manage;
   const isSuperUser = user?.role === 'admin';
-  const [sites, setSites] = useState([]);
+  const [holders, setHolders] = useState({ sites: [], warehouses: [], wholesellers: [] });
   const [heads, setHeads] = useState([]);
   const [items, setItems] = useState([]);
   const [entries, setEntries] = useState([]);
 
-  const [siteId, setSiteId] = useState('');
+  const [holderType, setHolderType] = useState('site');
+  const [holderId, setHolderId] = useState('');
   const [entryDate, setEntryDate] = useState(todayISO);
   const [headId, setHeadId] = useState('');
   const [itemId, setItemId] = useState('');
@@ -35,21 +36,24 @@ const AddExpenses = () => {
   const [expenseSearch, setExpenseSearch] = useState('');
 
   const loadMasters = async () => {
-    const [sitesRes, headsRes, itemsRes] = await Promise.all([
-      api.get('/expenses/sites'),
+    const [holdersRes, headsRes, itemsRes] = await Promise.all([
+      api.get('/expenses/holders'),
       api.get('/expense-heads/for-entry'),
       api.get('/expense-items'),
     ]);
-    const s = sitesRes.data || [];
-    setSites(s);
+    const h = holdersRes.data || { sites: [], warehouses: [], wholesellers: [] };
+    setHolders(h);
     setHeads(headsRes.data || []);
     setItems(itemsRes.data || []);
-    if (!siteId && s.length) setSiteId(s[0]._id);
+    if (!holderId) {
+      const defaultOptions = (h.sites || []);
+      if (defaultOptions.length) setHolderId(defaultOptions[0]._id);
+    }
   };
 
-  const loadEntries = async (targetSiteId = siteId) => {
-    if (!targetSiteId) return setEntries([]);
-    const res = await api.get('/expense-entries', { params: { siteId: targetSiteId, dateFrom, dateTo } });
+  const loadEntries = async (targetHolderType = holderType, targetHolderId = holderId) => {
+    if (!targetHolderId) return setEntries([]);
+    const res = await api.get('/expense-entries', { params: { holderType: targetHolderType, holderId: targetHolderId, dateFrom, dateTo } });
     setEntries(res.data || []);
   };
 
@@ -58,8 +62,29 @@ const AddExpenses = () => {
   }, [canView]);
 
   useEffect(() => {
-    if (canView && siteId) loadEntries(siteId).catch(console.error);
-  }, [canView, siteId, dateFrom, dateTo]);
+    if (canView && holderId) loadEntries(holderType, holderId).catch(console.error);
+  }, [canView, holderType, holderId, dateFrom, dateTo]);
+
+  const holderTypeOptions = [
+    { value: 'site', label: 'Sale Point / Site' },
+    { value: 'online', label: 'Online' },
+    { value: 'warehouse', label: 'Warehouse' },
+    { value: 'wholeseller', label: 'Wholeseller' },
+  ];
+
+  const holderChoices = useMemo(() => {
+    if (holderType === 'site') return holders.sites || [];
+    if (holderType === 'online') return (holders.sites || []).filter((s) => String(s.name || '').trim().toLowerCase() === 'online');
+    if (holderType === 'warehouse') return holders.warehouses || [];
+    if (holderType === 'wholeseller') return holders.wholesellers || [];
+    return [];
+  }, [holderType, holders]);
+
+  useEffect(() => {
+    if (!holderId && holderChoices.length) {
+      setHolderId(holderChoices[0]._id);
+    }
+  }, [holderId, holderChoices]);
 
   const filteredItems = useMemo(
     () => items.filter((i) => String(i.headId) === String(headId)),
@@ -69,12 +94,13 @@ const AddExpenses = () => {
   const handleSaveExpense = async () => {
     if (!canManage) return toast.warn('No manage permission.');
     const value = Number(amount);
-    if (!siteId || !headId || Number.isNaN(value) || value < 0) return toast.warn('Provide valid expense data.');
+    if (!holderId || !headId || Number.isNaN(value) || value < 0) return toast.warn('Provide valid expense data.');
     const isOther = itemId === 'other';
     if ((!itemId || isOther) && !customItemName.trim()) return toast.warn('Select expense name or enter other name.');
     try {
       await api.post('/expense-entries', {
-        siteId,
+        holderType,
+        holderId,
         date: entryDate,
         headId,
         itemId: isOther ? null : (itemId || null),
@@ -87,17 +113,18 @@ const AddExpenses = () => {
       setCustomItemName('');
       setAmount('');
       setRemarks('');
-      await loadEntries(siteId);
+      await loadEntries(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to save expense entry.');
     }
   };
 
   const downloadCsv = (rows = entries, suffix = 'all') => {
-    const headers = ['Date & Time', 'Site', 'Head', 'Expense Name', 'Amount', 'Remarks', 'Entered By'];
+    const headers = ['Date & Time', 'Holder Type', 'Holder', 'Head', 'Expense Name', 'Amount', 'Remarks', 'Entered By'];
     const csvRows = rows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
-      `"${String(e.siteName || '').replace(/"/g, '""')}"`,
+      `"${String(e.holderType || (String(e.siteName || '').toLowerCase() === 'online' ? 'online' : 'site')).replace(/"/g, '""')}"`,
+      `"${String(e.holderName || e.siteName || '').replace(/"/g, '""')}"`,
       `"${String(e.headName || '').replace(/"/g, '""')}"`,
       `"${String(e.itemName || '').replace(/"/g, '""')}"`,
       `"${Number(e.amount || 0).toFixed(2)}"`,
@@ -124,6 +151,8 @@ const AddExpenses = () => {
     const q = expenseSearch.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((e) =>
+      String(e.holderType || '').toLowerCase().includes(q) ||
+      String(e.holderName || e.siteName || '').toLowerCase().includes(q) ||
       String(e.headName || '').toLowerCase().includes(q) ||
       String(e.itemName || '').toLowerCase().includes(q) ||
       String(e.remarks || '').toLowerCase().includes(q) ||
@@ -139,6 +168,8 @@ const AddExpenses = () => {
         sortable: true,
         wrap: true,
       },
+      { name: 'Holder Type', selector: (row) => row.holderType || (String(row.siteName || '').toLowerCase() === 'online' ? 'online' : 'site'), sortable: true, wrap: true },
+      { name: 'Holder', selector: (row) => row.holderName || row.siteName || '-', sortable: true, wrap: true },
       { name: 'Head', selector: (row) => row.headName || '-', sortable: true, wrap: true },
       { name: 'Expense', selector: (row) => row.itemName || '-', sortable: true, wrap: true },
       {
@@ -196,7 +227,7 @@ const AddExpenses = () => {
       });
       toast.success('Expense updated.');
       setEditingEntry(null);
-      await loadEntries(siteId);
+      await loadEntries(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to update expense.');
     }
@@ -207,7 +238,7 @@ const AddExpenses = () => {
     try {
       await api.delete(`/expense-entries/${id}`);
       toast.success('Expense removed.');
-      await loadEntries(siteId);
+      await loadEntries(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to remove expense.');
     }
@@ -221,10 +252,16 @@ const AddExpenses = () => {
 
       <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
         <div>
-          <label className="block text-sm font-medium mb-1">Site</label>
-          <select value={siteId} onChange={(e) => setSiteId(e.target.value)} className="w-full border p-2 rounded">
-            <option value="">Select Site</option>
-            {sites.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+          <label className="block text-sm font-medium mb-1">Holder Type</label>
+          <select value={holderType} onChange={(e) => { const next = e.target.value; setHolderType(next); setHolderId(''); }} className="w-full border p-2 rounded">
+            {holderTypeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Holder</label>
+          <select value={holderId} onChange={(e) => setHolderId(e.target.value)} className="w-full border p-2 rounded">
+            <option value="">Select Holder</option>
+            {holderChoices.map((h) => <option key={h._id} value={h._id}>{h.name || `${h.code || ''} ${h.name || ''}`.trim()}</option>)}
           </select>
         </div>
         <div>
@@ -254,7 +291,7 @@ const AddExpenses = () => {
       <div className="bg-white rounded shadow p-4 mb-3 grid grid-cols-1 md:grid-cols-4 gap-3">
         <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="border p-2 rounded" />
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="border p-2 rounded" />
-        <button onClick={() => loadEntries(siteId)} className="bg-blue-600 text-white px-4 py-2 rounded">Apply Range</button>
+        <button onClick={() => loadEntries(holderType, holderId)} className="bg-blue-600 text-white px-4 py-2 rounded">Apply Range</button>
         <button onClick={() => downloadCsv(entries, 'all')} className="bg-green-600 text-white px-4 py-2 rounded">Download CSV</button>
       </div>
 

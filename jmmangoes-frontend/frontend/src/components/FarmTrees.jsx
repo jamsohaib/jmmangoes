@@ -313,13 +313,12 @@ const FarmTrees = () => {
         body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
         .page { page-break-after: always; break-after: page; }
         .page:last-child { page-break-after: auto; break-after: auto; }
-        .title { font-size: 16px; font-weight: 700; margin-bottom: 4mm; }
-        .subtitle { font-size: 12px; margin-bottom: 6mm; color: #333; }
         .grid {
           display: grid;
           grid-template-columns: repeat(2, 1fr);
           column-gap: 16mm;
-          row-gap: 20mm;
+          row-gap: 60mm;
+          margin-top: 22mm;
         }
         .card {
           border: 1px solid #222;
@@ -344,11 +343,15 @@ const FarmTrees = () => {
           font-size: 12px;
           font-weight: 700;
         }
+        .footer-meta {
+          margin-top: 4mm;
+          font-size: 10px;
+          text-align: center;
+          color: #444;
+        }
       </style></head><body>
       ${chunked.map((pageRows, pageIndex) => `
         <section class="page">
-          <div class="title">JM Mangoes Farm - Block Tree QR Labels</div>
-          <div class="subtitle">Block: ${selectedBlockObj.code || ''} - ${selectedBlockObj.name || ''} | Page ${pageIndex + 1} of ${chunked.length}</div>
           <div class="grid">
             ${pageRows.map((t) => `
               <div class="card">
@@ -357,6 +360,7 @@ const FarmTrees = () => {
               </div>
             `).join('')}
           </div>
+          <div class="footer-meta">Block: ${selectedBlockObj.code || ''} - ${selectedBlockObj.name || ''} | Page ${pageIndex + 1} of ${chunked.length}</div>
         </section>
       `).join('')}
       <script>window.onload=function(){window.print();}</script>

@@ -2,8 +2,11 @@ const mongoose = require('mongoose');
 
 const expenseEntrySchema = new mongoose.Schema(
   {
-    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', required: true },
-    siteName: { type: String, required: true, trim: true },
+    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', required: false, default: null },
+    siteName: { type: String, required: false, default: '', trim: true },
+    holderType: { type: String, enum: ['site', 'online', 'warehouse', 'wholeseller'], required: false, default: 'site' },
+    holderId: { type: mongoose.Schema.Types.ObjectId, required: false, default: null },
+    holderName: { type: String, required: false, default: '', trim: true },
     date: { type: Date, required: true },
     headId: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpenseHead', required: true },
     headName: { type: String, required: true, trim: true },
@@ -18,4 +21,3 @@ const expenseEntrySchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.model('ExpenseEntry', expenseEntrySchema);
-
