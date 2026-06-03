@@ -193,6 +193,7 @@ jmm_route.post('/payment-methods', authenticateUser, authorizePage('paymentManag
 jmm_route.put('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleUpdatePaymentMethod);
 jmm_route.delete('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleDeletePaymentMethod);
 jmm_route.get('/payment-methods/public', jmm_controller.handleGetPublicPaymentMethods);
+jmm_route.post('/communications/whatsapp/test', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppTestMessage);
 jmm_route.get('/orders', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrders);
 jmm_route.get('/orders/:id/stock-options', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrderStockOptions);
 jmm_route.put('/orders/:id/reserve-stock', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReserveOrderStock);
@@ -278,6 +279,8 @@ jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates'
 jmm_route.get('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'view'), jmm_controller.handleFetchingShippingCosts);
 jmm_route.get('/shippingCosts/public', jmm_controller.handleFetchingShippingCosts);
 jmm_route.post('/contact-query', jmm_controller.handleContactQuery);
+jmm_route.get('/webhooks/whatsapp', jmm_controller.handleWhatsAppWebhookVerify);
+jmm_route.post('/webhooks/whatsapp', jmm_controller.handleWhatsAppWebhookEvent);
 
 jmm_route.post('/checkout', jmm_controller.handleCheckout);
 jmm_route.get('/orders/feedback/:orderNumber', jmm_controller.handleGetOrderFeedbackMeta);

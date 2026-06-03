@@ -55,6 +55,7 @@ import FarmMaintenanceTasks from './components/FarmMaintenanceTasks';
 import FarmBlockDetails from './components/FarmBlockDetails';
 import FarmBlockLogs from './components/FarmBlockLogs';
 import ResetPassword from './components/ResetPassword';
+import TestWhatsApp from './components/TestWhatsApp';
 
 function App() {
   return (
@@ -101,6 +102,7 @@ function App() {
              <Route path="/email-alerts" element={<EmailAlertsManagement />} />
              <Route path="/courier-management" element={<CourierManagement />} />
              <Route path="/payment-manager" element={<PaymentManager />} />
+             <Route path="/communications/test-whatsapp" element={<TestWhatsApp />} />
              <Route path="/order-management" element={<OrderManagement />} />
              <Route path="/feedback-report" element={<FeedbackReport />} />
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />

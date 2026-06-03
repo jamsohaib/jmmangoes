@@ -6114,6 +6114,133 @@ ${safeMessage}`;
   }
 }
 
+async function handleSendWhatsAppTestMessage(req, res) {
+  try {
+    const {
+      WHATSAPP_GRAPH_VERSION = 'v25.0',
+      WHATSAPP_PHONE_NUMBER_ID,
+      WHATSAPP_ACCESS_TOKEN,
+      WHATSAPP_TEST_TEMPLATE_NAME = 'jaspers_market_plain_text_v1',
+      WHATSAPP_TEST_TEMPLATE_LANGUAGE = 'en_US',
+    } = process.env;
+
+    const to = String(req.body?.to || '').replace(/\D/g, '');
+    const messageType = String(req.body?.messageType || 'template');
+    const textMessage = String(req.body?.message || '').trim();
+    if (!to) {
+      return res.status(400).json({ message: 'Recipient WhatsApp number is required.' });
+    }
+    if (messageType === 'text' && !textMessage) {
+      return res.status(400).json({ message: 'Text message is required.' });
+    }
+    if (!WHATSAPP_PHONE_NUMBER_ID || !WHATSAPP_ACCESS_TOKEN) {
+      return res.status(500).json({ message: 'WhatsApp API is not configured on the server.' });
+    }
+
+    const graphUrl = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const payload = messageType === 'text'
+      ? {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'text',
+          text: {
+            preview_url: false,
+            body: textMessage,
+          },
+        }
+      : {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'template',
+          template: {
+            name: WHATSAPP_TEST_TEMPLATE_NAME,
+            language: { code: WHATSAPP_TEST_TEMPLATE_LANGUAGE },
+          },
+        };
+
+    const response = await fetch(graphUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      logger.error('WhatsApp test message failed', {
+        status: response.status,
+        error: data?.error?.message || data,
+      });
+      return res.status(response.status).json({
+        message: data?.error?.message || 'WhatsApp test message failed.',
+        meta: data,
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'WhatsApp test message sent.',
+      meta: data,
+    });
+  } catch (err) {
+    logger.error('Error sending WhatsApp test message', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error while sending WhatsApp test message.' });
+  }
+}
+
+async function handleWhatsAppWebhookVerify(req, res) {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token && verifyToken && token === verifyToken) {
+    logger.info('WhatsApp webhook verified');
+    return res.status(200).send(challenge);
+  }
+
+  logger.warn('WhatsApp webhook verification failed', { mode, hasToken: !!token });
+  return res.sendStatus(403);
+}
+
+async function handleWhatsAppWebhookEvent(req, res) {
+  try {
+    const body = req.body || {};
+    logger.info('WhatsApp webhook event received', {
+      object: body.object,
+      entries: Array.isArray(body.entry) ? body.entry.length : 0,
+    });
+
+    const changes = (body.entry || []).flatMap((entry) => entry.changes || []);
+    changes.forEach((change) => {
+      const value = change.value || {};
+      (value.messages || []).forEach((message) => {
+        logger.info('WhatsApp incoming message', {
+          from: message.from,
+          id: message.id,
+          type: message.type,
+          text: message.text?.body,
+        });
+      });
+      (value.statuses || []).forEach((status) => {
+        logger.info('WhatsApp message status', {
+          id: status.id,
+          status: status.status,
+          recipientId: status.recipient_id,
+          timestamp: status.timestamp,
+        });
+      });
+    });
+
+    return res.sendStatus(200);
+  } catch (err) {
+    logger.error('WhatsApp webhook event handling failed', { error: err?.message || String(err) });
+    return res.sendStatus(200);
+  }
+}
+
 
 async function handleCheckout(req,res){ 
   logger.debug("In handleCheckout");
@@ -6383,6 +6510,9 @@ module.exports = {
     handleUpdateShippingCosts,
     handleFetchingShippingCosts,
     handleContactQuery,
+    handleSendWhatsAppTestMessage,
+    handleWhatsAppWebhookVerify,
+    handleWhatsAppWebhookEvent,
     handleCheckout,
     
 }

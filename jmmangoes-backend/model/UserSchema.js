@@ -72,6 +72,7 @@ const userSchema = new mongoose.Schema({
       manageExpense: { view: false, manage: false },
       addExpense: { view: false, manage: false },
       emailAlerts: { view: false, manage: false },
+      communications: { view: false, manage: false },
       paymentManager: { view: false, manage: false },
       orderManagement: { view: false, manage: false },
       courierManagement: { view: false, manage: false },
