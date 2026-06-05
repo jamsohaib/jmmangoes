@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 const Icon = {
   Facebook: () => (
@@ -39,6 +40,11 @@ const Footer = () => {
             <Icon.Globe /><span>jmmangoes.pk</span>
           </a>
         </div>
+        <div className="mb-2">
+          <Link to="/privacy-policy" className="underline underline-offset-4 hover:text-yellow-200">
+            Privacy Policy
+          </Link>
+        </div>
         <div>&copy; {new Date().getFullYear()} JM Mangoes. All rights reserved.</div>
       </div>
     </footer>
@@ -46,4 +52,3 @@ const Footer = () => {
 };
 
 export default Footer;
-

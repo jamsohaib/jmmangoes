@@ -56,6 +56,7 @@ import FarmBlockDetails from './components/FarmBlockDetails';
 import FarmBlockLogs from './components/FarmBlockLogs';
 import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
+import PrivacyPolicy from './components/PrivacyPolicy';
 
 function App() {
   return (
@@ -107,6 +108,7 @@ function App() {
              <Route path="/feedback-report" element={<FeedbackReport />} />
              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
              <Route path="/contact" element={<ContactPage />} />
+             <Route path="/privacy-policy" element={<PrivacyPolicy />} />
              <Route path="/farm-blocks" element={<FarmBlocks />} />
              <Route path="/farm-block-details" element={<FarmBlockDetails />} />
              <Route path="/farm-block-logs" element={<FarmBlockLogs />} />
