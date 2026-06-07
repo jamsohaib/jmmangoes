@@ -54,6 +54,38 @@ const OrderManagement = () => {
     if (o?.stockReservation?.isReserved) return 'Reserved (source unspecified)';
     return '-';
   };
+  const customerConfirmationInfo = (o) => {
+    const status = o?.customerConfirmation?.status || 'none';
+    if (status === 'confirmed') {
+      return {
+        label: 'Customer Confirmed',
+        className: 'bg-green-100 text-green-800 border-green-300',
+      };
+    }
+    if (status === 'cancelled') {
+      return {
+        label: 'Customer Cancelled',
+        className: 'bg-red-100 text-red-800 border-red-300',
+      };
+    }
+    return {
+      label: 'Customer Not Confirmed',
+      className: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+    };
+  };
+  const CustomerConfirmationBadge = ({ order }) => {
+    const info = customerConfirmationInfo(order);
+    return (
+      <div>
+        <span className={`inline-flex items-center rounded border px-2 py-1 text-xs font-semibold ${info.className}`}>
+          {info.label}
+        </span>
+        {order?.customerConfirmation?.respondedAt ? (
+          <div className="text-[11px] text-gray-600 mt-1">{formatDateTime(order.customerConfirmation.respondedAt)}</div>
+        ) : null}
+      </div>
+    );
+  };
 
   const load = async () => {
     const ordersRes = await api.get('/orders');
@@ -603,6 +635,14 @@ const OrderManagement = () => {
             ),
           },
           {
+            name: 'Customer Confirmation',
+            selector: (o) => customerConfirmationInfo(o).label,
+            sortable: true,
+            wrap: true,
+            grow: 1.1,
+            cell: (o) => <CustomerConfirmationBadge order={o} />,
+          },
+          {
             name: 'Actions',
             cell: (o) => actions(o),
             ignoreRowClick: true,
@@ -631,10 +671,11 @@ const OrderManagement = () => {
     <div className="p-4 text-black">
       <h2 className="text-2xl font-bold mb-4">Order Management</h2>
       {renderTable('pending', 'Pending For Confirmation', grouped.pending, (o) => (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-start">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           <button onClick={() => openStockOptions(o)} className="text-blue-700 hover:underline">View Stock Options</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
+          <CustomerConfirmationBadge order={o} />
           {o?.stockReservation?.isReserved ? (
             <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
           ) : (
@@ -863,6 +904,14 @@ const OrderManagement = () => {
               <div><strong>Email:</strong> {viewOrderModal.order.customer?.email || '-'}</div>
               <div><strong>Mobile:</strong> {viewOrderModal.order.customer?.mobile || '-'}</div>
               <div><strong>Status:</strong> {viewOrderModal.order.status}</div>
+              <div className="mt-2">
+                <strong>Customer Confirmation:</strong>{' '}
+                <span className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-semibold ${customerConfirmationInfo(viewOrderModal.order).className}`}>
+                  {customerConfirmationInfo(viewOrderModal.order).label}
+                </span>
+              </div>
+              <div><strong>Customer Response At:</strong> {formatDateTime(viewOrderModal.order?.customerConfirmation?.respondedAt)}</div>
+              <div><strong>Customer Response:</strong> {viewOrderModal.order?.customerConfirmation?.responseText || '-'}</div>
               <div><strong>Payment Mode:</strong> {viewOrderModal.order.paymentMode}</div>
               <div><strong>Payment Method:</strong> {viewOrderModal.order.paymentDetails?.methodName || '-'}</div>
               <div><strong>Courier Company:</strong> {viewOrderModal.order.courier?.courierName || '-'}</div>

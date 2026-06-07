@@ -67,6 +67,13 @@ const orderSchema = new mongoose.Schema({
     cancelledAt: { type: Date, default: null },
     returnedAt: { type: Date, default: null },
   },
+  customerConfirmation: {
+    status: { type: String, enum: ['none', 'confirmed', 'cancelled'], default: 'none' },
+    respondedAt: { type: Date, default: null },
+    responseSource: { type: String, default: '' },
+    responseMessageId: { type: String, default: '' },
+    responseText: { type: String, default: '' },
+  },
   stockReservation: {
     isReserved: { type: Boolean, default: false },
     reservedSiteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },

@@ -193,6 +193,7 @@ jmm_route.post('/payment-methods', authenticateUser, authorizePage('paymentManag
 jmm_route.put('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleUpdatePaymentMethod);
 jmm_route.delete('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleDeletePaymentMethod);
 jmm_route.get('/payment-methods/public', jmm_controller.handleGetPublicPaymentMethods);
+jmm_route.get('/communications/whatsapp/events', authenticateUser, authorizePage('communications', 'view'), jmm_controller.handleGetWhatsAppEvents);
 jmm_route.post('/communications/whatsapp/test', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppTestMessage);
 jmm_route.get('/orders', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrders);
 jmm_route.get('/orders/:id/stock-options', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrderStockOptions);

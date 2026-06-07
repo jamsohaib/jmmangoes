@@ -71,6 +71,7 @@ const Navbar = () => {
   const showFarmMenu = visibleFarmLinks.length > 0;
   const communicationsLinks = [
     { to: '/communications/test-whatsapp', label: 'Test WhatsApp', key: 'communications' },
+    { to: '/communications/whatsapp-logs', label: 'WhatsApp Logs', key: 'communications' },
   ];
   const visibleCommunicationsLinks = communicationsLinks.filter((link) => canView(link.key));
   const showCommunicationsMenu = visibleCommunicationsLinks.length > 0;

@@ -38,6 +38,7 @@ const StockLot = require('../model/StockLotSchema');
 const StockLedger = require('../model/StockLedgerSchema');
 const StockTransfer = require('../model/StockTransferSchema');
 const OrderStockRequest = require('../model/OrderStockRequestSchema');
+const WhatsAppEvent = require('../model/WhatsAppEventSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -6205,6 +6206,85 @@ async function handleWhatsAppWebhookVerify(req, res) {
   return res.sendStatus(403);
 }
 
+function extractWhatsAppButton(message = {}) {
+  if (message.type === 'button') {
+    return {
+      text: message.button?.text || '',
+      payload: message.button?.payload || '',
+    };
+  }
+  if (message.type === 'interactive') {
+    const buttonReply = message.interactive?.button_reply || {};
+    const listReply = message.interactive?.list_reply || {};
+    return {
+      text: buttonReply.title || listReply.title || '',
+      payload: buttonReply.id || listReply.id || '',
+    };
+  }
+  return { text: '', payload: '' };
+}
+
+function extractOrderNumberFromWhatsAppText(...parts) {
+  const combined = parts.filter(Boolean).join(' ');
+  const match = combined.match(/\b(JMM-[A-Z][0-9]{3}|[0-9]{6})\b/i);
+  return match ? match[1].toUpperCase() : '';
+}
+
+function getWhatsAppOrderAction(...parts) {
+  const combined = parts.filter(Boolean).join(' ').toLowerCase();
+  if (/\b(confirm|confirmed|yes|approve|approved)\b/.test(combined)) return 'confirmed';
+  if (/\b(cancel|cancelled|canceled|no|reject|rejected)\b/.test(combined)) return 'cancelled';
+  return '';
+}
+
+async function applyWhatsAppOrderReply(eventRow, message) {
+  const text = message.text?.body || eventRow.text || '';
+  const action = getWhatsAppOrderAction(eventRow.buttonText, eventRow.buttonPayload, text);
+  const orderNumber = extractOrderNumberFromWhatsAppText(eventRow.buttonPayload, text, eventRow.buttonText);
+  if (!action || !orderNumber) return eventRow;
+
+  const order = await Order.findOne({ orderNumber });
+  if (!order) {
+    eventRow.orderNumber = orderNumber;
+    eventRow.actionTaken = 'order_not_found';
+    await eventRow.save();
+    return eventRow;
+  }
+
+  eventRow.orderId = order._id;
+  eventRow.orderNumber = order.orderNumber;
+  if (['delivered', 'returned', 'cancelled'].includes(order.status)) {
+    eventRow.actionTaken = `ignored_order_${order.status}`;
+    await eventRow.save();
+    return eventRow;
+  }
+
+  order.customerConfirmation = {
+    status: action,
+    respondedAt: new Date(),
+    responseSource: 'whatsapp',
+    responseMessageId: eventRow.messageId || '',
+    responseText: eventRow.buttonText || text || eventRow.buttonPayload || '',
+  };
+
+  if (action === 'cancelled' && ['pending_confirmation', 'confirmed'].includes(order.status)) {
+    order.status = 'cancelled';
+    order.adminRemarks = [order.adminRemarks, 'Customer cancelled via WhatsApp'].filter(Boolean).join(' | ');
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      cancelledAt: new Date(),
+    };
+    eventRow.actionTaken = 'order_cancelled';
+  } else if (action === 'confirmed') {
+    eventRow.actionTaken = 'customer_confirmed';
+  }
+
+  await order.save();
+  await eventRow.save();
+  return eventRow;
+}
+
 async function handleWhatsAppWebhookEvent(req, res) {
   try {
     const body = req.body || {};
@@ -6214,30 +6294,105 @@ async function handleWhatsAppWebhookEvent(req, res) {
     });
 
     const changes = (body.entry || []).flatMap((entry) => entry.changes || []);
-    changes.forEach((change) => {
+    for (const change of changes) {
       const value = change.value || {};
-      (value.messages || []).forEach((message) => {
+      const metadata = value.metadata || {};
+      const contactMap = new Map((value.contacts || []).map((c) => [String(c.wa_id || ''), c]));
+      for (const message of (value.messages || [])) {
+        const contact = contactMap.get(String(message.from || '')) || {};
+        const button = extractWhatsAppButton(message);
+        const eventRow = await WhatsAppEvent.create({
+          eventType: 'message',
+          direction: 'incoming',
+          phoneNumberId: metadata.phone_number_id || '',
+          displayPhoneNumber: metadata.display_phone_number || '',
+          waId: contact.wa_id || message.from || '',
+          contactName: contact.profile?.name || '',
+          from: message.from || '',
+          messageId: message.id || '',
+          messageType: message.type || '',
+          text: message.text?.body || '',
+          buttonText: button.text,
+          buttonPayload: button.payload,
+          timestamp: message.timestamp ? new Date(Number(message.timestamp) * 1000) : null,
+          raw: message,
+        });
+        await applyWhatsAppOrderReply(eventRow, message);
         logger.info('WhatsApp incoming message', {
           from: message.from,
           id: message.id,
           type: message.type,
           text: message.text?.body,
+          buttonText: button.text,
         });
-      });
-      (value.statuses || []).forEach((status) => {
+      }
+      for (const status of (value.statuses || [])) {
+        await WhatsAppEvent.create({
+          eventType: 'status',
+          direction: 'outgoing',
+          phoneNumberId: metadata.phone_number_id || '',
+          displayPhoneNumber: metadata.display_phone_number || '',
+          recipientId: status.recipient_id || '',
+          messageId: status.id || '',
+          status: status.status || '',
+          timestamp: status.timestamp ? new Date(Number(status.timestamp) * 1000) : null,
+          raw: status,
+        });
         logger.info('WhatsApp message status', {
           id: status.id,
           status: status.status,
           recipientId: status.recipient_id,
           timestamp: status.timestamp,
         });
-      });
-    });
+      }
+    }
 
     return res.sendStatus(200);
   } catch (err) {
     logger.error('WhatsApp webhook event handling failed', { error: err?.message || String(err) });
     return res.sendStatus(200);
+  }
+}
+
+async function handleGetWhatsAppEvents(req, res) {
+  try {
+    const {
+      dateFrom = '',
+      dateTo = '',
+      eventType = '',
+      q = '',
+      limit = 500,
+    } = req.query || {};
+    const filter = {};
+    if (eventType) filter.eventType = eventType;
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) filter.createdAt.$lte = new Date(`${dateTo}T23:59:59.999Z`);
+    }
+    if (q) {
+      const regex = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [
+        { waId: regex },
+        { from: regex },
+        { recipientId: regex },
+        { contactName: regex },
+        { text: regex },
+        { buttonText: regex },
+        { buttonPayload: regex },
+        { status: regex },
+        { orderNumber: regex },
+        { actionTaken: regex },
+      ];
+    }
+    const rows = await WhatsAppEvent.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(Math.min(Number(limit) || 500, 2000))
+      .lean();
+    return res.status(200).json(rows);
+  } catch (err) {
+    logger.error('Error fetching WhatsApp events', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
 
@@ -6511,6 +6666,7 @@ module.exports = {
     handleFetchingShippingCosts,
     handleContactQuery,
     handleSendWhatsAppTestMessage,
+    handleGetWhatsAppEvents,
     handleWhatsAppWebhookVerify,
     handleWhatsAppWebhookEvent,
     handleCheckout,
