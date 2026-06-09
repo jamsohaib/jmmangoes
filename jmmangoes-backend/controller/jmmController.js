@@ -32,6 +32,13 @@ const FarmVariety = require('../model/FarmVarietySchema');
 const FarmTree = require('../model/FarmTreeSchema');
 const FarmTreeLog = require('../model/FarmTreeLogSchema');
 const FarmBlockLog = require('../model/FarmBlockLogSchema');
+const FarmExpenseHead = require('../model/FarmExpenseHeadSchema');
+const FarmExpenseItem = require('../model/FarmExpenseItemSchema');
+const FarmExpenseEntry = require('../model/FarmExpenseEntrySchema');
+const FinancialYear = require('../model/FinancialYearSchema');
+const FarmHRStaff = require('../model/FarmHRStaffSchema');
+const FarmHRPayment = require('../model/FarmHRPaymentSchema');
+const ActionLog = require('../model/ActionLogSchema');
 const Warehouse = require('../model/WarehouseSchema');
 const Wholeseller = require('../model/WholesellerSchema');
 const StockLot = require('../model/StockLotSchema');
@@ -339,6 +346,24 @@ function verifyHumanChallenge(token, answer) {
   const decoded = jwt.verify(String(token || ''), secret);
   if (decoded?.kind !== 'human-challenge') return false;
   return Number(answer) === Number(decoded.a) + Number(decoded.b);
+}
+
+async function recordAction(req, { action, module = '', entityType = '', entityId = null, entityLabel = '', details = {} }) {
+  try {
+    await ActionLog.create({
+      action,
+      module,
+      entityType,
+      entityId,
+      entityLabel,
+      details,
+      performedBy: req.user?.id === 'super-admin' ? null : req.user?.id || req.user?._id || null,
+      performedByName: req.user?.name || req.user?.username || 'User',
+      performedByRole: req.user?.role || '',
+    });
+  } catch (err) {
+    logger.warn('Failed to record action log', { error: err?.message || String(err), action, module });
+  }
 }
 
 async function getNextGlobalTreeCode() {
@@ -4298,6 +4323,53 @@ async function handleDispatchOrder(req, res) {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const courier = await Courier.findById(courierId);
     if (!courier) return res.status(404).json({ message: 'Courier not found' });
+    const shouldDeductOnlineStock =
+      order?.stockReservation?.isReserved &&
+      !order?.stockReservation?.onlineDispatchDeductedAt &&
+      String(order?.stockRequest?.status || '').toLowerCase() === 'accepted';
+
+    if (shouldDeductOnlineStock) {
+      const onlineSite = await ensureOnlineSite();
+      const consumedAll = [];
+      for (const it of (order.items || [])) {
+        const needed = Number(it.quantity || 0);
+        if (needed <= 0) continue;
+        const consumed = await consumeSiteProductLotsByName(onlineSite._id, it.name, needed);
+        if (!consumed.ok) {
+          for (const c of consumedAll) {
+            const lot = await StockLot.findById(c.lotId);
+            if (lot) {
+              lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
+              await lot.save();
+            }
+          }
+          return res.status(400).json({ message: `Insufficient online stock for ${it.name}. Dispatch cannot be completed.` });
+        }
+        consumedAll.push(...consumed.touched);
+      }
+
+      for (const c of consumedAll) {
+        await createStockLedgerRow({
+          movementType: 'out',
+          holderType: 'online',
+          holderId: onlineSite._id,
+          holderName: 'online',
+          productId: c.productId || null,
+          productName: c.productName,
+          lotId: c.lotId,
+          lotCode: c.lotCode,
+          quantity: -Number(c.qty || 0),
+          unitCost: Number(c.unitCost || 0),
+          referenceType: 'online_order_dispatch',
+          referenceId: order._id,
+          remarks: `Dispatched online order ${order.orderNumber}`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || req.user.username || '',
+        });
+      }
+      order.stockReservation.onlineDispatchDeductedAt = new Date();
+      order.stockReservation.onlineDispatchDeductedByName = req.user.name || req.user.username || '';
+    }
     order.status = 'dispatched';
     order.paymentMode = paymentMode;
     order.statusTimeline = {
@@ -5786,6 +5858,739 @@ async function handleCreateFarmBlockLog(req, res) {
   }
 }
 
+async function ensureDefaultFarmExpenseSetup() {
+  let othersHead = await FarmExpenseHead.findOne({ name: { $regex: /^others$/i } });
+  if (!othersHead) {
+    othersHead = await FarmExpenseHead.create({ name: 'Others', colorCode: '#166534', isActive: true });
+  }
+  const othersItem = await FarmExpenseItem.findOne({ headId: othersHead._id, name: { $regex: /^others$/i } });
+  if (!othersItem) {
+    await FarmExpenseItem.create({ headId: othersHead._id, name: 'Others', isActive: true });
+  }
+}
+
+async function handleGetFarmExpenseHeads(req, res) {
+  try {
+    await ensureDefaultFarmExpenseSetup();
+    const rows = await FarmExpenseHead.find({}).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmExpenseHead(req, res) {
+  try {
+    const { name, colorCode = '#166534' } = req.body;
+    const safeName = String(name || '').trim();
+    if (!safeName) return res.status(400).json({ message: 'Farm expense head name is required' });
+    const exists = await FarmExpenseHead.findOne({ name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } });
+    if (exists) return res.status(400).json({ message: 'Farm expense head already exists' });
+    const row = await FarmExpenseHead.create({ name: safeName, colorCode, isActive: true });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmExpenseHead(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, colorCode, isActive } = req.body;
+    const row = await FarmExpenseHead.findById(id);
+    if (!row) return res.status(404).json({ message: 'Farm expense head not found' });
+    if (name !== undefined) {
+      const safeName = String(name || '').trim();
+      if (!safeName) return res.status(400).json({ message: 'Farm expense head name is required' });
+      const exists = await FarmExpenseHead.findOne({
+        _id: { $ne: row._id },
+        name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      });
+      if (exists) return res.status(400).json({ message: 'Farm expense head already exists' });
+      row.name = safeName;
+    }
+    if (colorCode !== undefined) row.colorCode = String(colorCode || '#166534').trim();
+    if (isActive !== undefined) row.isActive = !!isActive;
+    await row.save();
+    await FarmExpenseEntry.updateMany({ headId: row._id }, { $set: { headName: row.name } });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmExpenseHead(req, res) {
+  try {
+    const { id } = req.params;
+    const itemCount = await FarmExpenseItem.countDocuments({ headId: id });
+    if (itemCount > 0) return res.status(400).json({ message: 'Cannot delete head with linked farm expense names.' });
+    const entryCount = await FarmExpenseEntry.countDocuments({ headId: id });
+    if (entryCount > 0) return res.status(400).json({ message: 'Cannot delete head with farm expense history.' });
+    const deleted = await FarmExpenseHead.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ message: 'Farm expense head not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmExpenseItems(req, res) {
+  try {
+    await ensureDefaultFarmExpenseSetup();
+    const { headId = '', activeOnly = '' } = req.query;
+    const query = {};
+    if (headId) query.headId = headId;
+    if (String(activeOnly) === 'true') query.isActive = true;
+    const rows = await FarmExpenseItem.find(query).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmExpenseItem(req, res) {
+  try {
+    const { headId, name } = req.body;
+    const safeName = String(name || '').trim();
+    if (!headId || !safeName) return res.status(400).json({ message: 'headId and farm expense name are required' });
+    const head = await FarmExpenseHead.findById(headId);
+    if (!head) return res.status(404).json({ message: 'Farm expense head not found' });
+    const exists = await FarmExpenseItem.findOne({ headId, name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } });
+    if (exists) return res.status(400).json({ message: 'Farm expense name already exists in this head' });
+    const row = await FarmExpenseItem.create({ headId, name: safeName, isActive: true });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmExpenseItem(req, res) {
+  try {
+    const { id } = req.params;
+    const { headId, name, isActive } = req.body;
+    const row = await FarmExpenseItem.findById(id);
+    if (!row) return res.status(404).json({ message: 'Farm expense name not found' });
+    const nextHeadId = headId || row.headId;
+    const safeName = String(name || row.name || '').trim();
+    if (!safeName) return res.status(400).json({ message: 'Farm expense name is required' });
+    const head = await FarmExpenseHead.findById(nextHeadId);
+    if (!head) return res.status(404).json({ message: 'Farm expense head not found' });
+    const exists = await FarmExpenseItem.findOne({
+      _id: { $ne: row._id },
+      headId: nextHeadId,
+      name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+    });
+    if (exists) return res.status(400).json({ message: 'Farm expense name already exists in this head' });
+    row.headId = nextHeadId;
+    row.name = safeName;
+    if (isActive !== undefined) row.isActive = !!isActive;
+    await row.save();
+    await FarmExpenseEntry.updateMany({ itemId: row._id }, { $set: { itemName: row.name, headId: head._id, headName: head.name } });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmExpenseItem(req, res) {
+  try {
+    const { id } = req.params;
+    const used = await FarmExpenseEntry.countDocuments({ itemId: id });
+    if (used > 0) return res.status(400).json({ message: 'Cannot delete farm expense name with existing history.' });
+    const deleted = await FarmExpenseItem.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ message: 'Farm expense name not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmExpenseEntry(req, res) {
+  try {
+    const { entryType, date, headId, itemId, customItemName = '', staffId = '', amount, remarks = '' } = req.body;
+    const type = String(entryType || '').trim();
+    const value = Number(amount);
+    if (!['fund', 'expense'].includes(type) || !date || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Invalid farm expense entry data' });
+    }
+    if (!staffId) return res.status(400).json({ message: 'Select the staff member for this farm entry' });
+    const staff = await FarmHRStaff.findById(staffId);
+    if (!staff) return res.status(404).json({ message: 'Farm staff not found' });
+    let headName = type === 'fund' ? 'Farm Funds' : '';
+    let itemName = type === 'fund' ? 'Funds Given' : '';
+    let resolvedHeadId = null;
+    let resolvedItemId = null;
+    if (type === 'expense') {
+      if (!headId) return res.status(400).json({ message: 'Farm expense head is required' });
+      const head = await FarmExpenseHead.findById(headId);
+      if (!head) return res.status(404).json({ message: 'Farm expense head not found' });
+      resolvedHeadId = head._id;
+      headName = head.name;
+      if (itemId) {
+        const item = await FarmExpenseItem.findById(itemId);
+        if (!item) return res.status(404).json({ message: 'Farm expense name not found' });
+        resolvedItemId = item._id;
+        itemName = item.name;
+      } else {
+        itemName = String(customItemName || '').trim();
+      }
+      if (!itemName) return res.status(400).json({ message: 'Farm expense details are required' });
+    }
+    const row = await FarmExpenseEntry.create({
+      entryType: type,
+      date,
+      headId: resolvedHeadId,
+      headName,
+      itemId: resolvedItemId,
+      itemName,
+      staffId: staff._id,
+      staffName: staff.name,
+      amount: value,
+      remarks,
+      enteredBy: req.user?._id || null,
+      enteredByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'farm-expenses',
+      entityType: 'FarmExpenseEntry',
+      entityId: row._id,
+      entityLabel: `${row.entryType} - ${row.staffName || 'Unassigned'} - ${row.amount}`,
+      details: { entryType: row.entryType, staffName: row.staffName, headName: row.headName, itemName: row.itemName, amount: row.amount },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmExpenseEntry(req, res) {
+  try {
+    if (req.user?.id !== 'super-admin' && !req.user?.isSuperAdmin) {
+      return res.status(403).json({ message: 'Only super admin can edit farm expense transactions' });
+    }
+    const row = await FarmExpenseEntry.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Farm expense transaction not found' });
+    const before = row.toObject();
+    const { entryType, date, staffId = '', headId, itemId, customItemName = '', amount, remarks = '' } = req.body || {};
+    const type = String(entryType || row.entryType || '').trim();
+    const value = Number(amount ?? row.amount);
+    if (!['fund', 'expense'].includes(type) || !date || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Invalid farm expense transaction data' });
+    }
+    if (!staffId) return res.status(400).json({ message: 'Select the staff member for this farm transaction' });
+    const staff = await FarmHRStaff.findById(staffId);
+    if (!staff) return res.status(404).json({ message: 'Farm staff not found' });
+
+    let resolvedHeadId = null;
+    let resolvedItemId = null;
+    let headName = type === 'fund' ? 'Farm Funds' : '';
+    let itemName = type === 'fund' ? 'Funds Given' : '';
+    if (type === 'expense') {
+      if (!headId) return res.status(400).json({ message: 'Farm expense head is required' });
+      const head = await FarmExpenseHead.findById(headId);
+      if (!head) return res.status(404).json({ message: 'Farm expense head not found' });
+      resolvedHeadId = head._id;
+      headName = head.name;
+      if (itemId) {
+        const item = await FarmExpenseItem.findById(itemId);
+        if (!item) return res.status(404).json({ message: 'Farm expense name not found' });
+        resolvedItemId = item._id;
+        itemName = item.name;
+      } else {
+        itemName = String(customItemName || '').trim();
+      }
+      if (!itemName) return res.status(400).json({ message: 'Farm expense details are required' });
+    }
+
+    row.entryType = type;
+    row.date = date;
+    row.staffId = staff._id;
+    row.staffName = staff.name;
+    row.headId = resolvedHeadId;
+    row.headName = headName;
+    row.itemId = resolvedItemId;
+    row.itemName = itemName;
+    row.amount = value;
+    row.remarks = remarks;
+    await row.save();
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-expenses',
+      entityType: 'FarmExpenseEntry',
+      entityId: row._id,
+      entityLabel: `${row.entryType} - ${row.staffName || 'Unassigned'} - ${row.amount}`,
+      details: { before, after: row.toObject() },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmExpenseEntries(req, res) {
+  try {
+    const { entryType = '', dateFrom = '', dateTo = '', withSummary = '' } = req.query;
+    const query = {};
+    if (['fund', 'expense'].includes(String(entryType))) query.entryType = entryType;
+    if (dateFrom || dateTo) {
+      query.date = {};
+      if (dateFrom) query.date.$gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) query.date.$lte = new Date(`${dateTo}T23:59:59.999Z`);
+    }
+    const rows = await FarmExpenseEntry.find(query).sort({ date: -1, createdAt: -1 }).limit(1500);
+    if (String(withSummary) !== 'true') return res.status(200).json(rows);
+    const summaryRows = await FarmExpenseEntry.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: { staffId: '$staffId', staffName: '$staffName' },
+          fundsGiven: { $sum: { $cond: [{ $eq: ['$entryType', 'fund'] }, '$amount', 0] } },
+          spent: { $sum: { $cond: [{ $eq: ['$entryType', 'expense'] }, '$amount', 0] } },
+        },
+      },
+      { $sort: { '_id.staffName': 1 } },
+    ]);
+    return res.status(200).json({
+      rows,
+      summaryByStaff: summaryRows.map((r) => ({
+        staffId: r._id.staffId,
+        staffName: r._id.staffName || 'Unassigned',
+        fundsGiven: Number(r.fundsGiven || 0),
+        spent: Number(r.spent || 0),
+        balance: Number(r.fundsGiven || 0) - Number(r.spent || 0),
+      })),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmExpenseDashboard(req, res) {
+  try {
+    const { dateFrom = '', dateTo = '', financialYearId = '' } = req.query;
+    const fy = financialYearId
+      ? await FinancialYear.findById(financialYearId)
+      : await FinancialYear.findOne({ isCurrent: true, isActive: true });
+    const range = {};
+    if (fy) {
+      range.$gte = new Date(fy.startDate);
+      range.$lte = new Date(fy.endDate);
+      range.$lte.setHours(23, 59, 59, 999);
+    } else {
+      if (dateFrom) range.$gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) range.$lte = new Date(`${dateTo}T23:59:59.999Z`);
+    }
+    const dateMatch = Object.keys(range).length ? { date: range } : {};
+    const [overall, selectedRange, byHead, hrOverall, hrRange] = await Promise.all([
+      FarmExpenseEntry.aggregate([{ $group: { _id: '$entryType', amount: { $sum: '$amount' } } }]),
+      FarmExpenseEntry.aggregate([{ $match: dateMatch }, { $group: { _id: '$entryType', amount: { $sum: '$amount' } } }]),
+      FarmExpenseEntry.aggregate([
+        { $match: { entryType: 'expense', ...dateMatch } },
+        { $group: { _id: '$headName', amount: { $sum: '$amount' } } },
+        { $sort: { amount: -1 } },
+      ]),
+      FarmHRPayment.aggregate([{ $group: { _id: null, amount: { $sum: '$amount' } } }]),
+      FarmHRPayment.aggregate([{ $match: Object.keys(range).length ? { paymentDate: range } : {} }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    ]);
+    const toSummary = (rows, hrRows = []) => {
+      const funds = Number(rows.find((r) => r._id === 'fund')?.amount || 0);
+      const expenses = Number(rows.find((r) => r._id === 'expense')?.amount || 0) + Number(hrRows?.[0]?.amount || 0);
+      return { funds, expenses, netAvailable: funds - expenses };
+    };
+    return res.status(200).json({
+      financialYear: fy || null,
+      overall: toSummary(overall, hrOverall),
+      range: toSummary(selectedRange, hrRange),
+      byHead: [
+        ...byHead.map((r) => ({ headName: r._id || 'Other', amount: Number(r.amount || 0) })),
+        { headName: 'HR Salary / Wages', amount: Number(hrRange?.[0]?.amount || 0) },
+      ].filter((r) => Number(r.amount || 0) > 0),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFinancialYears(req, res) {
+  try {
+    const rows = await FinancialYear.find({}).sort({ startDate: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFinancialYear(req, res) {
+  try {
+    const { name, startDate, endDate, isCurrent = false, isActive = true } = req.body || {};
+    const safeName = String(name || '').trim();
+    if (!safeName || !startDate || !endDate) return res.status(400).json({ message: 'Name, start date, and end date are required' });
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      return res.status(400).json({ message: 'Invalid financial year dates' });
+    }
+    const exists = await FinancialYear.findOne({ name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } });
+    if (exists) return res.status(400).json({ message: 'Financial year already exists' });
+    if (isCurrent) await FinancialYear.updateMany({}, { $set: { isCurrent: false } });
+    const row = await FinancialYear.create({ name: safeName, startDate: start, endDate: end, isCurrent: !!isCurrent, isActive: !!isActive });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFinancialYear(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, startDate, endDate, isCurrent, isActive } = req.body || {};
+    const row = await FinancialYear.findById(id);
+    if (!row) return res.status(404).json({ message: 'Financial year not found' });
+    if (name !== undefined) {
+      const safeName = String(name || '').trim();
+      if (!safeName) return res.status(400).json({ message: 'Financial year name is required' });
+      const exists = await FinancialYear.findOne({
+        _id: { $ne: row._id },
+        name: { $regex: new RegExp(`^${safeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      });
+      if (exists) return res.status(400).json({ message: 'Financial year already exists' });
+      row.name = safeName;
+    }
+    if (startDate !== undefined) row.startDate = new Date(startDate);
+    if (endDate !== undefined) row.endDate = new Date(endDate);
+    if (Number.isNaN(new Date(row.startDate).getTime()) || Number.isNaN(new Date(row.endDate).getTime()) || new Date(row.startDate) > new Date(row.endDate)) {
+      return res.status(400).json({ message: 'Invalid financial year dates' });
+    }
+    if (isActive !== undefined) row.isActive = !!isActive;
+    if (isCurrent !== undefined) {
+      row.isCurrent = !!isCurrent;
+      if (row.isCurrent) await FinancialYear.updateMany({ _id: { $ne: row._id } }, { $set: { isCurrent: false } });
+    }
+    await row.save();
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFinancialYear(req, res) {
+  try {
+    const row = await FinancialYear.findByIdAndDelete(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Financial year not found' });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleSetCurrentFinancialYear(req, res) {
+  try {
+    const row = await FinancialYear.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Financial year not found' });
+    await FinancialYear.updateMany({}, { $set: { isCurrent: false } });
+    row.isCurrent = true;
+    row.isActive = true;
+    await row.save();
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function calculateFinancialSummaryByRange(startDate, endDate) {
+  const range = { $gte: new Date(startDate), $lte: new Date(endDate) };
+  range.$lte.setHours(23, 59, 59, 999);
+  const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows] = await Promise.all([
+    SalePointEntry.aggregate([
+      { $match: { date: range } },
+      {
+        $group: {
+          _id: null,
+          amount: {
+            $sum: {
+              $cond: [{ $eq: ['$entryType', 'return'] }, { $multiply: ['$netAmount', -1] }, '$netAmount'],
+            },
+          },
+          quantity: {
+            $sum: {
+              $cond: [{ $eq: ['$entryType', 'return'] }, { $multiply: ['$quantity', -1] }, '$quantity'],
+            },
+          },
+        },
+      },
+    ]),
+    Order.aggregate([
+      { $match: { createdAt: range, status: { $nin: ['rejected', 'cancelled', 'returned'] } } },
+      {
+        $group: {
+          _id: null,
+          amount: { $sum: { $ifNull: ['$paymentDetails.payableAmount', '$totalCost'] } },
+          quantity: {
+            $sum: {
+              $reduce: {
+                input: { $ifNull: ['$items', []] },
+                initialValue: 0,
+                in: { $add: ['$$value', { $ifNull: ['$$this.quantity', 0] }] },
+              },
+            },
+          },
+        },
+      },
+    ]),
+    ExpenseEntry.aggregate([{ $match: { date: range } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    FarmExpenseEntry.aggregate([{ $match: { date: range, entryType: 'expense' } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    FarmHRPayment.aggregate([{ $match: { paymentDate: range } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    FarmTreeLog.aggregate([
+      { $match: { logDate: range, logType: { $in: ['production', 'harvest'] } } },
+      {
+        $group: {
+          _id: null,
+          quantity: { $sum: '$quantity' },
+          gradeA: { $sum: '$gradeA' },
+          gradeB: { $sum: '$gradeB' },
+          gradeC: { $sum: '$gradeC' },
+          gradeD: { $sum: '$gradeD' },
+        },
+      },
+    ]),
+    FarmBlockLog.aggregate([
+      { $match: { logDate: range, logType: 'production' } },
+      { $group: { _id: null, quantity: { $sum: '$quantity' } } },
+    ]),
+  ]);
+  const salePointRevenue = Number(salePointRows?.[0]?.amount || 0);
+  const onlineRevenue = Number(onlineRows?.[0]?.amount || 0);
+  const revenue = salePointRevenue + onlineRevenue;
+  const salesExpenses = Number(salesExpenseRows?.[0]?.amount || 0);
+  const farmHrExpenses = Number(farmHrRows?.[0]?.amount || 0);
+  const farmExpenses = Number(farmExpenseRows?.[0]?.amount || 0) + farmHrExpenses;
+  const treeProductionKg = Number(treeProductionRows?.[0]?.quantity || 0);
+  const blockProductionKg = Number(blockProductionRows?.[0]?.quantity || 0);
+  const farmProductionKg = treeProductionKg + blockProductionKg;
+  return {
+    revenue,
+    salePointRevenue,
+    onlineRevenue,
+    salesExpenses,
+    farmExpenses,
+    farmHrExpenses,
+    totalExpenses: salesExpenses + farmExpenses,
+    net: revenue - salesExpenses - farmExpenses,
+    quantity: Number(salePointRows?.[0]?.quantity || 0) + Number(onlineRows?.[0]?.quantity || 0),
+    farmProductionKg,
+    treeProductionKg,
+    blockProductionKg,
+    productionGrades: {
+      gradeA: Number(treeProductionRows?.[0]?.gradeA || 0),
+      gradeB: Number(treeProductionRows?.[0]?.gradeB || 0),
+      gradeC: Number(treeProductionRows?.[0]?.gradeC || 0),
+      gradeD: Number(treeProductionRows?.[0]?.gradeD || 0),
+    },
+  };
+}
+
+async function handleGetAdminFinancialDashboard(req, res) {
+  try {
+    const { financialYearId = '' } = req.query;
+    const years = await FinancialYear.find({ isActive: true }).sort({ startDate: -1 });
+    const selectedYear = financialYearId
+      ? await FinancialYear.findById(financialYearId)
+      : years.find((y) => y.isCurrent) || years[0] || null;
+    const selectedSummary = selectedYear ? await calculateFinancialSummaryByRange(selectedYear.startDate, selectedYear.endDate) : null;
+    const yearlyRows = await Promise.all(years.map(async (year) => ({
+      financialYear: year,
+      summary: await calculateFinancialSummaryByRange(year.startDate, year.endDate),
+    })));
+    return res.status(200).json({ years, selectedYear, selectedSummary, yearlyRows });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function resolveFinancialYear(financialYearId = '') {
+  if (financialYearId) return FinancialYear.findById(financialYearId);
+  return FinancialYear.findOne({ isCurrent: true, isActive: true });
+}
+
+async function handleGetFarmHRStaff(req, res) {
+  try {
+    const { includeLeft = 'true' } = req.query || {};
+    const query = {};
+    if (String(includeLeft) !== 'true') query.status = 'active';
+    const rows = await FarmHRStaff.find(query).sort({ status: 1, name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmHRStaff(req, res) {
+  try {
+    const { name, joiningDate, designation, employmentType = 'contract', salaryAmount = 0, remarks = '' } = req.body || {};
+    if (!String(name || '').trim() || !joiningDate || !String(designation || '').trim()) {
+      return res.status(400).json({ message: 'Name, joining date, and designation are required' });
+    }
+    const row = await FarmHRStaff.create({
+      name: String(name).trim(),
+      joiningDate,
+      designation: String(designation).trim(),
+      employmentType,
+      salaryAmount: Number(salaryAmount || 0),
+      remarks,
+      status: 'active',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'farm-hr',
+      entityType: 'FarmHRStaff',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, designation: row.designation, employmentType: row.employmentType, salaryAmount: row.salaryAmount },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmHRStaff(req, res) {
+  try {
+    const row = await FarmHRStaff.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Farm HR staff not found' });
+    const allowed = ['name', 'joiningDate', 'designation', 'employmentType', 'salaryAmount', 'remarks'];
+    allowed.forEach((key) => {
+      if (req.body[key] !== undefined) row[key] = key === 'salaryAmount' ? Number(req.body[key] || 0) : req.body[key];
+    });
+    await row.save();
+    await FarmHRPayment.updateMany({ staffId: row._id }, { $set: { staffName: row.name } });
+    await FarmExpenseEntry.updateMany({ staffId: row._id }, { $set: { staffName: row.name } });
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-hr',
+      entityType: 'FarmHRStaff',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, designation: row.designation, employmentType: row.employmentType, salaryAmount: row.salaryAmount },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleMarkFarmHRStaffLeft(req, res) {
+  try {
+    const row = await FarmHRStaff.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Farm HR staff not found' });
+    row.status = 'left';
+    row.leftDate = req.body?.leftDate || new Date();
+    if (req.body?.remarks) row.remarks = req.body.remarks;
+    await row.save();
+    await recordAction(req, {
+      action: 'mark-left',
+      module: 'farm-hr',
+      entityType: 'FarmHRStaff',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { leftDate: row.leftDate, remarks: row.remarks },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleResumeFarmHRStaff(req, res) {
+  try {
+    const row = await FarmHRStaff.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Farm HR staff not found' });
+    row.status = 'active';
+    row.leftDate = null;
+    await row.save();
+    await recordAction(req, {
+      action: 'resume',
+      module: 'farm-hr',
+      entityType: 'FarmHRStaff',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { status: row.status },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmHRPayments(req, res) {
+  try {
+    const { staffId = '', financialYearId = '' } = req.query || {};
+    const query = {};
+    if (staffId) query.staffId = staffId;
+    const fy = await resolveFinancialYear(financialYearId);
+    if (fy) {
+      query.paymentDate = { $gte: new Date(fy.startDate), $lte: new Date(fy.endDate) };
+      query.paymentDate.$lte.setHours(23, 59, 59, 999);
+    }
+    const rows = await FarmHRPayment.find(query).sort({ paymentDate: -1, createdAt: -1 }).limit(1500);
+    return res.status(200).json({ financialYear: fy || null, rows });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmHRPayment(req, res) {
+  try {
+    const { staffId, financialYearId = '', paymentDate, amount, remarks = '' } = req.body || {};
+    const value = Number(amount);
+    if (!staffId || !paymentDate || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Staff, payment date, and valid amount are required' });
+    }
+    const staff = await FarmHRStaff.findById(staffId);
+    if (!staff) return res.status(404).json({ message: 'Farm HR staff not found' });
+    const fy = await resolveFinancialYear(financialYearId);
+    const row = await FarmHRPayment.create({
+      staffId: staff._id,
+      staffName: staff.name,
+      financialYearId: fy?._id || null,
+      financialYearName: fy?.name || '',
+      paymentDate,
+      amount: value,
+      remarks,
+      enteredBy: req.user?._id || null,
+      enteredByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'farm-hr-expenses',
+      entityType: 'FarmHRPayment',
+      entityId: row._id,
+      entityLabel: `${row.staffName} - ${row.amount}`,
+      details: { staffName: row.staffName, financialYearName: row.financialYearName, amount: row.amount, remarks: row.remarks },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetActionLogs(req, res) {
+  try {
+    const { module = '', dateFrom = '', dateTo = '', limit = 500 } = req.query || {};
+    const query = {};
+    if (module) query.module = module;
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) query.createdAt.$gte = new Date(`${dateFrom}T00:00:00.000Z`);
+      if (dateTo) query.createdAt.$lte = new Date(`${dateTo}T23:59:59.999Z`);
+    }
+    const rows = await ActionLog.find(query).sort({ createdAt: -1 }).limit(Math.min(Number(limit || 500), 2000));
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetFarmBlockDetails(req, res) {
   try {
     const { blockId, blockName, blockQr } = req.query || {};
@@ -6652,6 +7457,32 @@ module.exports = {
     handleGetFarmBlockDetails,
     handleGetFarmBlockLogs,
     handleCreateFarmBlockLog,
+    handleGetFarmExpenseHeads,
+    handleCreateFarmExpenseHead,
+    handleUpdateFarmExpenseHead,
+    handleDeleteFarmExpenseHead,
+    handleGetFarmExpenseItems,
+    handleCreateFarmExpenseItem,
+    handleUpdateFarmExpenseItem,
+    handleDeleteFarmExpenseItem,
+    handleCreateFarmExpenseEntry,
+    handleGetFarmExpenseEntries,
+    handleUpdateFarmExpenseEntry,
+    handleGetFarmExpenseDashboard,
+    handleGetFinancialYears,
+    handleCreateFinancialYear,
+    handleUpdateFinancialYear,
+    handleDeleteFinancialYear,
+    handleSetCurrentFinancialYear,
+    handleGetAdminFinancialDashboard,
+    handleGetFarmHRStaff,
+    handleCreateFarmHRStaff,
+    handleUpdateFarmHRStaff,
+    handleMarkFarmHRStaffLeft,
+    handleResumeFarmHRStaff,
+    handleGetFarmHRPayments,
+    handleCreateFarmHRPayment,
+    handleGetActionLogs,
     handleFarmDashboardSummary,
     handleGetOrderFeedbackMeta,
     handleSubmitOrderFeedback,

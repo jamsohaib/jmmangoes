@@ -106,6 +106,33 @@ const FarmTreeLogs = () => {
 
   const selectedTreeId = form.treeId;
   const selectedTree = useMemo(() => trees.find((t) => t._id === selectedTreeId), [trees, selectedTreeId]);
+  const formatTreeDate = (value) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '-' : date.toLocaleDateString();
+  };
+  const selectedTreeAge = useMemo(() => {
+    if (!selectedTree) return '-';
+    if (selectedTree.plantingDate) {
+      const planted = new Date(selectedTree.plantingDate);
+      if (!Number.isNaN(planted.getTime())) {
+        const now = new Date();
+        let years = now.getFullYear() - planted.getFullYear();
+        const hasNotReachedAnniversary =
+          now.getMonth() < planted.getMonth() ||
+          (now.getMonth() === planted.getMonth() && now.getDate() < planted.getDate());
+        if (hasNotReachedAnniversary) years -= 1;
+        return `${Math.max(0, years)} years`;
+      }
+    }
+    return selectedTree.ageYears || selectedTree.ageYears === 0 ? `${selectedTree.ageYears} years` : '-';
+  }, [selectedTree]);
+  const selectedTreeVarieties = useMemo(() => {
+    if (!selectedTree) return '-';
+    return Array.isArray(selectedTree.varieties) && selectedTree.varieties.length
+      ? selectedTree.varieties.filter(Boolean).join(', ')
+      : '-';
+  }, [selectedTree]);
   const isProductionTask = form.logType === 'production';
   const isFertilizerTask = form.logType === 'fertilizer';
   const isMaintenanceTask = form.logType === 'maintenance';
@@ -401,7 +428,63 @@ const FarmTreeLogs = () => {
             <video ref={videoRef} className="w-full max-w-md rounded border bg-black" muted playsInline />
             <p className="text-xs text-gray-600 mt-2">Point camera at tree QR code to auto-select tree.</p>
             {isScanning ? <p className="text-xs text-green-700 mt-1">Scanning...</p> : null}
-            {scanError ? <p className="text-xs text-red-600 mt-1">{scanError}</p> : null}
+          {scanError ? <p className="text-xs text-red-600 mt-1">{scanError}</p> : null}
+          </div>
+        ) : null}
+
+        {selectedTree ? (
+          <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-3">
+              <div>
+                <h3 className="text-lg font-semibold text-green-900">Selected Tree Details</h3>
+                <p className="text-sm text-green-800">
+                  {selectedTree.blockName || '-'} / {selectedTree.treeCode || '-'} / {selectedTree.treeId || '-'}
+                </p>
+              </div>
+              <span className={`self-start md:self-center px-3 py-1 rounded-full text-xs font-semibold ${selectedTree.isActive === false ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                {selectedTree.isActive === false ? 'Inactive' : 'Active'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Block</div>
+                <div className="font-medium">{selectedTree.blockCode || '-'} - {selectedTree.blockName || '-'}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Tree Code</div>
+                <div className="font-medium">{selectedTree.treeCode || '-'}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Tree ID</div>
+                <div className="font-medium">{selectedTree.treeId || '-'}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Map Location</div>
+                <div className="font-medium">Row {selectedTree.rowNumber || '-'} / Col {selectedTree.rowTreeNumber || '-'}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Plantation Date</div>
+                <div className="font-medium">{formatTreeDate(selectedTree.plantingDate)}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">Calculated Age</div>
+                <div className="font-medium">{selectedTreeAge}</div>
+              </div>
+              <div className="bg-white rounded border p-2 md:col-span-2">
+                <div className="text-xs text-gray-500">Varieties</div>
+                <div className="font-medium">{selectedTreeVarieties}</div>
+              </div>
+              <div className="bg-white rounded border p-2">
+                <div className="text-xs text-gray-500">GPS Coordinates</div>
+                <div className="font-medium">
+                  {selectedTree.latitude || selectedTree.longitude ? `${selectedTree.latitude ?? '-'}, ${selectedTree.longitude ?? '-'}` : '-'}
+                </div>
+              </div>
+              <div className="bg-white rounded border p-2 md:col-span-3">
+                <div className="text-xs text-gray-500">QR Code Data</div>
+                <div className="font-medium break-all">{selectedTree.qrCodeData || '-'}</div>
+              </div>
+            </div>
           </div>
         ) : null}
 

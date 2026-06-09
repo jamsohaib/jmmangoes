@@ -274,6 +274,32 @@ jmm_route.get('/farm/dashboard-summary', authenticateUser, authorizePage('farmDa
 jmm_route.get('/farm/block-details', authenticateUser, authorizePage('farmBlockDetails', 'view'), jmm_controller.handleGetFarmBlockDetails);
 jmm_route.get('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'view'), jmm_controller.handleGetFarmBlockLogs);
 jmm_route.post('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'manage'), jmm_controller.handleCreateFarmBlockLog);
+jmm_route.get('/farm/expense-heads', authenticateUser, authorizeAnyPage(['farmExpenseManage', 'farmExpenseAdd'], 'view'), jmm_controller.handleGetFarmExpenseHeads);
+jmm_route.post('/farm/expense-heads', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleCreateFarmExpenseHead);
+jmm_route.put('/farm/expense-heads/:id', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleUpdateFarmExpenseHead);
+jmm_route.delete('/farm/expense-heads/:id', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleDeleteFarmExpenseHead);
+jmm_route.get('/farm/expense-items', authenticateUser, authorizeAnyPage(['farmExpenseManage', 'farmExpenseAdd'], 'view'), jmm_controller.handleGetFarmExpenseItems);
+jmm_route.post('/farm/expense-items', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleCreateFarmExpenseItem);
+jmm_route.put('/farm/expense-items/:id', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleUpdateFarmExpenseItem);
+jmm_route.delete('/farm/expense-items/:id', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleDeleteFarmExpenseItem);
+jmm_route.post('/farm/expense-entries', authenticateUser, authorizePage('farmExpenseAdd', 'manage'), jmm_controller.handleCreateFarmExpenseEntry);
+jmm_route.get('/farm/expense-entries', authenticateUser, authorizeAnyPage(['farmExpenseAdd', 'farmExpenseDashboard'], 'view'), jmm_controller.handleGetFarmExpenseEntries);
+jmm_route.put('/farm/expense-entries/:id', authenticateUser, authorizePage('farmExpenseAdd', 'manage'), jmm_controller.handleUpdateFarmExpenseEntry);
+jmm_route.get('/farm/expense-dashboard', authenticateUser, authorizePage('farmExpenseDashboard', 'view'), jmm_controller.handleGetFarmExpenseDashboard);
+jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses'], 'view'), jmm_controller.handleGetFinancialYears);
+jmm_route.post('/financial-years', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleCreateFinancialYear);
+jmm_route.put('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleUpdateFinancialYear);
+jmm_route.delete('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleDeleteFinancialYear);
+jmm_route.put('/financial-years/:id/current', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleSetCurrentFinancialYear);
+jmm_route.get('/admin/financial-dashboard', authenticateUser, authorizePage('adminFinancialDashboard', 'view'), jmm_controller.handleGetAdminFinancialDashboard);
+jmm_route.get('/farm/hr/staff', authenticateUser, authorizeAnyPage(['farmHR', 'farmHRExpenses', 'farmExpenseAdd'], 'view'), jmm_controller.handleGetFarmHRStaff);
+jmm_route.post('/farm/hr/staff', authenticateUser, authorizePage('farmHR', 'manage'), jmm_controller.handleCreateFarmHRStaff);
+jmm_route.put('/farm/hr/staff/:id', authenticateUser, authorizePage('farmHR', 'manage'), jmm_controller.handleUpdateFarmHRStaff);
+jmm_route.put('/farm/hr/staff/:id/left', authenticateUser, authorizePage('farmHR', 'manage'), jmm_controller.handleMarkFarmHRStaffLeft);
+jmm_route.put('/farm/hr/staff/:id/resume', authenticateUser, authorizePage('farmHR', 'manage'), jmm_controller.handleResumeFarmHRStaff);
+jmm_route.get('/farm/hr/payments', authenticateUser, authorizePage('farmHRExpenses', 'view'), jmm_controller.handleGetFarmHRPayments);
+jmm_route.post('/farm/hr/payments', authenticateUser, authorizePage('farmHRExpenses', 'manage'), jmm_controller.handleCreateFarmHRPayment);
+jmm_route.get('/action-logs', authenticateUser, authorizePage('actionLogs', 'view'), jmm_controller.handleGetActionLogs);
 
 jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'manage'), jmm_controller.handleUpdateShippingCosts);
 

@@ -86,6 +86,8 @@ const orderSchema = new mongoose.Schema({
       requestedQty: { type: Number, default: 0 },
       reservedQty: { type: Number, default: 0 },
     }],
+    onlineDispatchDeductedAt: { type: Date, default: null },
+    onlineDispatchDeductedByName: { type: String, default: '' },
   },
   stockRequest: {
     requestId: { type: mongoose.Schema.Types.ObjectId, default: null },

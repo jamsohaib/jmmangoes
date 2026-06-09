@@ -54,6 +54,14 @@ import FarmDashboard from './components/FarmDashboard';
 import FarmMaintenanceTasks from './components/FarmMaintenanceTasks';
 import FarmBlockDetails from './components/FarmBlockDetails';
 import FarmBlockLogs from './components/FarmBlockLogs';
+import FarmManageExpenses from './components/FarmManageExpenses';
+import FarmAddExpenses from './components/FarmAddExpenses';
+import FarmExpenseDashboard from './components/FarmExpenseDashboard';
+import FinancialYears from './components/FinancialYears';
+import AdminFinancialDashboard from './components/AdminFinancialDashboard';
+import FarmHR from './components/FarmHR';
+import FarmHRExpenses from './components/FarmHRExpenses';
+import ActionLogs from './components/ActionLogs';
 import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
 import PrivacyPolicy from './components/PrivacyPolicy';
@@ -119,6 +127,14 @@ function App() {
              <Route path="/farm-logs" element={<FarmTreeLogs />} />
              <Route path="/farm-maintenance-tasks" element={<FarmMaintenanceTasks />} />
              <Route path="/farm-dashboard" element={<FarmDashboard />} />
+             <Route path="/farm-manage-expenses" element={<FarmManageExpenses />} />
+             <Route path="/farm-add-expenses" element={<FarmAddExpenses />} />
+             <Route path="/farm-expense-dashboard" element={<FarmExpenseDashboard />} />
+             <Route path="/financial-years" element={<FinancialYears />} />
+             <Route path="/admin-financial-dashboard" element={<AdminFinancialDashboard />} />
+             <Route path="/farm-hr" element={<FarmHR />} />
+             <Route path="/farm-hr-expenses" element={<FarmHRExpenses />} />
+             <Route path="/action-logs" element={<ActionLogs />} />
              <Route path="/login" element={<Login />} />
              <Route path="/reset-password" element={<ResetPassword />} />
              <Route path="/register" element={<Register />} /> 

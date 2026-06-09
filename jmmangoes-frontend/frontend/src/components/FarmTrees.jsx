@@ -34,6 +34,9 @@ const FarmTrees = () => {
   const [editingId, setEditingId] = useState('');
   const [draggingTreeId, setDraggingTreeId] = useState('');
   const [dropHoverSlot, setDropHoverSlot] = useState('');
+  const [globalTreeCode, setGlobalTreeCode] = useState('');
+  const [globalQrCode, setGlobalQrCode] = useState('');
+  const [scannerMode, setScannerMode] = useState('block');
   const [searchTreeCode, setSearchTreeCode] = useState('');
   const [searchQrCode, setSearchQrCode] = useState('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -372,15 +375,47 @@ const FarmTrees = () => {
     win.document.close();
   };
 
-  const runSearch = () => {
-    const code = String(searchTreeCode || '').trim().toLowerCase();
-    const qr = String(searchQrCode || '').trim().toLowerCase();
-    if (!code && !qr) return toast.warn('Enter Tree Code or QR code text to search.');
-    const found = filteredTrees.find((t) => {
-      const codeMatch = code ? String(t.treeCode || '').toLowerCase() === code : true;
-      const qrMatch = qr ? String(t.qrCodeData || '').toLowerCase().includes(qr) : true;
-      return codeMatch && qrMatch;
+  const findTreeByCodeOrQr = (sourceTrees, codeValue, qrValue) => {
+    const code = String(codeValue || '').trim().toLowerCase();
+    const qr = String(qrValue || '').trim().toLowerCase();
+    if (!code && !qr) return null;
+    return sourceTrees.find((t) => {
+      const codeMatch = code ? String(t.treeCode || '').toLowerCase() === code : false;
+      const idMatch = code ? String(t.treeId || '').toLowerCase() === code : false;
+      const qrMatch = qr ? String(t.qrCodeData || '').toLowerCase().includes(qr) : false;
+      if (code && qr) return (codeMatch || idMatch) && qrMatch;
+      return codeMatch || idMatch || qrMatch;
     });
+  };
+
+  const selectTreeLocation = (tree) => {
+    const block = blocks.find((b) => String(b._id) === String(tree.blockId));
+    if (!block) {
+      applyTreeToForm(tree);
+      toast.warn('Tree found, but its block could not be mapped.');
+      return;
+    }
+    setSelectedClusterId(String(block.clusterId || ''));
+    setSelectedBlock(String(block._id));
+    setForm((prev) => ({ ...prev, blockId: block._id }));
+    applyTreeToForm(tree);
+  };
+
+  const runGlobalSearch = () => {
+    if (!String(globalTreeCode || '').trim() && !String(globalQrCode || '').trim()) {
+      return toast.warn('Enter Tree Code, Tree ID, or QR code text to search across farm.');
+    }
+    const found = findTreeByCodeOrQr(trees, globalTreeCode, globalQrCode);
+    if (!found) return toast.warn('No tree found across farm for this search.');
+    selectTreeLocation(found);
+    toast.success(`Tree found: ${found.treeCode}`);
+  };
+
+  const runSearch = () => {
+    if (!String(searchTreeCode || '').trim() && !String(searchQrCode || '').trim()) {
+      return toast.warn('Enter Tree Code, Tree ID, or QR code text to search in selected block.');
+    }
+    const found = findTreeByCodeOrQr(filteredTrees, searchTreeCode, searchQrCode);
     if (!found) return toast.warn('No tree found in selected block for this search.');
     applyTreeToForm(found);
     toast.success(`Tree found: ${found.treeCode}`);
@@ -404,19 +439,29 @@ const FarmTrees = () => {
   const performSearchByScannedText = (scannedText) => {
     const scanned = String(scannedText || '').trim();
     if (!scanned) return;
-    setSearchQrCode(scanned);
-    const found = filteredTrees.find((t) => String(t.qrCodeData || '').toLowerCase().includes(scanned.toLowerCase()));
+    const isGlobal = scannerMode === 'global';
+    if (isGlobal) {
+      setGlobalQrCode(scanned);
+    } else {
+      setSearchQrCode(scanned);
+    }
+    const found = findTreeByCodeOrQr(isGlobal ? trees : filteredTrees, '', scanned);
     if (!found) {
-      toast.warn('QR scanned, but no tree found in selected block.');
+      toast.warn(isGlobal ? 'QR scanned, but no tree found across farm.' : 'QR scanned, but no tree found in selected block.');
       return;
     }
-    applyTreeToForm(found);
+    if (isGlobal) {
+      selectTreeLocation(found);
+    } else {
+      applyTreeToForm(found);
+    }
     toast.success(`Tree found: ${found.treeCode}`);
   };
 
-  const beginCameraScan = async () => {
+  const beginCameraScan = async (mode = 'block') => {
     setScanError('');
-    if (!selectedBlock) {
+    setScannerMode(mode);
+    if (mode !== 'global' && !selectedBlock) {
       toast.warn('Select a block first.');
       return;
     }
@@ -493,18 +538,75 @@ const FarmTrees = () => {
 
   useEffect(() => {
     if (isScannerOpen) {
-      beginCameraScan();
+      beginCameraScan(scannerMode);
     } else {
       stopScanner();
     }
     return () => stopScanner();
-  }, [isScannerOpen]);
+  }, [isScannerOpen, scannerMode]);
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
     <div className="p-3 md:p-4 text-black">
       <h2 className="text-2xl font-bold mb-4">Manage Trees</h2>
+
+      <div className="mb-4 bg-white p-3 rounded shadow border-l-4 border-green-600">
+        <h3 className="text-lg font-semibold mb-1">Find Tree Across Farm</h3>
+        <p className="text-sm text-gray-600 mb-3">
+          Scan a tree QR code or enter a unique tree code / tree ID to automatically open its cluster, block, and tree.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+          <input
+            className="border p-2 rounded"
+            placeholder="Tree code or Tree ID"
+            value={globalTreeCode}
+            onChange={(e) => setGlobalTreeCode(e.target.value)}
+          />
+          <input
+            className="border p-2 rounded md:col-span-2"
+            placeholder="QR code text"
+            value={globalQrCode}
+            onChange={(e) => setGlobalQrCode(e.target.value)}
+          />
+          <button type="button" onClick={runGlobalSearch} className="bg-green-700 text-white px-4 py-2 rounded">
+            Search All Farm
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setScannerMode('global');
+              setIsScannerOpen(true);
+            }}
+            className="bg-blue-600 text-white px-4 py-2 rounded"
+          >
+            Scan QR
+          </button>
+        </div>
+      </div>
+
+      {isScannerOpen ? (
+        <div className="mb-4 border rounded p-3 bg-gray-50 shadow">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium">
+              Camera Scanner ({scannerMode === 'global' ? 'All Farm' : 'Selected Block'})
+            </p>
+            <button
+              type="button"
+              className="text-red-600 text-sm hover:underline"
+              onClick={() => setIsScannerOpen(false)}
+            >
+              Close
+            </button>
+          </div>
+          <video ref={videoRef} className="w-full max-w-md rounded border bg-black" muted playsInline />
+          <p className="text-xs text-gray-600 mt-2">
+            Point camera at the tree QR code. Search runs automatically after scan.
+          </p>
+          {isScanning ? <p className="text-xs text-green-700 mt-1">Scanning...</p> : null}
+          {scanError ? <p className="text-xs text-red-600 mt-1">{scanError}</p> : null}
+        </div>
+      ) : null}
 
       <div className="mb-4 bg-white p-3 rounded shadow">
         <label className="text-sm font-medium">Select Cluster</label>
@@ -701,31 +803,14 @@ const FarmTrees = () => {
             <button
               type="button"
               className="px-3 py-2 rounded bg-blue-600 text-white"
-              onClick={() => setIsScannerOpen(true)}
+              onClick={() => {
+                setScannerMode('block');
+                setIsScannerOpen(true);
+              }}
             >
               Scan QR with Camera
             </button>
           </div>
-          {isScannerOpen ? (
-            <div className="mt-3 border rounded p-3 bg-gray-50">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-sm font-medium">Camera Scanner</p>
-                <button
-                  type="button"
-                  className="text-red-600 text-sm hover:underline"
-                  onClick={() => setIsScannerOpen(false)}
-                >
-                  Close
-                </button>
-              </div>
-              <video ref={videoRef} className="w-full max-w-md rounded border bg-black" muted playsInline />
-              <p className="text-xs text-gray-600 mt-2">
-                Point camera at the tree QR code. Search runs automatically after scan.
-              </p>
-              {isScanning ? <p className="text-xs text-green-700 mt-1">Scanning...</p> : null}
-              {scanError ? <p className="text-xs text-red-600 mt-1">{scanError}</p> : null}
-            </div>
-          ) : null}
         </div>
       ) : null}
 

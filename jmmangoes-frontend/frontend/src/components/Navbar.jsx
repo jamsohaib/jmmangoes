@@ -37,6 +37,8 @@ const Navbar = () => {
     { to: '/admin-sites', label: 'Sites', key: 'adminSites' },
     { to: '/warehouse-management', label: 'Warehouse Management', key: 'warehouseManagement' },
     { to: '/wholeseller-management', label: 'Wholeseller Management', key: 'wholesellerManagement' },
+    { to: '/admin-financial-dashboard', label: 'Financial Dashboard', key: 'adminFinancialDashboard' },
+    { to: '/action-logs', label: 'Action Logs', key: 'actionLogs' },
     { to: '/manage-expense', label: 'Manage Expense', key: 'manageExpense' },
     { to: '/email-alerts', label: 'Email Alerts', key: 'emailAlerts' },
     { to: '/payment-manager', label: 'Payment Manager', key: 'paymentManager' },
@@ -66,6 +68,12 @@ const Navbar = () => {
     { to: '/farm-trees', label: 'Manage Trees', key: 'farmTrees' },
     { to: '/farm-maintenance-tasks', label: 'Maintenance Tasks', key: 'farmMaintenanceTasks' },
     { to: '/farm-logs', label: 'Tree Logs', key: 'farmTreeLogs' },
+    { to: '/farm-manage-expenses', label: 'Manage Expenses', key: 'farmExpenseManage' },
+    { to: '/farm-add-expenses', label: 'Add Expenses', key: 'farmExpenseAdd' },
+    { to: '/farm-expense-dashboard', label: 'Expense Dashboard', key: 'farmExpenseDashboard' },
+    { to: '/financial-years', label: 'Manage Financial Years', key: 'financialYears' },
+    { to: '/farm-hr', label: 'HR', key: 'farmHR' },
+    { to: '/farm-hr-expenses', label: 'HR Expenses', key: 'farmHRExpenses' },
   ];
   const visibleFarmLinks = farmLinks.filter((link) => canView(link.key));
   const showFarmMenu = visibleFarmLinks.length > 0;

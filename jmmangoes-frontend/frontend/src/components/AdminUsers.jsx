@@ -34,6 +34,14 @@ const permissionKeys = [
   { key: 'farmTreeLogs', label: 'Farm Tree Logs' },
   { key: 'farmMaintenanceTasks', label: 'Farm Maintenance Tasks' },
   { key: 'farmLogs', label: 'Farm Logs (Legacy)' },
+  { key: 'farmExpenseManage', label: 'Farm Manage Expenses' },
+  { key: 'farmExpenseAdd', label: 'Farm Add Expenses' },
+  { key: 'farmExpenseDashboard', label: 'Farm Expense Dashboard' },
+  { key: 'financialYears', label: 'Manage Financial Years' },
+  { key: 'adminFinancialDashboard', label: 'Admin Financial Dashboard' },
+  { key: 'farmHR', label: 'Farm HR' },
+  { key: 'farmHRExpenses', label: 'Farm HR Expenses' },
+  { key: 'actionLogs', label: 'Action Logs' },
 ];
 
 const blankPermissions = permissionKeys.reduce((acc, p) => {
