@@ -23,6 +23,7 @@ const StockAdjustment = require('../model/StockAdjustmentSchema');
 const ExpenseHead = require('../model/ExpenseHeadSchema');
 const ExpenseItem = require('../model/ExpenseItemSchema');
 const ExpenseEntry = require('../model/ExpenseEntrySchema');
+const CompanyCashDeposit = require('../model/CompanyCashDepositSchema');
 const OrderAlertEmail = require('../model/OrderAlertEmailSchema');
 const Courier = require('../model/CourierSchema');
 const PaymentMethod = require('../model/PaymentMethodSchema');
@@ -46,6 +47,7 @@ const StockLedger = require('../model/StockLedgerSchema');
 const StockTransfer = require('../model/StockTransferSchema');
 const OrderStockRequest = require('../model/OrderStockRequestSchema');
 const WhatsAppEvent = require('../model/WhatsAppEventSchema');
+const GiftSource = require('../model/GiftSourceSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -1349,14 +1351,18 @@ async function handleGetSiteStock(req, res) {
 
 async function handleCreateSalePointEntry(req, res) {
   try {
-    const { siteId, productId, quantity, discountAmount = 0, date } = req.body;
+    const { siteId, productId, quantity, discountAmount = 0, priceIncreaseAmount = 0, date } = req.body;
     const qty = Number(quantity);
     const discount = Number(discountAmount || 0);
+    const priceIncrease = Number(priceIncreaseAmount || 0);
     if (!siteId || !productId || Number.isNaN(qty) || qty <= 0) {
       return res.status(400).json({ message: 'Invalid sale entry data' });
     }
     if (Number.isNaN(discount) || discount < 0) {
       return res.status(400).json({ message: 'Invalid discount amount' });
+    }
+    if (Number.isNaN(priceIncrease) || priceIncrease < 0) {
+      return res.status(400).json({ message: 'Invalid price increase amount' });
     }
     if (req.user.role !== 'admin') {
       const allowedSet = new Set((req.user.siteAccess || []).map(String));
@@ -1377,7 +1383,7 @@ async function handleCreateSalePointEntry(req, res) {
 
     const unitPrice = getProductSitePrice(product, siteId, product.price);
     const grossAmount = unitPrice * qty;
-    const netAmount = Math.max(0, grossAmount - discount);
+    const netAmount = Math.max(0, grossAmount + priceIncrease - discount);
 
     await consumeSiteProductLots(siteId, product._id, qty);
 
@@ -1390,6 +1396,7 @@ async function handleCreateSalePointEntry(req, res) {
       quantity: qty,
       unitPrice,
       grossAmount,
+      priceIncreaseAmount: priceIncrease,
       discountAmount: discount,
       netAmount,
       createdBy: req.user.id === 'super-admin' ? null : req.user.id,
@@ -1419,15 +1426,43 @@ async function handleCreateSaleCheckout(req, res) {
       productId: it.productId,
       quantity: Number(it.quantity),
       discountAmount: Number(it.discountAmount || 0),
+      priceIncreaseAmount: Number(it.priceIncreaseAmount || 0),
+      isGift: Boolean(it.isGift),
+      isPayLater: Boolean(it.isPayLater),
+      giftSourceId: it.giftSourceId || null,
     }));
+    const hasGiftItems = normalizedItems.some((it) => it.isGift);
+    const hasPayLaterItems = normalizedItems.some((it) => it.isPayLater);
+    if (normalizedItems.some((it) => it.isGift && it.isPayLater)) {
+      return res.status(400).json({ message: 'An item cannot be both gift and pay later' });
+    }
+    if (hasGiftItems && (!String(customerName || '').trim() || !String(customerWhatsapp || '').trim())) {
+      return res.status(400).json({ message: 'Recipient name and contact number are required for gift items' });
+    }
+    if (hasPayLaterItems && (!String(customerName || '').trim() || !String(customerWhatsapp || '').trim())) {
+      return res.status(400).json({ message: 'Customer name and contact number are required for pay later items' });
+    }
     for (const it of normalizedItems) {
-      if (!it.productId || Number.isNaN(it.quantity) || it.quantity <= 0 || Number.isNaN(it.discountAmount) || it.discountAmount < 0) {
+      if (
+        !it.productId ||
+        Number.isNaN(it.quantity) ||
+        it.quantity <= 0 ||
+        Number.isNaN(it.discountAmount) ||
+        it.discountAmount < 0 ||
+        Number.isNaN(it.priceIncreaseAmount) ||
+        it.priceIncreaseAmount < 0
+      ) {
         return res.status(400).json({ message: 'Invalid item in sale checkout' });
       }
       const product = await Product.findById(it.productId);
       if (!product) return res.status(404).json({ message: 'Product not found' });
       if (!productHasSiteAssignment(product, siteId, site.name)) {
         return res.status(400).json({ message: `Product "${product.name}" does not belong to selected site` });
+      }
+      if (it.isGift) {
+        const source = await GiftSource.findById(it.giftSourceId);
+        if (!source || !source.isActive) return res.status(400).json({ message: 'Active gifting source is required for gift items' });
+        it.giftSourceName = source.name;
       }
       const availableQty = await getSiteProductAvailableQty(siteId, product._id);
       if (availableQty < it.quantity) {
@@ -1437,18 +1472,22 @@ async function handleCreateSaleCheckout(req, res) {
 
     const createdEntries = [];
     let grossTotal = 0;
+    let priceIncreaseTotal = 0;
     let discountTotal = 0;
     let netTotal = 0;
     for (const it of normalizedItems) {
       const product = await Product.findById(it.productId);
       const unitPrice = getProductSitePrice(product, siteId, product.price);
-      const grossAmount = unitPrice * it.quantity;
-      const netAmount = Math.max(0, grossAmount - it.discountAmount);
+      const grossAmount = it.isGift ? 0 : unitPrice * it.quantity;
+      const linePriceIncrease = it.isGift ? 0 : it.priceIncreaseAmount;
+      const lineDiscount = it.isGift ? 0 : it.discountAmount;
+      const receivableAmount = it.isPayLater ? Math.max(0, grossAmount + linePriceIncrease - lineDiscount) : 0;
+      const netAmount = it.isGift || it.isPayLater ? 0 : Math.max(0, grossAmount + linePriceIncrease - lineDiscount);
 
       await consumeSiteProductLots(siteId, product._id, it.quantity);
 
       const entry = await SalePointEntry.create({
-        entryType: 'sale',
+        entryType: it.isGift ? 'gift' : it.isPayLater ? 'pay_later' : 'sale',
         siteId: site._id,
         siteName: site.name,
         productId: product._id,
@@ -1457,7 +1496,12 @@ async function handleCreateSaleCheckout(req, res) {
         quantity: it.quantity,
         unitPrice,
         grossAmount,
-        discountAmount: it.discountAmount,
+        priceIncreaseAmount: linePriceIncrease,
+        discountAmount: lineDiscount,
+        receivableAmount,
+        paymentStatus: it.isPayLater ? 'pending' : 'not_applicable',
+        giftSourceId: it.isGift ? it.giftSourceId : null,
+        giftSourceName: it.isGift ? it.giftSourceName : '',
         netAmount,
         customerName: String(customerName || '').trim(),
         customerWhatsapp: String(customerWhatsapp || '').trim(),
@@ -1467,11 +1511,12 @@ async function handleCreateSaleCheckout(req, res) {
       });
       createdEntries.push(entry);
       grossTotal += grossAmount;
-      discountTotal += it.discountAmount;
+      priceIncreaseTotal += linePriceIncrease;
+      discountTotal += lineDiscount;
       netTotal += netAmount;
     }
 
-    return res.status(201).json({ success: true, entries: createdEntries, grossTotal, discountTotal, netTotal });
+    return res.status(201).json({ success: true, entries: createdEntries, grossTotal, priceIncreaseTotal, discountTotal, netTotal });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1534,9 +1579,10 @@ async function handleCreateSaleReturn(req, res) {
 
 async function handleGetSalePointEntries(req, res) {
   try {
-    const { siteId, date, dateFrom, dateTo } = req.query;
+    const { siteId, date, dateFrom, dateTo, entryType = '' } = req.query;
     const query = {};
     if (siteId) query.siteId = siteId;
+    if (['sale', 'return', 'gift', 'pay_later'].includes(String(entryType))) query.entryType = entryType;
     if (dateFrom || dateTo) {
       const range = {};
       if (dateFrom) {
@@ -1564,6 +1610,174 @@ async function handleGetSalePointEntries(req, res) {
 
     const entries = await SalePointEntry.find(query).sort({ createdAt: -1 }).limit(200);
     return res.status(200).json(entries);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetGiftEntries(req, res) {
+  try {
+    req.query.entryType = 'gift';
+    return handleGetSalePointEntries(req, res);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetPayLaterEntries(req, res) {
+  try {
+    req.query.entryType = 'pay_later';
+    return handleGetSalePointEntries(req, res);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetGiftSources(req, res) {
+  try {
+    const { activeOnly = '' } = req.query || {};
+    const query = {};
+    if (String(activeOnly) === 'true') query.isActive = true;
+    const rows = await GiftSource.find(query).sort({ isActive: -1, name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateGiftSource(req, res) {
+  try {
+    const { name, relation = '', contactNumber = '', isActive = true } = req.body || {};
+    const safeName = String(name || '').trim();
+    if (!safeName) return res.status(400).json({ message: 'Name is required' });
+    const row = await GiftSource.create({
+      name: safeName,
+      relation,
+      contactNumber,
+      isActive: !!isActive,
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: req.user.name || req.user.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'gift-sources',
+      entityType: 'GiftSource',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: row.toObject(),
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    if (err?.code === 11000) return res.status(400).json({ message: 'Gift source already exists' });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateGiftSource(req, res) {
+  try {
+    const row = await GiftSource.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Gift source not found' });
+    const before = row.toObject();
+    const { name, relation, contactNumber, isActive } = req.body || {};
+    if (name !== undefined) {
+      const safeName = String(name || '').trim();
+      if (!safeName) return res.status(400).json({ message: 'Name is required' });
+      row.name = safeName;
+    }
+    if (relation !== undefined) row.relation = String(relation || '').trim();
+    if (contactNumber !== undefined) row.contactNumber = String(contactNumber || '').trim();
+    if (isActive !== undefined) row.isActive = !!isActive;
+    await row.save();
+    await SalePointEntry.updateMany({ giftSourceId: row._id }, { $set: { giftSourceName: row.name } });
+    await recordAction(req, {
+      action: 'update',
+      module: 'gift-sources',
+      entityType: 'GiftSource',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { before, after: row.toObject() },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    if (err?.code === 11000) return res.status(400).json({ message: 'Gift source already exists' });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteGiftSource(req, res) {
+  try {
+    const used = await SalePointEntry.countDocuments({ giftSourceId: req.params.id });
+    if (used > 0) return res.status(400).json({ message: 'Cannot delete a gift source used in gifting records. Disable it instead.' });
+    const row = await GiftSource.findByIdAndDelete(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Gift source not found' });
+    await recordAction(req, {
+      action: 'delete',
+      module: 'gift-sources',
+      entityType: 'GiftSource',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: row.toObject(),
+    });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdatePayLaterAmount(req, res) {
+  try {
+    const { id } = req.params;
+    const value = Number(req.body?.receivableAmount);
+    if (Number.isNaN(value) || value < 0) return res.status(400).json({ message: 'Valid receivable amount is required' });
+    const row = await SalePointEntry.findById(id);
+    if (!row || row.entryType !== 'pay_later') return res.status(404).json({ message: 'Pay later record not found' });
+    if (row.paymentStatus === 'paid') return res.status(400).json({ message: 'Paid records cannot be edited' });
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      if (!allowedSet.has(String(row.siteId))) return res.status(403).json({ message: 'Site access denied' });
+    }
+    const before = row.toObject();
+    row.receivableAmount = value;
+    await row.save();
+    await recordAction(req, {
+      action: 'update',
+      module: 'pay-later-records',
+      entityType: 'SalePointEntry',
+      entityId: row._id,
+      entityLabel: `${row.customerName || 'Customer'} - ${row.productName} - ${value}`,
+      details: { before, after: row.toObject() },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleMarkPayLaterPaid(req, res) {
+  try {
+    const { id } = req.params;
+    const row = await SalePointEntry.findById(id);
+    if (!row || row.entryType !== 'pay_later') return res.status(404).json({ message: 'Pay later record not found' });
+    if (row.paymentStatus === 'paid') return res.status(400).json({ message: 'Payment already marked as received' });
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      if (!allowedSet.has(String(row.siteId))) return res.status(403).json({ message: 'Site access denied' });
+    }
+    row.paymentStatus = 'paid';
+    row.paymentReceivedAt = new Date();
+    row.paymentReceivedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    row.paymentReceivedByName = req.user.name || req.user.username || '';
+    row.netAmount = Number(row.receivableAmount || 0);
+    await row.save();
+    await recordAction(req, {
+      action: 'mark-paid',
+      module: 'pay-later-records',
+      entityType: 'SalePointEntry',
+      entityId: row._id,
+      entityLabel: `${row.customerName || 'Customer'} - ${row.productName} - ${row.netAmount}`,
+      details: { paymentStatus: row.paymentStatus, netAmount: row.netAmount },
+    });
+    return res.status(200).json(row);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -2482,8 +2696,13 @@ async function handleGetSalesDashboardSummary(req, res) {
     const onlineSite = activeSites.find((s) => String(s.name || '').trim().toLowerCase() === 'online') || null;
 
     const baseSiteMatch = (range) => {
-      const match = {};
-      if (range) match.date = range;
+      const match = {
+        $or: [
+          { entryType: { $in: ['sale', 'return'] }, ...(range ? { date: range } : {}) },
+          { entryType: { $exists: false }, ...(range ? { date: range } : {}) },
+          { entryType: 'pay_later', paymentStatus: 'paid', ...(range ? { paymentReceivedAt: range } : {}) },
+        ],
+      };
       if (allowedSiteIds) match.siteId = { $in: allowedSiteIds };
       return match;
     };
@@ -2559,6 +2778,27 @@ async function handleGetSalesDashboardSummary(req, res) {
       },
     ]);
 
+    const baseDepositMatch = (range) => {
+      const match = {};
+      if (range) match.date = range;
+      if (req.user.role !== 'admin') Object.assign(match, buildCompanyDepositAccessMatch(req));
+      return match;
+    };
+
+    const depositGroupPipeline = (range) => ([
+      { $match: baseDepositMatch(range) },
+      {
+        $group: {
+          _id: {
+            holderType: '$holderType',
+            holderId: '$holderId',
+            status: '$status',
+          },
+          amount: { $sum: '$amount' },
+        },
+      },
+    ]);
+
     const [
       salesOverall,
       salesDaily,
@@ -2566,6 +2806,11 @@ async function handleGetSalesDashboardSummary(req, res) {
       expenseOverall,
       expenseDaily,
       expenseRange,
+      pendingReceivables,
+      giftRows,
+      depositsOverall,
+      depositsDaily,
+      depositsRange,
     ] = await Promise.all([
       SalePointEntry.aggregate(salesGroupPipeline(null)),
       SalePointEntry.aggregate(salesGroupPipeline({ $gte: dayStart, $lte: dayEnd })),
@@ -2573,6 +2818,29 @@ async function handleGetSalesDashboardSummary(req, res) {
       ExpenseEntry.aggregate(expenseGroupPipeline(null)),
       ExpenseEntry.aggregate(expenseGroupPipeline({ $gte: dayStart, $lte: dayEnd })),
       selectedRange ? ExpenseEntry.aggregate(expenseGroupPipeline(selectedRange)) : Promise.resolve([]),
+      SalePointEntry.aggregate([
+        {
+          $match: {
+            entryType: 'pay_later',
+            paymentStatus: 'pending',
+            ...(allowedSiteIds ? { siteId: { $in: allowedSiteIds } } : {}),
+          },
+        },
+        { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
+      ]),
+      SalePointEntry.aggregate([
+        {
+          $match: {
+            entryType: 'gift',
+            ...(allowedSiteIds ? { siteId: { $in: allowedSiteIds } } : {}),
+          },
+        },
+        { $group: { _id: '$giftSourceName', quantity: { $sum: '$quantity' }, value: { $sum: { $multiply: ['$unitPrice', '$quantity'] } } } },
+        { $sort: { quantity: -1 } },
+      ]),
+      CompanyCashDeposit.aggregate(depositGroupPipeline(null)),
+      CompanyCashDeposit.aggregate(depositGroupPipeline({ $gte: dayStart, $lte: dayEnd })),
+      selectedRange ? CompanyCashDeposit.aggregate(depositGroupPipeline(selectedRange)) : Promise.resolve([]),
     ]);
 
     const onlineOrderMatch = {
@@ -2652,6 +2920,20 @@ async function handleGetSalesDashboardSummary(req, res) {
       });
       return m;
     };
+    const toDepositMap = (rows) => {
+      const m = new Map();
+      rows.forEach((r) => {
+        const type = String(r?._id?.holderType || '').trim();
+        const id = String(r?._id?.holderId || '').trim();
+        const status = String(r?._id?.status || '').trim();
+        if (!type || !id || !status) return;
+        const key = `${type}:${id}`;
+        const current = m.get(key) || { accepted: 0, pending: 0, rejected: 0 };
+        current[status] = Number(current[status] || 0) + Number(r.amount || 0);
+        m.set(key, current);
+      });
+      return m;
+    };
     const toDualMap = (rows) => {
       const m = new Map();
       rows.forEach((r) => m.set(String(r._id || '').trim(), {
@@ -2667,6 +2949,9 @@ async function handleGetSalesDashboardSummary(req, res) {
     const expenseOverallMap = toExpenseMap(expenseOverall);
     const expenseDailyMap = toExpenseMap(expenseDaily);
     const expenseRangeMap = toExpenseMap(expenseRange);
+    const depositOverallMap = toDepositMap(depositsOverall);
+    const depositDailyMap = toDepositMap(depositsDaily);
+    const depositRangeMap = toDepositMap(depositsRange);
 
     if (allowOnline && onlineSite?._id) {
       const onlineSiteId = String(onlineSite._id);
@@ -2703,6 +2988,9 @@ async function handleGetSalesDashboardSummary(req, res) {
         const ovExp = Number(expenseOverallMap.get(holderKey) || 0);
         const dyExp = Number(expenseDailyMap.get(holderKey) || 0);
         const rgExp = Number(expenseRangeMap.get(holderKey) || 0);
+        const ovDep = depositOverallMap.get(holderKey) || { accepted: 0, pending: 0, rejected: 0 };
+        const dyDep = depositDailyMap.get(holderKey) || { accepted: 0, pending: 0, rejected: 0 };
+        const rgDep = depositRangeMap.get(holderKey) || { accepted: 0, pending: 0, rejected: 0 };
         return {
           holderType,
           siteId,
@@ -2710,18 +2998,27 @@ async function handleGetSalesDashboardSummary(req, res) {
           overall: {
             salesAmount: ovSales.salesAmount,
             expenseAmount: ovExp,
+            acceptedDepositAmount: Number(ovDep.accepted || 0),
+            pendingDepositAmount: Number(ovDep.pending || 0),
+            cashAvailable: ovSales.salesAmount - ovExp - Number(ovDep.accepted || 0) - Number(ovDep.pending || 0),
             netProfit: ovSales.salesAmount - ovExp,
             quantity: ovSales.salesQty,
           },
           daily: {
             salesAmount: dySales.salesAmount,
             expenseAmount: dyExp,
+            acceptedDepositAmount: Number(dyDep.accepted || 0),
+            pendingDepositAmount: Number(dyDep.pending || 0),
+            cashAvailable: dySales.salesAmount - dyExp - Number(dyDep.accepted || 0) - Number(dyDep.pending || 0),
             netProfit: dySales.salesAmount - dyExp,
             quantity: dySales.salesQty,
           },
           range: {
             salesAmount: rgSales.salesAmount,
             expenseAmount: rgExp,
+            acceptedDepositAmount: Number(rgDep.accepted || 0),
+            pendingDepositAmount: Number(rgDep.pending || 0),
+            cashAvailable: rgSales.salesAmount - rgExp - Number(rgDep.accepted || 0) - Number(rgDep.pending || 0),
             netProfit: rgSales.salesAmount - rgExp,
             quantity: rgSales.salesQty,
           },
@@ -2733,20 +3030,42 @@ async function handleGetSalesDashboardSummary(req, res) {
       overall: {
         salesAmount: sumField(siteCards, (c) => c.overall.salesAmount),
         expenseAmount: sumField(siteCards, (c) => c.overall.expenseAmount),
+        acceptedDepositAmount: sumField(siteCards, (c) => c.overall.acceptedDepositAmount),
+        pendingDepositAmount: sumField(siteCards, (c) => c.overall.pendingDepositAmount),
+        cashAvailable: sumField(siteCards, (c) => c.overall.cashAvailable),
         netProfit: sumField(siteCards, (c) => c.overall.netProfit),
         quantity: sumField(siteCards, (c) => c.overall.quantity),
       },
       daily: {
         salesAmount: sumField(siteCards, (c) => c.daily.salesAmount),
         expenseAmount: sumField(siteCards, (c) => c.daily.expenseAmount),
+        acceptedDepositAmount: sumField(siteCards, (c) => c.daily.acceptedDepositAmount),
+        pendingDepositAmount: sumField(siteCards, (c) => c.daily.pendingDepositAmount),
+        cashAvailable: sumField(siteCards, (c) => c.daily.cashAvailable),
         netProfit: sumField(siteCards, (c) => c.daily.netProfit),
         quantity: sumField(siteCards, (c) => c.daily.quantity),
       },
       range: {
         salesAmount: sumField(siteCards, (c) => c.range.salesAmount),
         expenseAmount: sumField(siteCards, (c) => c.range.expenseAmount),
+        acceptedDepositAmount: sumField(siteCards, (c) => c.range.acceptedDepositAmount),
+        pendingDepositAmount: sumField(siteCards, (c) => c.range.pendingDepositAmount),
+        cashAvailable: sumField(siteCards, (c) => c.range.cashAvailable),
         netProfit: sumField(siteCards, (c) => c.range.netProfit),
         quantity: sumField(siteCards, (c) => c.range.quantity),
+      },
+      pendingReceivables: {
+        amount: Number(pendingReceivables?.[0]?.amount || 0),
+        quantity: Number(pendingReceivables?.[0]?.quantity || 0),
+      },
+      gifting: {
+        quantity: giftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+        value: giftRows.reduce((sum, row) => sum + Number(row.value || 0), 0),
+        bySource: giftRows.map((row) => ({
+          sourceName: row._id || 'Unassigned',
+          quantity: Number(row.quantity || 0),
+          value: Number(row.value || 0),
+        })),
       },
     };
 
@@ -3212,6 +3531,396 @@ async function handleGetExpenseHolders(req, res) {
   }
 }
 
+function buildCompanyDepositAccessMatch(req) {
+  if (req.user.role === 'admin') return {};
+  const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+  const warehouseIds = (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+  const wholesellerIds = (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+  return {
+    $or: [
+      { holderType: 'site', holderId: { $in: siteIds } },
+      { holderType: 'online', holderId: { $in: siteIds } },
+      { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+      { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
+    ],
+  };
+}
+
+async function calculateCashPositionForHolder(holder) {
+  const holderId = new mongoose.Types.ObjectId(String(holder.id));
+  const holderMatch = { holderType: holder.type, holderId };
+  const isSiteLike = holder.type === 'site' || holder.type === 'online';
+  const saleMatch = isSiteLike
+    ? {
+        siteId: holderId,
+        $or: [
+          { entryType: { $in: ['sale', 'return'] } },
+          { entryType: { $exists: false } },
+          { entryType: 'pay_later', paymentStatus: 'paid' },
+        ],
+      }
+    : { _id: null };
+
+  const [salesAgg, expensesAgg, depositsAgg] = await Promise.all([
+    SalePointEntry.aggregate([
+      { $match: saleMatch },
+      {
+        $group: {
+          _id: null,
+          amount: {
+            $sum: {
+              $cond: [
+                { $eq: ['$entryType', 'return'] },
+                { $multiply: ['$netAmount', -1] },
+                '$netAmount',
+              ],
+            },
+          },
+          quantity: {
+            $sum: {
+              $cond: [
+                { $eq: ['$entryType', 'return'] },
+                { $multiply: ['$quantity', -1] },
+                '$quantity',
+              ],
+            },
+          },
+        },
+      },
+    ]),
+    ExpenseEntry.aggregate([
+      { $match: holderMatch },
+      { $group: { _id: null, amount: { $sum: '$amount' } } },
+    ]),
+    CompanyCashDeposit.aggregate([
+      { $match: holderMatch },
+      { $group: { _id: '$status', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const depositMap = depositsAgg.reduce((acc, row) => {
+    acc[row._id] = { amount: Number(row.amount || 0), count: Number(row.count || 0) };
+    return acc;
+  }, {});
+  const salesAmount = Number(salesAgg?.[0]?.amount || 0);
+  const expenseAmount = Number(expensesAgg?.[0]?.amount || 0);
+  const acceptedDepositAmount = Number(depositMap.accepted?.amount || 0);
+  const pendingDepositAmount = Number(depositMap.pending?.amount || 0);
+  const rejectedDepositAmount = Number(depositMap.rejected?.amount || 0);
+
+  return {
+    holderType: holder.type,
+    holderId: String(holder.id),
+    holderName: holder.name,
+    salesAmount,
+    salesQuantity: Number(salesAgg?.[0]?.quantity || 0),
+    expenseAmount,
+    acceptedDepositAmount,
+    pendingDepositAmount,
+    rejectedDepositAmount,
+    cashAvailable: salesAmount - expenseAmount - acceptedDepositAmount - pendingDepositAmount,
+    pendingDepositCount: Number(depositMap.pending?.count || 0),
+  };
+}
+
+async function handleGetCashDepositPaymentMethods(req, res) {
+  try {
+    const rows = await PaymentMethod.find({ isActive: true }).sort({ name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetCompanyCashPosition(req, res) {
+  try {
+    const { holderType, holderId } = req.query;
+    const holder = await resolveEntity(holderType, holderId, { allowOnlineName: true });
+    if (!holder) return res.status(404).json({ message: 'Holder not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
+    const summary = await calculateCashPositionForHolder(holder);
+    return res.status(200).json(summary);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateCompanyCashDeposit(req, res) {
+  try {
+    const { holderType, holderId, date, amount, paymentMethodId, remarks = '' } = req.body;
+    const value = Number(amount);
+    if (Number.isNaN(value) || value <= 0 || !paymentMethodId) {
+      return res.status(400).json({ message: 'Amount and account are required' });
+    }
+    const holder = await resolveEntity(holderType, holderId, { allowOnlineName: true });
+    if (!holder) return res.status(404).json({ message: 'Holder not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
+    const isCashDeposit = String(paymentMethodId) === 'deposited_in_cash';
+    const method = isCashDeposit ? null : await PaymentMethod.findById(paymentMethodId);
+    if (!isCashDeposit && (!method || !method.isActive)) return res.status(404).json({ message: 'Selected company account is not active' });
+
+    const summary = await calculateCashPositionForHolder(holder);
+    if (value > Number(summary.cashAvailable || 0)) {
+      return res.status(400).json({ message: 'Deposit amount cannot exceed cash available for this holder' });
+    }
+
+    const row = await CompanyCashDeposit.create({
+      holderType: holder.type,
+      holderId: holder.id,
+      holderName: holder.name,
+      date: date ? new Date(date) : new Date(),
+      amount: value,
+      paymentMethodId: isCashDeposit ? null : method._id,
+      paymentMethodName: isCashDeposit ? 'Deposited in Cash' : method.name,
+      remarks,
+      submittedBy: req.user.id === 'super-admin' ? null : req.user.id,
+      submittedByName: req.user.name || req.user.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'sales',
+      entityType: 'CompanyCashDeposit',
+      entityId: row._id,
+      entityLabel: `${holder.name} PKR ${value}`,
+      details: { holderType: holder.type, holderName: holder.name, amount: value, account: isCashDeposit ? 'Deposited in Cash' : method.name },
+    });
+    return res.status(201).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetCompanyCashDeposits(req, res) {
+  try {
+    const { holderType, holderId, status, dateFrom, dateTo } = req.query;
+    const query = {};
+    const normalizedHolderType = normalizeEntityType(holderType);
+    if (normalizedHolderType && holderId) {
+      query.holderType = normalizedHolderType;
+      query.holderId = holderId;
+      if (!userCanAccessEntity(req, normalizedHolderType, holderId)) return res.status(403).json({ message: 'Holder access denied' });
+    } else if (req.user.role !== 'admin') {
+      Object.assign(query, buildCompanyDepositAccessMatch(req));
+    }
+    if (status && ['pending', 'accepted', 'rejected'].includes(String(status))) query.status = status;
+    if (dateFrom || dateTo) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+      query.date = range;
+    }
+    const rows = await CompanyCashDeposit.find(query).sort({ status: -1, date: -1, createdAt: -1 }).limit(1500);
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleReviewCompanyCashDeposit(req, res) {
+  try {
+    const { status, reviewRemarks = '' } = req.body;
+    if (!['accepted', 'rejected'].includes(String(status))) {
+      return res.status(400).json({ message: 'Review status must be accepted or rejected' });
+    }
+    const row = await CompanyCashDeposit.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Deposit request not found' });
+    if (!userCanAccessEntity(req, row.holderType, row.holderId)) return res.status(403).json({ message: 'Holder access denied' });
+    if (row.status !== 'pending') return res.status(400).json({ message: 'Only pending deposit requests can be reviewed' });
+
+    row.status = status;
+    row.reviewRemarks = reviewRemarks;
+    row.reviewedBy = req.user.id === 'super-admin' ? null : req.user.id;
+    row.reviewedByName = req.user.name || req.user.username || '';
+    row.reviewedAt = new Date();
+    await row.save();
+    await recordAction(req, {
+      action: status,
+      module: 'sales',
+      entityType: 'CompanyCashDeposit',
+      entityId: row._id,
+      entityLabel: `${row.holderName} PKR ${row.amount}`,
+      details: { holderType: row.holderType, holderName: row.holderName, amount: row.amount, reviewRemarks },
+    });
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateCompanyCashDeposit(req, res) {
+  try {
+    const row = await CompanyCashDeposit.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Deposit request not found' });
+    if (row.status !== 'pending') return res.status(400).json({ message: 'Only pending deposit requests can be edited' });
+    if (!userCanAccessEntity(req, row.holderType, row.holderId)) return res.status(403).json({ message: 'Holder access denied' });
+
+    const isSubmitter = row.submittedBy && String(row.submittedBy) === String(req.user.id);
+    if (req.user.role !== 'admin' && !isSubmitter) {
+      return res.status(403).json({ message: 'Only the initiating user or super admin can edit this pending deposit' });
+    }
+
+    const { date, amount, paymentMethodId, remarks = '' } = req.body;
+    const value = Number(amount);
+    if (Number.isNaN(value) || value <= 0 || !paymentMethodId) {
+      return res.status(400).json({ message: 'Amount and account are required' });
+    }
+
+    const isCashDeposit = String(paymentMethodId) === 'deposited_in_cash';
+    const method = isCashDeposit ? null : await PaymentMethod.findById(paymentMethodId);
+    if (!isCashDeposit && (!method || !method.isActive)) return res.status(404).json({ message: 'Selected company account is not active' });
+
+    const holder = { type: row.holderType, id: row.holderId, name: row.holderName };
+    const summary = await calculateCashPositionForHolder(holder);
+    const editableCashAvailable = Number(summary.cashAvailable || 0) + Number(row.amount || 0);
+    if (value > editableCashAvailable) {
+      return res.status(400).json({ message: 'Deposit amount cannot exceed cash available for this holder' });
+    }
+
+    const before = row.toObject();
+    row.date = date ? new Date(date) : row.date;
+    row.amount = value;
+    row.paymentMethodId = isCashDeposit ? null : method._id;
+    row.paymentMethodName = isCashDeposit ? 'Deposited in Cash' : method.name;
+    row.remarks = remarks;
+    await row.save();
+
+    await recordAction(req, {
+      action: 'update',
+      module: 'sales',
+      entityType: 'CompanyCashDeposit',
+      entityId: row._id,
+      entityLabel: `${row.holderName} PKR ${row.amount}`,
+      details: { before, after: row.toObject() },
+    });
+    return res.status(200).json({ success: true, row });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+function buildSalesCashAccessMatch(req, siteField = 'siteId') {
+  if (req.user.role === 'admin') return {};
+  const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+  return { [siteField]: { $in: siteIds } };
+}
+
+async function handleGetSalesCashTransactions(req, res) {
+  try {
+    const { dateFrom, dateTo, type = '', limit = 2000 } = req.query;
+    const makeRange = () => {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+      return Object.keys(range).length ? range : null;
+    };
+    const range = makeRange();
+    const wanted = String(type || '').trim();
+    const include = (key) => !wanted || wanted === key;
+
+    const jobs = [];
+    if (include('sale')) {
+      jobs.push(
+        SalePointEntry.find({
+          ...buildSalesCashAccessMatch(req, 'siteId'),
+          ...(range ? { date: range } : {}),
+          $or: [
+            { entryType: { $in: ['sale', 'return'] } },
+            { entryType: { $exists: false } },
+            { entryType: 'pay_later', paymentStatus: 'paid' },
+          ],
+        }).sort({ createdAt: -1 }).limit(Number(limit || 2000))
+      );
+    } else jobs.push(Promise.resolve([]));
+
+    if (include('expense')) {
+      const expenseMatch = range ? { date: range } : {};
+      if (req.user.role !== 'admin') {
+        const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        const warehouseIds = (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        const wholesellerIds = (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        expenseMatch.$or = [
+          { holderType: 'site', holderId: { $in: siteIds } },
+          { holderType: 'online', holderId: { $in: siteIds } },
+          { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+          { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
+          { siteId: { $in: siteIds } },
+        ];
+      }
+      jobs.push(ExpenseEntry.find(expenseMatch).sort({ createdAt: -1 }).limit(Number(limit || 2000)));
+    } else jobs.push(Promise.resolve([]));
+
+    if (include('deposit')) {
+      const depositMatch = range ? { date: range } : {};
+      if (req.user.role !== 'admin') Object.assign(depositMatch, buildCompanyDepositAccessMatch(req));
+      jobs.push(CompanyCashDeposit.find(depositMatch).sort({ createdAt: -1 }).limit(Number(limit || 2000)));
+    } else jobs.push(Promise.resolve([]));
+
+    const [salesRows, expenseRows, depositRows] = await Promise.all(jobs);
+    const saleTransactions = salesRows.map((row) => {
+      const isReturn = row.entryType === 'return';
+      const isPayLaterPaid = row.entryType === 'pay_later' && row.paymentStatus === 'paid';
+      return {
+        id: String(row._id),
+        date: isPayLaterPaid ? (row.paymentReceivedAt || row.updatedAt || row.createdAt) : (row.date || row.createdAt),
+        transactionType: isReturn ? 'sale_return' : isPayLaterPaid ? 'pay_later_received' : 'sale',
+        holderType: 'site',
+        holderName: row.siteName,
+        description: `${row.productName} x ${row.quantity}`,
+        amount: isReturn ? -Number(row.netAmount || 0) : Number(isPayLaterPaid ? row.receivableAmount || row.netAmount || 0 : row.netAmount || 0),
+        status: isPayLaterPaid ? 'paid' : row.entryType || 'sale',
+        enteredByName: isPayLaterPaid ? (row.paymentReceivedByName || row.createdByName || '-') : (row.createdByName || '-'),
+        remarks: row.customerName ? `Customer: ${row.customerName}` : '',
+      };
+    });
+    const expenseTransactions = expenseRows.map((row) => ({
+      id: String(row._id),
+      date: row.date || row.createdAt,
+      transactionType: 'expense',
+      holderType: row.holderType || (String(row.siteName || '').toLowerCase() === 'online' ? 'online' : 'site'),
+      holderName: row.holderName || row.siteName || '',
+      description: `${row.headName || 'Expense'} - ${row.itemName || ''}`.trim(),
+      amount: -Number(row.amount || 0),
+      status: 'expense',
+      enteredByName: row.enteredByName || '-',
+      remarks: row.remarks || '',
+    }));
+    const depositTransactions = depositRows.map((row) => ({
+      id: String(row._id),
+      date: row.date || row.createdAt,
+      transactionType: 'company_deposit',
+      holderType: row.holderType,
+      holderName: row.holderName,
+      description: `Deposit to ${row.paymentMethodName}`,
+      amount: -Number(row.amount || 0),
+      status: row.status,
+      enteredByName: row.submittedByName || '-',
+      remarks: [row.remarks, row.reviewRemarks ? `Review: ${row.reviewRemarks}` : ''].filter(Boolean).join(' | '),
+    }));
+    const rows = [...saleTransactions, ...expenseTransactions, ...depositTransactions]
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, Math.min(Number(limit || 2000), 5000));
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleUpdateExpenseEntry(req, res) {
   try {
     if (req.user.role !== 'admin') {
@@ -3445,18 +4154,39 @@ async function handleStockAdjustments(req, res) {
 async function handleStockLedger(req, res) {
   try {
     let query = {};
+    const { holderType, holderId, movementType, productId, dateFrom, dateTo, limit = 1500 } = req.query;
+    const normalizedHolderType = normalizeEntityType(holderType);
+    if (normalizedHolderType) query.holderType = normalizedHolderType;
+    if (holderId) query.holderId = holderId;
+    if (movementType) query.movementType = movementType;
+    if (productId) query.productId = productId;
+    if (dateFrom || dateTo) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+      query.createdAt = range;
+    }
     if (req.user.role !== 'admin') {
       const siteIds = Array.from(new Set((req.user.siteAccess || []).map(String)));
       const warehouseIds = Array.from(new Set((req.user.warehouseAccess || []).map(String)));
       const wholesellerIds = Array.from(new Set((req.user.wholesellerAccess || []).map(String)));
-      query.$or = [
+      const accessOr = [
         { holderType: 'site', holderId: { $in: siteIds } },
         { holderType: 'online', holderId: { $in: siteIds } },
         { holderType: 'warehouse', holderId: { $in: warehouseIds } },
         { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
       ];
+      query = query.$or ? { $and: [query, { $or: accessOr }] } : { ...query, $or: accessOr };
     }
-    const rows = await StockLedger.find(query).sort({ createdAt: -1 }).limit(500);
+    const rows = await StockLedger.find(query).sort({ createdAt: -1 }).limit(Math.min(Number(limit || 1500), 5000));
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -3586,7 +4316,7 @@ async function handleGetPaymentMethods(req, res) {
 
 async function handleGetPublicPaymentMethods(req, res) {
   try {
-    const rows = await PaymentMethod.find({ isActive: true }).sort({ createdAt: -1 });
+    const rows = await PaymentMethod.find({ isActive: true, showToOnlineCustomers: true }).sort({ createdAt: -1 });
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -3608,6 +4338,7 @@ async function handleCreatePaymentMethod(req, res) {
       methodImageUrl = '',
       details = '',
       isCashOnDelivery = false,
+      showToOnlineCustomers = false,
       isActive = true,
     } = req.body;
 
@@ -3630,6 +4361,7 @@ async function handleCreatePaymentMethod(req, res) {
       methodImageUrl: String(methodImageUrl || '').trim(),
       details: String(details || '').trim(),
       isCashOnDelivery: Boolean(isCashOnDelivery),
+      showToOnlineCustomers: Boolean(showToOnlineCustomers),
       isActive: Boolean(isActive),
     });
     return res.status(201).json({ success: true, row });
@@ -3649,6 +4381,7 @@ async function handleUpdatePaymentMethod(req, res) {
     }
     if (payload.discountValue !== undefined) payload.discountValue = Number(payload.discountValue || 0);
     if (payload.chargeValue !== undefined) payload.chargeValue = Number(payload.chargeValue || 0);
+    if (payload.showToOnlineCustomers !== undefined) payload.showToOnlineCustomers = Boolean(payload.showToOnlineCustomers);
     const row = await PaymentMethod.findByIdAndUpdate(id, payload, { new: true, runValidators: true });
     if (!row) return res.status(404).json({ message: 'Payment method not found' });
     return res.status(200).json({ success: true, row });
@@ -6301,9 +7034,17 @@ async function handleSetCurrentFinancialYear(req, res) {
 async function calculateFinancialSummaryByRange(startDate, endDate) {
   const range = { $gte: new Date(startDate), $lte: new Date(endDate) };
   range.$lte.setHours(23, 59, 59, 999);
-  const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows] = await Promise.all([
+  const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows, pendingReceivableRows, giftRows, cashDepositRows] = await Promise.all([
     SalePointEntry.aggregate([
-      { $match: { date: range } },
+      {
+        $match: {
+          $or: [
+            { entryType: { $in: ['sale', 'return'] }, date: range },
+            { entryType: { $exists: false }, date: range },
+            { entryType: 'pay_later', paymentStatus: 'paid', paymentReceivedAt: range },
+          ],
+        },
+      },
       {
         $group: {
           _id: null,
@@ -6358,6 +7099,19 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
       { $match: { logDate: range, logType: 'production' } },
       { $group: { _id: null, quantity: { $sum: '$quantity' } } },
     ]),
+    SalePointEntry.aggregate([
+      { $match: { date: range, entryType: 'pay_later', paymentStatus: 'pending' } },
+      { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
+    ]),
+    SalePointEntry.aggregate([
+      { $match: { date: range, entryType: 'gift' } },
+      { $group: { _id: '$giftSourceName', quantity: { $sum: '$quantity' }, value: { $sum: { $multiply: ['$unitPrice', '$quantity'] } } } },
+      { $sort: { quantity: -1 } },
+    ]),
+    CompanyCashDeposit.aggregate([
+      { $match: { date: range } },
+      { $group: { _id: '$status', amount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]),
   ]);
   const salePointRevenue = Number(salePointRows?.[0]?.amount || 0);
   const onlineRevenue = Number(onlineRows?.[0]?.amount || 0);
@@ -6368,6 +7122,12 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
   const treeProductionKg = Number(treeProductionRows?.[0]?.quantity || 0);
   const blockProductionKg = Number(blockProductionRows?.[0]?.quantity || 0);
   const farmProductionKg = treeProductionKg + blockProductionKg;
+  const cashDeposits = cashDepositRows.reduce((acc, row) => {
+    acc[row._id] = { amount: Number(row.amount || 0), count: Number(row.count || 0) };
+    acc.total.amount += Number(row.amount || 0);
+    acc.total.count += Number(row.count || 0);
+    return acc;
+  }, { pending: { amount: 0, count: 0 }, accepted: { amount: 0, count: 0 }, rejected: { amount: 0, count: 0 }, total: { amount: 0, count: 0 } });
   return {
     revenue,
     salePointRevenue,
@@ -6386,6 +7146,20 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
       gradeB: Number(treeProductionRows?.[0]?.gradeB || 0),
       gradeC: Number(treeProductionRows?.[0]?.gradeC || 0),
       gradeD: Number(treeProductionRows?.[0]?.gradeD || 0),
+    },
+    pendingReceivables: {
+      amount: Number(pendingReceivableRows?.[0]?.amount || 0),
+      quantity: Number(pendingReceivableRows?.[0]?.quantity || 0),
+    },
+    companyCashDeposits: cashDeposits,
+    gifting: {
+      quantity: giftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+      value: giftRows.reduce((sum, row) => sum + Number(row.value || 0), 0),
+      bySource: giftRows.map((row) => ({
+        sourceName: row._id || 'Unassigned',
+        quantity: Number(row.quantity || 0),
+        value: Number(row.value || 0),
+      })),
     },
   };
 }
@@ -7360,7 +8134,15 @@ module.exports = {
     handleCreateSaleCheckout,
     handleCreateSaleReturn,
     handleGetSalePointEntries,
+    handleGetGiftEntries,
+    handleGetPayLaterEntries,
+    handleUpdatePayLaterAmount,
+    handleMarkPayLaterPaid,
     handleGetSalesDashboardSummary,
+    handleGetGiftSources,
+    handleCreateGiftSource,
+    handleUpdateGiftSource,
+    handleDeleteGiftSource,
     handleGetWarehouses,
     handleCreateWarehouse,
     handleUpdateWarehouse,
@@ -7385,6 +8167,13 @@ module.exports = {
     handleCreateExpenseItem,
     handleUpdateExpenseItem,
     handleDeleteExpenseItem,
+    handleGetCashDepositPaymentMethods,
+    handleGetCompanyCashPosition,
+    handleCreateCompanyCashDeposit,
+    handleGetCompanyCashDeposits,
+    handleUpdateCompanyCashDeposit,
+    handleReviewCompanyCashDeposit,
+    handleGetSalesCashTransactions,
     handleCreateExpenseEntry,
     handleGetExpenseEntries,
     handleUpdateExpenseEntry,

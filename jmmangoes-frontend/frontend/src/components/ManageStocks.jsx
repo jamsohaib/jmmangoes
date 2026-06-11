@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
+import DataTable from 'react-data-table-component';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -34,6 +35,7 @@ const ManageStocks = () => {
   });
   const [holderLots, setHolderLots] = useState([]);
   const [adjustLots, setAdjustLots] = useState([]);
+  const [ledgerSearch, setLedgerSearch] = useState('');
 
   const loadData = async () => {
     const [productsRes, ledgerRes, holdersRes, stockStatusRes] = await Promise.all([
@@ -87,6 +89,59 @@ const ManageStocks = () => {
     const wholesellerCards = (stockStatusAll.wholesellers || []).map((x) => ({ key: `wholeseller-${x.holderId}`, name: `${x.holderCode ? `${x.holderCode} - ` : ''}${x.holderName}`, type: 'Wholeseller', totalStock: x.totalStock || 0, productsCount: (x.products || []).length }));
     return [...siteCards, ...warehouseCards, ...wholesellerCards];
   }, [stockStatusAll]);
+
+  const filteredLedgerRows = useMemo(() => {
+    const q = ledgerSearch.trim().toLowerCase();
+    if (!q) return ledgerRows;
+    return ledgerRows.filter((row) =>
+      String(row.holderType || '').toLowerCase().includes(q) ||
+      String(row.holderName || '').toLowerCase().includes(q) ||
+      String(row.productName || '').toLowerCase().includes(q) ||
+      String(row.movementType || '').toLowerCase().includes(q) ||
+      String(row.lotCode || '').toLowerCase().includes(q) ||
+      String(row.createdByName || '').toLowerCase().includes(q) ||
+      String(row.remarks || '').toLowerCase().includes(q)
+    );
+  }, [ledgerRows, ledgerSearch]);
+
+  const downloadLedgerCsv = (rows, suffix) => {
+    const headers = ['Date', 'Holder Type', 'Holder', 'Product', 'Movement', 'Lot', 'Qty', 'Unit Cost', 'Updated By', 'Remarks'];
+    const csvRows = rows.map((row) => [
+      `"${new Date(row.createdAt).toLocaleString().replace(/"/g, '""')}"`,
+      `"${String(row.holderType || '').replace(/"/g, '""')}"`,
+      `"${String(row.holderName || '').replace(/"/g, '""')}"`,
+      `"${String(row.productName || '').replace(/"/g, '""')}"`,
+      `"${String(row.movementType || '').replace(/"/g, '""')}"`,
+      `"${String(row.lotCode || '').replace(/"/g, '""')}"`,
+      `"${Number(row.quantity || 0)}"`,
+      `"${Number(row.unitCost || 0).toFixed(2)}"`,
+      `"${String(row.createdByName || '-').replace(/"/g, '""')}"`,
+      `"${String(row.remarks || '').replace(/"/g, '""')}"`,
+    ].join(','));
+    const csv = [headers.join(','), ...csvRows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `stock_update_history_${suffix}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const ledgerColumns = useMemo(() => ([
+    { name: 'Date', selector: (row) => new Date(row.createdAt).toLocaleString(), sortable: true, wrap: true },
+    { name: 'Holder Type', selector: (row) => row.holderType || '-', sortable: true, wrap: true },
+    { name: 'Holder', selector: (row) => row.holderName || '-', sortable: true, wrap: true },
+    { name: 'Product', selector: (row) => row.productName || '-', sortable: true, wrap: true },
+    { name: 'Movement', selector: (row) => String(row.movementType || '').replaceAll('_', ' '), sortable: true, wrap: true },
+    { name: 'Lot', selector: (row) => row.lotCode || '-', sortable: true, wrap: true },
+    { name: 'Qty', selector: (row) => Number(row.quantity || 0), sortable: true, right: true },
+    { name: 'Unit Cost', selector: (row) => Number(row.unitCost || 0), sortable: true, right: true, cell: (row) => Number(row.unitCost || 0).toFixed(2) },
+    { name: 'Updated By', selector: (row) => row.createdByName || '-', sortable: true, wrap: true },
+    { name: 'Remarks', selector: (row) => row.remarks || '-', wrap: true, grow: 1.4 },
+  ]), []);
 
   const loadHolderLots = async () => {
     if (!lotForm.holderType || !lotForm.holderId) return setHolderLots([]);
@@ -449,43 +504,30 @@ const ManageStocks = () => {
 
       <div className="overflow-x-auto bg-white rounded shadow mt-6">
         <div className="px-4 py-3 border-b bg-gray-50 font-semibold">Stock Update Transaction History</div>
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr>
-              <th className="border px-3 py-2">Date</th>
-              <th className="border px-3 py-2">Holder Type</th>
-              <th className="border px-3 py-2">Holder</th>
-              <th className="border px-3 py-2">Product</th>
-              <th className="border px-3 py-2">Movement</th>
-              <th className="border px-3 py-2">Lot</th>
-              <th className="border px-3 py-2">Qty</th>
-              <th className="border px-3 py-2">Unit Cost</th>
-              <th className="border px-3 py-2">Updated By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ledgerRows.map((a) => (
-              <tr key={a._id}>
-                <td className="border px-3 py-2">{new Date(a.createdAt).toLocaleString()}</td>
-                <td className="border px-3 py-2 capitalize">{a.holderType}</td>
-                <td className="border px-3 py-2">{a.holderName}</td>
-                <td className="border px-3 py-2">{a.productName}</td>
-                <td className="border px-3 py-2 capitalize">{String(a.movementType || '').replaceAll('_', ' ')}</td>
-                <td className="border px-3 py-2">{a.lotCode || '-'}</td>
-                <td className="border px-3 py-2">{a.quantity}</td>
-                <td className="border px-3 py-2">{a.unitCost ?? 0}</td>
-                <td className="border px-3 py-2">{a.createdByName || '-'}</td>
-              </tr>
-            ))}
-            {ledgerRows.length === 0 && (
-              <tr>
-                <td colSpan={9} className="border px-3 py-3 text-center text-gray-500">
-                  No stock update transactions found.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <div className="px-4 py-3 border-b">
+          <input
+            value={ledgerSearch}
+            onChange={(e) => setLedgerSearch(e.target.value)}
+            placeholder="Search stock transactions..."
+            className="border rounded px-3 py-2 text-sm w-full md:max-w-md"
+          />
+        </div>
+        <DataTable
+          columns={ledgerColumns}
+          data={filteredLedgerRows}
+          pagination
+          highlightOnHover
+          striped
+          dense
+          subHeader
+          subHeaderComponent={(
+            <div className="w-full flex justify-end gap-2">
+              <button onClick={() => downloadLedgerCsv(filteredLedgerRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
+              <button onClick={() => downloadLedgerCsv(ledgerRows, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
+            </div>
+          )}
+          noDataComponent="No stock update transactions found."
+        />
       </div>
     </div>
   );

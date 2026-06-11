@@ -51,6 +51,8 @@ const SalesDashboard = () => {
     overall: { salesAmount: 0, expenseAmount: 0, netProfit: 0, quantity: 0 },
     daily: { salesAmount: 0, expenseAmount: 0, netProfit: 0, quantity: 0 },
     range: { salesAmount: 0, expenseAmount: 0, netProfit: 0, quantity: 0 },
+    pendingReceivables: { amount: 0, quantity: 0 },
+    gifting: { quantity: 0, value: 0, bySource: [] },
   };
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
@@ -83,6 +85,29 @@ const SalesDashboard = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div className="bg-white rounded shadow p-4 border-l-4 border-blue-700">
+          <div className="text-sm text-gray-500">Accepted Company Deposits</div>
+          <div className="text-xl font-bold">{formatCurrency(totals.overall.acceptedDepositAmount)}</div>
+          <div className="text-sm text-gray-700">Verified deposits back to company</div>
+          <Link to="/company-cash-deposits" className="text-blue-700 text-sm hover:underline">Show Register</Link>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-amber-600">
+          <div className="text-sm text-gray-500">Deposits Pending Verification</div>
+          <div className="text-xl font-bold text-amber-700">{formatCurrency(totals.overall.pendingDepositAmount)}</div>
+          <div className="text-sm text-gray-700">Excluded from cash in hand</div>
+          <Link to="/company-cash-deposits" className="text-blue-700 text-sm hover:underline">Show Register</Link>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-gray-900">
+          <div className="text-sm text-gray-500">Net Cash Available With Holders</div>
+          <div className={`text-xl font-bold ${Number(totals.overall.cashAvailable || 0) < 0 ? 'text-red-700' : 'text-gray-900'}`}>
+            {formatCurrency(totals.overall.cashAvailable)}
+          </div>
+          <div className="text-sm text-gray-700">Sales - expenses - deposits</div>
+          <Link to="/add-expenses" className="text-blue-700 text-sm hover:underline">Post Deposit</Link>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
         <div className="bg-white rounded shadow p-4">
           <div className="text-sm text-gray-500">Daily Sales (Today)</div>
           <div className="text-xl font-bold">{formatCurrency(totals.daily.salesAmount)}</div>
@@ -102,6 +127,28 @@ const SalesDashboard = () => {
           </div>
           <div className="text-sm text-gray-700">Sales - Expenses</div>
           <Link to="/order-management" className="text-blue-700 text-sm hover:underline">Show Details</Link>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <div className="bg-white rounded shadow p-4 border-l-4 border-amber-600">
+          <div className="text-sm text-gray-500">Pending Payment To Receive</div>
+          <div className="text-xl font-bold text-amber-700">{formatCurrency(totals.pendingReceivables?.amount)}</div>
+          <div className="text-sm text-gray-700">{formatQty(totals.pendingReceivables?.quantity)}</div>
+          <Link to="/pay-later-records" className="text-blue-700 text-sm hover:underline">Show Details</Link>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-green-700">
+          <div className="text-sm text-gray-500">Total Gifting</div>
+          <div className="text-xl font-bold text-green-700">{formatQty(totals.gifting?.quantity)}</div>
+          <div className="text-sm text-gray-700">Approx value: {formatCurrency(totals.gifting?.value)}</div>
+          <Link to="/gifting-records" className="text-blue-700 text-sm hover:underline">Show Details</Link>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-blue-700">
+          <div className="text-sm text-gray-500">Gifting By Source</div>
+          {(totals.gifting?.bySource || []).slice(0, 3).map((row) => (
+            <div key={row.sourceName} className="text-sm text-gray-800">{row.sourceName}: {formatQty(row.quantity)}</div>
+          ))}
+          {!(totals.gifting?.bySource || []).length && <div className="text-sm text-gray-700">No gifts recorded</div>}
         </div>
       </div>
 
@@ -132,6 +179,9 @@ const SalesDashboard = () => {
             <div className="mt-2 text-sm">
               <div><span className="font-semibold">Overall Sales:</span> {formatCurrency(card.overall.salesAmount)}</div>
               <div><span className="font-semibold">Overall Expense:</span> {formatCurrency(card.overall.expenseAmount)}</div>
+              <div><span className="font-semibold">Accepted Deposits:</span> {formatCurrency(card.overall.acceptedDepositAmount)}</div>
+              <div><span className="font-semibold">Pending Deposits:</span> {formatCurrency(card.overall.pendingDepositAmount)}</div>
+              <div><span className="font-semibold">Cash In Hand:</span> {formatCurrency(card.overall.cashAvailable)}</div>
               <div className={Number(card.overall.netProfit || 0) < 0 ? 'text-red-700' : 'text-green-700'}>
                 <span className="font-semibold">Overall Net:</span> {formatCurrency(card.overall.netProfit)}
               </div>
@@ -141,6 +191,8 @@ const SalesDashboard = () => {
             <div className="text-sm">
               <div><span className="font-semibold">Daily Sales:</span> {formatCurrency(card.daily.salesAmount)}</div>
               <div><span className="font-semibold">Daily Expense:</span> {formatCurrency(card.daily.expenseAmount)}</div>
+              <div><span className="font-semibold">Daily Deposits:</span> {formatCurrency(card.daily.acceptedDepositAmount)}</div>
+              <div><span className="font-semibold">Daily Pending:</span> {formatCurrency(card.daily.pendingDepositAmount)}</div>
               <div className={Number(card.daily.netProfit || 0) < 0 ? 'text-red-700' : 'text-green-700'}>
                 <span className="font-semibold">Daily Net:</span> {formatCurrency(card.daily.netProfit)}
               </div>
@@ -150,6 +202,8 @@ const SalesDashboard = () => {
             <div className="text-sm">
               <div><span className="font-semibold">Range Sales:</span> {formatCurrency(card.range.salesAmount)}</div>
               <div><span className="font-semibold">Range Expense:</span> {formatCurrency(card.range.expenseAmount)}</div>
+              <div><span className="font-semibold">Range Deposits:</span> {formatCurrency(card.range.acceptedDepositAmount)}</div>
+              <div><span className="font-semibold">Range Pending:</span> {formatCurrency(card.range.pendingDepositAmount)}</div>
               <div className={Number(card.range.netProfit || 0) < 0 ? 'text-red-700' : 'text-green-700'}>
                 <span className="font-semibold">Range Net:</span> {formatCurrency(card.range.netProfit)}
               </div>

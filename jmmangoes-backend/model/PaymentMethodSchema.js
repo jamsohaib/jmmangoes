@@ -14,6 +14,7 @@ const paymentMethodSchema = new mongoose.Schema(
     methodImageUrl: { type: String, default: '' },
     details: { type: String, default: '', trim: true },
     isCashOnDelivery: { type: Boolean, default: false },
+    showToOnlineCustomers: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }

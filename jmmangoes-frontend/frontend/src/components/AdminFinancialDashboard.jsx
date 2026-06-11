@@ -72,6 +72,10 @@ const AdminFinancialDashboard = () => {
         <Card title="Net Financial Result" value={money(selectedSummary?.net)} tone={Number(selectedSummary?.net || 0) < 0 ? 'red' : 'blue'} />
         <Card title="Total Quantity Sold" value={`${Number(selectedSummary?.quantity || 0)} qty`} tone="blue" />
         <Card title="Farm Production Logged" value={kg(selectedSummary?.farmProductionKg)} tone="blue" />
+        <Card title="Pending Payment To Receive" value={money(selectedSummary?.pendingReceivables?.amount)} tone="blue" />
+        <Card title="Company Deposits Accepted" value={money(selectedSummary?.companyCashDeposits?.accepted?.amount)} tone="blue" />
+        <Card title="Company Deposits Pending Verification" value={money(selectedSummary?.companyCashDeposits?.pending?.amount)} tone="blue" />
+        <Card title="Total Gifting Crates" value={`${Number(selectedSummary?.gifting?.quantity || 0)} qty`} tone="blue" />
       </div>
 
       <div className="bg-white rounded shadow p-4 mb-4">
@@ -79,8 +83,18 @@ const AdminFinancialDashboard = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="border rounded p-3"><span className="font-semibold">Sale Point Revenue:</span> {money(selectedSummary?.salePointRevenue)}</div>
           <div className="border rounded p-3"><span className="font-semibold">Online Revenue:</span> {money(selectedSummary?.onlineRevenue)}</div>
+          <div className="border rounded p-3"><span className="font-semibold">Pending Receivables:</span> {money(selectedSummary?.pendingReceivables?.amount)} ({Number(selectedSummary?.pendingReceivables?.quantity || 0)} qty)</div>
+          <div className="border rounded p-3"><span className="font-semibold">Accepted Company Deposits:</span> {money(selectedSummary?.companyCashDeposits?.accepted?.amount)} ({Number(selectedSummary?.companyCashDeposits?.accepted?.count || 0)} entries)</div>
+          <div className="border rounded p-3"><span className="font-semibold">Pending Company Deposits:</span> {money(selectedSummary?.companyCashDeposits?.pending?.amount)} ({Number(selectedSummary?.companyCashDeposits?.pending?.count || 0)} entries)</div>
+          <div className="border rounded p-3"><span className="font-semibold">Gifting Value:</span> {money(selectedSummary?.gifting?.value)} ({Number(selectedSummary?.gifting?.quantity || 0)} qty)</div>
           <div className="border rounded p-3"><span className="font-semibold">Tree Production Logged:</span> {kg(selectedSummary?.treeProductionKg)}</div>
           <div className="border rounded p-3"><span className="font-semibold">Block Production Logged:</span> {kg(selectedSummary?.blockProductionKg)}</div>
+          <div className="border rounded p-3 md:col-span-2">
+            <span className="font-semibold">Gifting By Source:</span>{' '}
+            {(selectedSummary?.gifting?.bySource || []).length
+              ? selectedSummary.gifting.bySource.map((row) => `${row.sourceName}: ${Number(row.quantity || 0)} qty`).join(', ')
+              : 'No gifts recorded'}
+          </div>
           <div className="border rounded p-3 md:col-span-2">
             <span className="font-semibold">Tree Production Grades:</span>{' '}
             A: {kg(selectedSummary?.productionGrades?.gradeA)}, B: {kg(selectedSummary?.productionGrades?.gradeB)}, C: {kg(selectedSummary?.productionGrades?.gradeC)}, D: {kg(selectedSummary?.productionGrades?.gradeD)}
@@ -103,6 +117,10 @@ const AdminFinancialDashboard = () => {
             { name: 'Sales Expenses', selector: (row) => Number(row.summary?.salesExpenses || 0), sortable: true, cell: (row) => money(row.summary?.salesExpenses) },
             { name: 'Farm Expenses', selector: (row) => Number(row.summary?.farmExpenses || 0), sortable: true, cell: (row) => money(row.summary?.farmExpenses) },
             { name: 'Production Kg', selector: (row) => Number(row.summary?.farmProductionKg || 0), sortable: true, cell: (row) => kg(row.summary?.farmProductionKg) },
+            { name: 'Pending Receivable', selector: (row) => Number(row.summary?.pendingReceivables?.amount || 0), sortable: true, cell: (row) => money(row.summary?.pendingReceivables?.amount) },
+            { name: 'Accepted Deposits', selector: (row) => Number(row.summary?.companyCashDeposits?.accepted?.amount || 0), sortable: true, cell: (row) => money(row.summary?.companyCashDeposits?.accepted?.amount) },
+            { name: 'Pending Deposits', selector: (row) => Number(row.summary?.companyCashDeposits?.pending?.amount || 0), sortable: true, cell: (row) => money(row.summary?.companyCashDeposits?.pending?.amount) },
+            { name: 'Gift Qty', selector: (row) => Number(row.summary?.gifting?.quantity || 0), sortable: true, cell: (row) => `${Number(row.summary?.gifting?.quantity || 0)} qty` },
             { name: 'Net', selector: (row) => Number(row.summary?.net || 0), sortable: true, cell: (row) => money(row.summary?.net) },
           ]}
           data={filteredRows}

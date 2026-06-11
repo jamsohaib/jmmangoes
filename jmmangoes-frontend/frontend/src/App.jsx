@@ -28,8 +28,12 @@ import ManageCities from './components/ManageCities';
 import ShippingRatesPage from './components/ShippingRatesPage';
 import AdminSites from './components/AdminSites';
 import ManageStocks from './components/ManageStocks';
+import StockMovement from './components/StockMovement';
 import AdminUsers from './components/AdminUsers';
 import SalePoint from './components/SalePoint';
+import GiftingRecords from './components/GiftingRecords';
+import PayLaterRecords from './components/PayLaterRecords';
+import GiftSources from './components/GiftSources';
 import SalesDashboard from './components/SalesDashboard';
 import WarehouseManagement from './components/WarehouseManagement';
 import WholesellerManagement from './components/WholesellerManagement';
@@ -38,6 +42,8 @@ import StockWasted from './components/StockWasted';
 import CustomerDirectory from './components/CustomerDirectory';
 import ManageExpense from './components/ManageExpense';
 import AddExpenses from './components/AddExpenses';
+import CompanyCashDeposits from './components/CompanyCashDeposits';
+import SalesCashTransactions from './components/SalesCashTransactions';
 import OrderSuccess from './components/OrderSuccess';
 import EmailAlertsManagement from './components/EmailAlertsManagement';
 import CourierManagement from './components/CourierManagement';
@@ -94,7 +100,11 @@ function App() {
              <Route path="/shipping-rates" element={<ShippingRatesPage />} />
              <Route path="/admin-sites" element={<AdminSites />} />
              <Route path="/manage-stocks" element={<ManageStocks />} />
+             <Route path="/stock-movement" element={<StockMovement />} />
              <Route path="/sale-point" element={<SalePoint />} />
+             <Route path="/gifting-records" element={<GiftingRecords />} />
+             <Route path="/pay-later-records" element={<PayLaterRecords />} />
+             <Route path="/gift-sources" element={<GiftSources />} />
              <Route path="/sales-dashboard" element={<SalesDashboard />} />
              <Route path="/warehouse-management" element={<WarehouseManagement />} />
              <Route path="/wholeseller-management" element={<WholesellerManagement />} />
@@ -103,6 +113,8 @@ function App() {
              <Route path="/customer-directory" element={<CustomerDirectory />} />
              <Route path="/manage-expense" element={<ManageExpense />} />
              <Route path="/add-expenses" element={<AddExpenses />} />
+             <Route path="/company-cash-deposits" element={<CompanyCashDeposits />} />
+             <Route path="/sales-cash-transactions" element={<SalesCashTransactions />} />
              <Route path="/admin-users" element={<AdminUsers />} />
              <Route path="/products/:id" element={<ProductDetail />} /> 
              <Route path="/cart" element={<Cart />} /> 

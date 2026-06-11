@@ -16,6 +16,7 @@ const emptyForm = {
   methodImageUrl: '',
   details: '',
   isCashOnDelivery: false,
+  showToOnlineCustomers: false,
   isActive: true,
 };
 
@@ -92,8 +93,20 @@ const PaymentManager = () => {
       methodImageUrl: row.methodImageUrl || '',
       details: row.details || '',
       isCashOnDelivery: !!row.isCashOnDelivery,
+      showToOnlineCustomers: !!row.showToOnlineCustomers,
       isActive: row.isActive !== false,
     });
+  };
+
+  const toggleOnlineVisibility = async (row) => {
+    if (!canManage) return toast.warn('No manage permission.');
+    try {
+      await api.put(`/payment-methods/${row._id}`, { ...row, showToOnlineCustomers: !row.showToOnlineCustomers });
+      toast.success(row.showToOnlineCustomers ? 'Hidden from online customers.' : 'Made available to online customers.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to update online visibility.');
+    }
   };
 
   const onDelete = async (id) => {
@@ -119,10 +132,10 @@ const PaymentManager = () => {
         <input value={form.code} onChange={(e) => setForm((p) => ({ ...p, code: e.target.value }))} className="border p-2 rounded" placeholder="Code (optional, auto from name)" />
         <label className="flex items-center gap-2"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={form.isCashOnDelivery} onChange={(e) => setForm((p) => ({ ...p, isCashOnDelivery: e.target.checked }))} /> Is Cash On Delivery</label>
+        <label className="flex items-center gap-2"><input type="checkbox" checked={form.showToOnlineCustomers} onChange={(e) => setForm((p) => ({ ...p, showToOnlineCustomers: e.target.checked }))} /> Available for online customers</label>
 
         <label className="flex items-center gap-2"><input type="checkbox" checked={form.requiresReceipt} onChange={(e) => setForm((p) => ({ ...p, requiresReceipt: e.target.checked }))} /> Requires receipt upload</label>
         <label className="flex items-center gap-2"><input type="checkbox" checked={form.allowReceiptUpload} onChange={(e) => setForm((p) => ({ ...p, allowReceiptUpload: e.target.checked }))} /> Allow receipt upload</label>
-        <div />
 
         <select value={form.discountType} onChange={(e) => setForm((p) => ({ ...p, discountType: e.target.value }))} className="border p-2 rounded">
           <option value="none">No Discount</option>
@@ -173,6 +186,7 @@ const PaymentManager = () => {
               <th className="border px-3 py-2">Code</th>
               <th className="border px-3 py-2">Receipt</th>
               <th className="border px-3 py-2">COD</th>
+              <th className="border px-3 py-2">Online</th>
               <th className="border px-3 py-2">Discount</th>
               <th className="border px-3 py-2">Charges</th>
               <th className="border px-3 py-2">Status</th>
@@ -186,19 +200,23 @@ const PaymentManager = () => {
                 <td className="border px-3 py-2">{r.code}</td>
                 <td className="border px-3 py-2">{r.requiresReceipt ? 'Required' : (r.allowReceiptUpload ? 'Optional' : 'No')}</td>
                 <td className="border px-3 py-2">{r.isCashOnDelivery ? 'Yes' : 'No'}</td>
+                <td className="border px-3 py-2">{r.showToOnlineCustomers ? 'Visible' : 'Hidden'}</td>
                 <td className="border px-3 py-2">{r.discountType} {Number(r.discountValue || 0)}</td>
                 <td className="border px-3 py-2">{r.chargeType} {Number(r.chargeValue || 0)}</td>
                 <td className="border px-3 py-2">{r.isActive ? 'Active' : 'Inactive'}</td>
                 <td className="border px-3 py-2">
                   <div className="flex gap-3">
                     <button onClick={() => onEdit(r)} className="text-blue-700 hover:underline">Edit</button>
+                    <button onClick={() => toggleOnlineVisibility(r)} className="text-green-700 hover:underline">
+                      {r.showToOnlineCustomers ? 'Hide Online' : 'Make Online'}
+                    </button>
                     <button onClick={() => onDelete(r._id)} className="text-red-700 hover:underline">Delete</button>
                   </div>
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={8} className="border px-3 py-3 text-center text-gray-500">No payment methods configured.</td></tr>
+              <tr><td colSpan={9} className="border px-3 py-3 text-center text-gray-500">No payment methods configured.</td></tr>
             )}
           </tbody>
         </table>

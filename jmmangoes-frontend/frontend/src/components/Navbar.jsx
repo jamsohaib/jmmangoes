@@ -50,10 +50,16 @@ const Navbar = () => {
   const salesLinks = [
     { to: '/sales-dashboard', label: 'Sales Dashboard', key: 'salesDashboard' },
     { to: '/manage-stocks', label: 'Manage Stocks', key: 'manageStocks' },
+    { to: '/stock-movement', label: 'Stock Movement', key: 'stockMovement' },
     { to: '/stock-transfer', label: 'Stock Transfer & Receiving', key: 'stockTransfer' },
     { to: '/sale-point', label: 'Sale Point', key: 'salePoint' },
+    { to: '/gifting-records', label: 'Gifting Records', key: 'giftingRecords' },
+    { to: '/pay-later-records', label: 'Pay Later Records', key: 'payLaterRecords' },
+    { to: '/gift-sources', label: 'Gift Sources', key: 'giftSourceManagement' },
     { to: '/stock-wasted', label: 'Stock Wasted', key: 'stockWasted' },
     { to: '/add-expenses', label: 'Add Expenses', key: 'addExpense' },
+    { to: '/company-cash-deposits', label: 'Company Cash Deposit Register', key: 'companyCashDeposits' },
+    { to: '/sales-cash-transactions', label: 'Cash Transactions', key: 'salesCashTransactions' },
     { to: '/order-management', label: 'Order Management', key: 'orderManagement' },
     { to: '/customer-directory', label: 'Customer Directory', key: 'customerDirectory' },
   ];

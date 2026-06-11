@@ -5,6 +5,13 @@ import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const todayISO = new Date().toISOString().slice(0, 10);
+const lastWeekStartISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return d.toISOString().slice(0, 10);
+})();
+
+const CASH_DEPOSIT_METHOD_ID = 'deposited_in_cash';
 
 const AddExpenses = () => {
   const user = useAuthStore((state) => state.user);
@@ -15,6 +22,9 @@ const AddExpenses = () => {
   const [heads, setHeads] = useState([]);
   const [items, setItems] = useState([]);
   const [entries, setEntries] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState([]);
+  const [cashPosition, setCashPosition] = useState(null);
+  const [cashDeposits, setCashDeposits] = useState([]);
 
   const [holderType, setHolderType] = useState('site');
   const [holderId, setHolderId] = useState('');
@@ -24,7 +34,7 @@ const AddExpenses = () => {
   const [customItemName, setCustomItemName] = useState('');
   const [amount, setAmount] = useState('');
   const [remarks, setRemarks] = useState('');
-  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateFrom, setDateFrom] = useState(lastWeekStartISO);
   const [dateTo, setDateTo] = useState(todayISO);
   const [editingEntry, setEditingEntry] = useState(null);
   const [editHeadId, setEditHeadId] = useState('');
@@ -34,17 +44,30 @@ const AddExpenses = () => {
   const [editRemarks, setEditRemarks] = useState('');
   const [editDate, setEditDate] = useState(todayISO);
   const [expenseSearch, setExpenseSearch] = useState('');
+  const [depositDate, setDepositDate] = useState(todayISO);
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositPaymentMethodId, setDepositPaymentMethodId] = useState(CASH_DEPOSIT_METHOD_ID);
+  const [depositRemarks, setDepositRemarks] = useState('');
+  const [editingDeposit, setEditingDeposit] = useState(null);
+  const [editDepositDate, setEditDepositDate] = useState(todayISO);
+  const [editDepositAmount, setEditDepositAmount] = useState('');
+  const [editDepositPaymentMethodId, setEditDepositPaymentMethodId] = useState(CASH_DEPOSIT_METHOD_ID);
+  const [editDepositRemarks, setEditDepositRemarks] = useState('');
 
   const loadMasters = async () => {
-    const [holdersRes, headsRes, itemsRes] = await Promise.all([
+    const [holdersRes, headsRes, itemsRes, paymentMethodsRes] = await Promise.all([
       api.get('/expenses/holders'),
       api.get('/expense-heads/for-entry'),
       api.get('/expense-items'),
+      api.get('/cash-deposits/payment-methods'),
     ]);
     const h = holdersRes.data || { sites: [], warehouses: [], wholesellers: [] };
     setHolders(h);
     setHeads(headsRes.data || []);
     setItems(itemsRes.data || []);
+    const methods = paymentMethodsRes.data || [];
+    setPaymentMethods(methods);
+    if (!depositPaymentMethodId) setDepositPaymentMethodId(CASH_DEPOSIT_METHOD_ID);
     if (!holderId) {
       const defaultOptions = (h.sites || []);
       if (defaultOptions.length) setHolderId(defaultOptions[0]._id);
@@ -57,6 +80,20 @@ const AddExpenses = () => {
     setEntries(res.data || []);
   };
 
+  const loadCashData = async (targetHolderType = holderType, targetHolderId = holderId) => {
+    if (!targetHolderId) {
+      setCashPosition(null);
+      setCashDeposits([]);
+      return;
+    }
+    const [positionRes, depositsRes] = await Promise.all([
+      api.get('/cash-deposits/position', { params: { holderType: targetHolderType, holderId: targetHolderId } }),
+      api.get('/cash-deposits', { params: { holderType: targetHolderType, holderId: targetHolderId } }),
+    ]);
+    setCashPosition(positionRes.data || null);
+    setCashDeposits(depositsRes.data || []);
+  };
+
   useEffect(() => {
     if (canView) loadMasters().catch(console.error);
   }, [canView]);
@@ -64,6 +101,10 @@ const AddExpenses = () => {
   useEffect(() => {
     if (canView && holderId) loadEntries(holderType, holderId).catch(console.error);
   }, [canView, holderType, holderId, dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (canView && holderId) loadCashData(holderType, holderId).catch(console.error);
+  }, [canView, holderType, holderId]);
 
   const holderTypeOptions = [
     { value: 'site', label: 'Sale Point / Site' },
@@ -114,8 +155,37 @@ const AddExpenses = () => {
       setAmount('');
       setRemarks('');
       await loadEntries(holderType, holderId);
+      await loadCashData(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to save expense entry.');
+    }
+  };
+
+  const handleSaveDeposit = async () => {
+    if (!canManage) return toast.warn('No manage permission.');
+    const value = Number(depositAmount);
+    if (!holderId || !depositPaymentMethodId || Number.isNaN(value) || value <= 0) {
+      return toast.warn('Select holder, account, and valid deposit amount.');
+    }
+    const accountLabel = depositPaymentMethodId === CASH_DEPOSIT_METHOD_ID
+      ? 'Deposited in Cash'
+      : (paymentMethods.find((m) => String(m._id) === String(depositPaymentMethodId))?.name || 'selected account');
+    if (!window.confirm(`Post PKR ${value.toFixed(2)} as deposited to "${accountLabel}" for company verification?`)) return;
+    try {
+      await api.post('/cash-deposits', {
+        holderType,
+        holderId,
+        date: depositDate,
+        amount: value,
+        paymentMethodId: depositPaymentMethodId,
+        remarks: depositRemarks,
+      });
+      toast.success('Cash deposit posted for company verification.');
+      setDepositAmount('');
+      setDepositRemarks('');
+      await loadCashData(holderType, holderId);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to post cash deposit.');
     }
   };
 
@@ -147,6 +217,47 @@ const AddExpenses = () => {
     () => entries.reduce((sum, e) => sum + Number(e.amount || 0), 0),
     [entries]
   );
+  const pendingDepositRows = useMemo(
+    () => cashDeposits.filter((row) => row.status === 'pending'),
+    [cashDeposits]
+  );
+
+  const canEditDeposit = (row) => {
+    if (!canManage || row.status !== 'pending') return false;
+    if (isSuperUser) return true;
+    return row.submittedBy && String(row.submittedBy) === String(user?._id || user?.id);
+  };
+
+  const openDepositEdit = (row) => {
+    setEditingDeposit(row);
+    setEditDepositDate(new Date(row.date || row.createdAt).toISOString().slice(0, 10));
+    setEditDepositAmount(String(row.amount ?? ''));
+    setEditDepositPaymentMethodId(row.paymentMethodId || CASH_DEPOSIT_METHOD_ID);
+    setEditDepositRemarks(row.remarks || '');
+  };
+
+  const saveDepositEdit = async () => {
+    if (!editingDeposit) return;
+    const value = Number(editDepositAmount);
+    if (Number.isNaN(value) || value <= 0 || !editDepositPaymentMethodId) return toast.warn('Enter valid deposit edit details.');
+    const accountLabel = editDepositPaymentMethodId === CASH_DEPOSIT_METHOD_ID
+      ? 'Deposited in Cash'
+      : (paymentMethods.find((m) => String(m._id) === String(editDepositPaymentMethodId))?.name || 'selected account');
+    if (!window.confirm(`Update pending deposit to PKR ${value.toFixed(2)} via "${accountLabel}"?`)) return;
+    try {
+      await api.put(`/cash-deposits/${editingDeposit._id}`, {
+        date: editDepositDate,
+        amount: value,
+        paymentMethodId: editDepositPaymentMethodId,
+        remarks: editDepositRemarks,
+      });
+      toast.success('Pending deposit updated.');
+      setEditingDeposit(null);
+      await loadCashData(holderType, holderId);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to update pending deposit.');
+    }
+  };
   const filteredExpenseEntries = useMemo(() => {
     const q = expenseSearch.trim().toLowerCase();
     if (!q) return entries;
@@ -228,6 +339,7 @@ const AddExpenses = () => {
       toast.success('Expense updated.');
       setEditingEntry(null);
       await loadEntries(holderType, holderId);
+      await loadCashData(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to update expense.');
     }
@@ -239,6 +351,7 @@ const AddExpenses = () => {
       await api.delete(`/expense-entries/${id}`);
       toast.success('Expense removed.');
       await loadEntries(holderType, holderId);
+      await loadCashData(holderType, holderId);
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to remove expense.');
     }
@@ -270,6 +383,32 @@ const AddExpenses = () => {
         </div>
       </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-5">
+        <div className="bg-white rounded shadow p-4 border-l-4 border-green-700">
+          <div className="text-sm text-gray-500">Total Sales</div>
+          <div className="text-lg font-bold">PKR {Number(cashPosition?.salesAmount || 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-600">All received sales for selected holder</div>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-red-600">
+          <div className="text-sm text-gray-500">Total Expenses</div>
+          <div className="text-lg font-bold">PKR {Number(cashPosition?.expenseAmount || 0).toFixed(2)}</div>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-blue-700">
+          <div className="text-sm text-gray-500">Accepted Deposits</div>
+          <div className="text-lg font-bold">PKR {Number(cashPosition?.acceptedDepositAmount || 0).toFixed(2)}</div>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-amber-600">
+          <div className="text-sm text-gray-500">Pending Verification</div>
+          <div className="text-lg font-bold">PKR {Number(cashPosition?.pendingDepositAmount || 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-600">{Number(cashPosition?.pendingDepositCount || 0)} deposit(s)</div>
+        </div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-gray-900">
+          <div className="text-sm text-gray-500">Net Cash In Hand</div>
+          <div className="text-lg font-bold">PKR {Number(cashPosition?.cashAvailable || 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-600">Pending deposits are excluded</div>
+        </div>
+      </div>
+
       <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
         <select value={headId} onChange={(e) => { setHeadId(e.target.value); setItemId(''); setCustomItemName(''); }} className="border p-2 rounded">
           <option value="">Select Expense Head</option>
@@ -286,6 +425,72 @@ const AddExpenses = () => {
         <input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount" className="border p-2 rounded" />
         <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" className="border p-2 rounded md:col-span-2" />
         <button onClick={handleSaveExpense} disabled={!canManage} className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-60">Save Expense</button>
+      </div>
+
+      <div className="bg-white rounded shadow p-4 mb-5">
+        <h3 className="text-lg font-semibold mb-3">Deposit Cash Back To Company Account</h3>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <div>
+            <label className="block text-sm font-medium mb-1">Deposit Date</label>
+            <input type="date" value={depositDate} onChange={(e) => setDepositDate(e.target.value)} className="w-full border p-2 rounded" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Company Account</label>
+            <select value={depositPaymentMethodId} onChange={(e) => setDepositPaymentMethodId(e.target.value)} className="w-full border p-2 rounded">
+              <option value={CASH_DEPOSIT_METHOD_ID}>Deposited in Cash</option>
+              {paymentMethods.map((m) => <option key={m._id} value={m._id}>{m.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Amount Deposited</label>
+            <input type="number" min={0} value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="Amount" className="w-full border p-2 rounded" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Remarks</label>
+            <input value={depositRemarks} onChange={(e) => setDepositRemarks(e.target.value)} placeholder="Bank slip / notes" className="w-full border p-2 rounded" />
+          </div>
+          <div className="flex items-end">
+            <button onClick={handleSaveDeposit} disabled={!canManage} className="w-full bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-60">Post Deposit</button>
+          </div>
+        </div>
+        <p className="text-xs text-gray-600 mt-2">Posted deposits move to pending verification and are not counted in cash in hand while waiting for company approval.</p>
+      </div>
+
+      <div className="bg-white rounded shadow mb-5 overflow-x-auto">
+        <div className="px-4 py-3 border-b font-semibold">Cash Deposits Pending Verification</div>
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="text-left px-3 py-2">Date</th>
+              <th className="text-left px-3 py-2">Account</th>
+              <th className="text-right px-3 py-2">Amount</th>
+              <th className="text-left px-3 py-2">Remarks</th>
+              <th className="text-left px-3 py-2">Posted By</th>
+              <th className="text-left px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendingDepositRows.map((row) => (
+              <tr key={row._id} className="border-t">
+                <td className="px-3 py-2">{new Date(row.date).toLocaleDateString()}</td>
+                <td className="px-3 py-2">{row.paymentMethodName}</td>
+                <td className="px-3 py-2 text-right">PKR {Number(row.amount || 0).toFixed(2)}</td>
+                <td className="px-3 py-2">{row.remarks || '-'}</td>
+                <td className="px-3 py-2">{row.submittedByName || '-'}</td>
+                <td className="px-3 py-2">
+                  {canEditDeposit(row) ? (
+                    <button onClick={() => openDepositEdit(row)} className="text-blue-700 hover:underline">Edit Pending</button>
+                  ) : (
+                    <span className="text-gray-500">-</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {!pendingDepositRows.length && (
+              <tr><td colSpan={6} className="px-3 py-4 text-center text-gray-500">No pending deposits for this holder.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
       <div className="bg-white rounded shadow p-4 mb-3 grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -354,6 +559,40 @@ const AddExpenses = () => {
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setEditingEntry(null)} className="px-4 py-2 rounded border">Cancel</button>
               <button onClick={saveEdit} className="px-4 py-2 rounded bg-green-600 text-white">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingDeposit && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow-lg w-full max-w-xl p-4">
+            <h3 className="text-xl font-semibold mb-3">Edit Pending Company Deposit</h3>
+            <p className="text-sm text-gray-600 mb-3">Only pending deposits can be edited before company cash register verification.</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">Deposit Date</label>
+                <input type="date" value={editDepositDate} onChange={(e) => setEditDepositDate(e.target.value)} className="w-full border p-2 rounded" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Company Account</label>
+                <select value={editDepositPaymentMethodId} onChange={(e) => setEditDepositPaymentMethodId(e.target.value)} className="w-full border p-2 rounded">
+                  <option value={CASH_DEPOSIT_METHOD_ID}>Deposited in Cash</option>
+                  {paymentMethods.map((m) => <option key={m._id} value={m._id}>{m.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Amount Deposited</label>
+                <input type="number" min={0} value={editDepositAmount} onChange={(e) => setEditDepositAmount(e.target.value)} className="w-full border p-2 rounded" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Remarks</label>
+                <input value={editDepositRemarks} onChange={(e) => setEditDepositRemarks(e.target.value)} className="w-full border p-2 rounded" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setEditingDeposit(null)} className="px-4 py-2 rounded border">Cancel</button>
+              <button onClick={saveDepositEdit} className="px-4 py-2 rounded bg-blue-700 text-white">Update Pending Deposit</button>
             </div>
           </div>
         </div>

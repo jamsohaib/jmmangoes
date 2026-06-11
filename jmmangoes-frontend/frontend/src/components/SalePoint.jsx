@@ -5,6 +5,11 @@ import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const todayISO = new Date().toISOString().slice(0, 10);
+const lastWeekStartISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return d.toISOString().slice(0, 10);
+})();
 
 const SalePoint = () => {
   const user = useAuthStore((state) => state.user);
@@ -17,12 +22,17 @@ const SalePoint = () => {
 
   const [stock, setStock] = useState([]);
   const [entries, setEntries] = useState([]);
-  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [giftSources, setGiftSources] = useState([]);
+  const [dateFrom, setDateFrom] = useState(lastWeekStartISO);
   const [dateTo, setDateTo] = useState(todayISO);
 
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
   const [discountAmount, setDiscountAmount] = useState('');
+  const [priceIncreaseAmount, setPriceIncreaseAmount] = useState('');
+  const [isGiftItem, setIsGiftItem] = useState(false);
+  const [isPayLaterItem, setIsPayLaterItem] = useState(false);
+  const [giftSourceId, setGiftSourceId] = useState('');
   const [saleItems, setSaleItems] = useState([]);
   const [customerName, setCustomerName] = useState('');
   const [customerWhatsapp, setCustomerWhatsapp] = useState('');
@@ -44,6 +54,11 @@ const SalePoint = () => {
     if (!siteId && data.length) setSiteId(data[0]._id);
   };
 
+  const loadGiftSources = async () => {
+    const res = await api.get('/gift-sources', { params: { activeOnly: true } });
+    setGiftSources(res.data || []);
+  };
+
   const loadStock = async (id) => {
     if (!id) return setStock([]);
     const res = await api.get('/sales/site-stock', { params: { siteId: id } });
@@ -60,7 +75,10 @@ const SalePoint = () => {
   };
 
   useEffect(() => {
-    if (canView) loadSites().catch(console.error);
+    if (canView) {
+      loadSites().catch(console.error);
+      loadGiftSources().catch(console.error);
+    }
   }, [canView]);
 
   useEffect(() => {
@@ -77,8 +95,15 @@ const SalePoint = () => {
     if (!productId) return toast.warn('Select product first.');
     const qty = Number(quantity);
     const disc = Number(discountAmount || 0);
+    const increase = Number(priceIncreaseAmount || 0);
     if (Number.isNaN(qty) || qty <= 0) return toast.warn('Enter valid quantity.');
     if (Number.isNaN(disc) || disc < 0) return toast.warn('Enter valid discount.');
+    if (Number.isNaN(increase) || increase < 0) return toast.warn('Enter valid price increase.');
+    if (isGiftItem && isPayLaterItem) return toast.warn('Select either Gift or Pay Later, not both.');
+    if ((isGiftItem || isPayLaterItem) && (!customerName.trim() || !customerWhatsapp.trim())) {
+      return toast.warn('Name and contact number are required for gift or pay later entries.');
+    }
+    if (isGiftItem && !giftSourceId) return toast.warn('Select the family member / owner source for this gift.');
     const product = stock.find((p) => p._id === productId);
     if (!product) return toast.warn('Selected product not found.');
 
@@ -92,17 +117,30 @@ const SalePoint = () => {
       productName: product.name,
       unitPrice: Number(product.price || 0),
       quantity: qty,
-      discountAmount: disc,
+      discountAmount: isGiftItem ? 0 : disc,
+      priceIncreaseAmount: isGiftItem ? 0 : increase,
+      isGift: isGiftItem,
+      isPayLater: isPayLaterItem,
+      giftSourceId: isGiftItem ? giftSourceId : '',
+      giftSourceName: isGiftItem ? (giftSources.find((g) => String(g._id) === String(giftSourceId))?.name || '') : '',
     }]);
     setProductId('');
     setQuantity('');
     setDiscountAmount('');
+    setPriceIncreaseAmount('');
+    setIsGiftItem(false);
+    setIsPayLaterItem(false);
+    setGiftSourceId('');
   };
 
   const saleTotals = useMemo(() => {
     const gross = saleItems.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
-    const discount = saleItems.reduce((sum, i) => sum + Number(i.discountAmount || 0), 0);
-    return { gross, discount, net: Math.max(0, gross - discount) };
+    const discount = saleItems.reduce((sum, i) => sum + (!i.isGift && !i.isPayLater ? Number(i.discountAmount || 0) : 0), 0);
+    const priceIncrease = saleItems.reduce((sum, i) => sum + (!i.isGift && !i.isPayLater ? Number(i.priceIncreaseAmount || 0) : 0), 0);
+    const giftValue = saleItems.reduce((sum, i) => sum + (i.isGift ? i.unitPrice * i.quantity : 0), 0);
+    const payLaterValue = saleItems.reduce((sum, i) => sum + (i.isPayLater ? Math.max(0, i.unitPrice * i.quantity + Number(i.priceIncreaseAmount || 0) - Number(i.discountAmount || 0)) : 0), 0);
+    const chargeableGross = gross - giftValue - saleItems.reduce((sum, i) => sum + (i.isPayLater ? i.unitPrice * i.quantity : 0), 0);
+    return { gross, giftValue, payLaterValue, chargeableGross, priceIncrease, discount, net: Math.max(0, chargeableGross + priceIncrease - discount) };
   }, [saleItems]);
 
   const proceedPayment = async () => {
@@ -117,7 +155,15 @@ const SalePoint = () => {
         customerName,
         customerWhatsapp,
         customerEmail,
-        items: saleItems.map((i) => ({ productId: i.productId, quantity: i.quantity, discountAmount: i.discountAmount })),
+        items: saleItems.map((i) => ({
+          productId: i.productId,
+          quantity: i.quantity,
+          discountAmount: i.discountAmount,
+          priceIncreaseAmount: i.priceIncreaseAmount,
+          isGift: i.isGift,
+          isPayLater: i.isPayLater,
+          giftSourceId: i.giftSourceId,
+        })),
       });
       toast.success('Payment confirmed and sale saved.');
       setSaleItems([]);
@@ -140,13 +186,20 @@ const SalePoint = () => {
     const sitePhone = selectedSite?.contactNumber || 'N/A';
 
     const linesHtml = saleItems.map((item) => {
-      const lineTotal = Math.max(0, Number(item.unitPrice || 0) * Number(item.quantity || 0) - Number(item.discountAmount || 0));
+      const adjustedUnitPrice = Number(item.unitPrice || 0) + (Number(item.priceIncreaseAmount || 0) / Math.max(1, Number(item.quantity || 0)));
+      const lineTotal = item.isGift || item.isPayLater ? 0 : Math.max(
+        0,
+        Number(item.unitPrice || 0) * Number(item.quantity || 0) +
+          Number(item.priceIncreaseAmount || 0) -
+          Number(item.discountAmount || 0)
+      );
       return `
         <tr>
           <td>${item.productName}</td>
           <td style="text-align:center;">${item.quantity}</td>
-          <td style="text-align:right;">${Number(item.unitPrice || 0).toFixed(0)}</td>
-          <td style="text-align:right;">${Number(item.discountAmount || 0).toFixed(0)}</td>
+          <td style="text-align:right;">${adjustedUnitPrice.toFixed(0)}</td>
+          <td style="text-align:right;">${(Number(item.unitPrice || 0) * Number(item.quantity || 0) + Number(item.priceIncreaseAmount || 0)).toFixed(0)}</td>
+          <td style="text-align:center;">${item.isGift ? `Gift (${item.giftSourceName || '-'})` : item.isPayLater ? 'Pay Later' : 'Sale'}</td>
           <td style="text-align:right;">${lineTotal.toFixed(0)}</td>
         </tr>
       `;
@@ -177,15 +230,19 @@ const SalePoint = () => {
               <th style="text-align:left;">Item</th>
               <th>Qty</th>
               <th style="text-align:right;">Rate</th>
-              <th style="text-align:right;">Disc</th>
+              <th style="text-align:right;">Gross</th>
+              <th>Status</th>
               <th style="text-align:right;">Total</th>
             </tr>
           </thead>
           <tbody>${linesHtml}</tbody>
         </table>
         <hr />
-        <div class="row"><span>Gross</span><strong>PKR ${saleTotals.gross.toFixed(0)}</strong></div>
-        <div class="row"><span>Discount</span><strong>PKR ${saleTotals.discount.toFixed(0)}</strong></div>
+        <div class="row"><span>Gross</span><strong>PKR ${(saleTotals.gross + saleTotals.priceIncrease).toFixed(0)}</strong></div>
+        ${saleTotals.giftValue > 0 ? `<div class="row"><span>Gift Value</span><strong>PKR ${saleTotals.giftValue.toFixed(0)}</strong></div>` : ''}
+        ${saleTotals.payLaterValue > 0 ? `<div class="row"><span>Pay Later Receivable</span><strong>PKR ${saleTotals.payLaterValue.toFixed(0)}</strong></div>` : ''}
+        ${saleTotals.chargeableGross + saleTotals.priceIncrease !== saleTotals.gross + saleTotals.priceIncrease ? `<div class="row"><span>Chargeable Gross</span><strong>PKR ${(saleTotals.chargeableGross + saleTotals.priceIncrease).toFixed(0)}</strong></div>` : ''}
+        ${saleTotals.discount > 0 ? `<div class="row"><span>Discount</span><strong>PKR ${saleTotals.discount.toFixed(0)}</strong></div>` : ''}
         <div class="row"><span>Net</span><strong>PKR ${saleTotals.net.toFixed(0)}</strong></div>
         <hr />
         <div class="center">Thank you for your purchase from our store.</div>
@@ -288,29 +345,35 @@ const SalePoint = () => {
       sortable: true,
       wrap: true,
     },
-    { name: 'Type', selector: (row) => (row.entryType === 'return' ? 'Return' : 'Sale'), sortable: true },
+    { name: 'Type', selector: (row) => (row.entryType === 'return' ? 'Return' : row.entryType === 'gift' ? 'Gift' : row.entryType === 'pay_later' ? 'Pay Later' : 'Sale'), sortable: true },
     { name: 'Customer Name', selector: (row) => row.customerName || '-', sortable: true, wrap: true },
     { name: 'WhatsApp', selector: (row) => row.customerWhatsapp || '-', wrap: true },
     { name: 'Email', selector: (row) => row.customerEmail || '-', wrap: true },
     { name: 'Product', selector: (row) => row.productName || '-', sortable: true, wrap: true },
     { name: 'Qty', selector: (row) => Number(row.quantity || 0), sortable: true, right: true },
     { name: 'Gross', selector: (row) => Number(row.grossAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.grossAmount || 0).toFixed(2)}` },
+    { name: 'Price Increase', selector: (row) => Number(row.priceIncreaseAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.priceIncreaseAmount || 0).toFixed(2)}` },
     { name: 'Discount', selector: (row) => Number(row.discountAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.discountAmount || 0).toFixed(2)}` },
+    { name: 'Receivable', selector: (row) => Number(row.receivableAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.receivableAmount || 0).toFixed(2)}` },
+    { name: 'Payment', selector: (row) => row.paymentStatus || '-', sortable: true, wrap: true },
     { name: 'Net', selector: (row) => Number(row.netAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.netAmount || 0).toFixed(2)}` },
   ]), []);
 
   const downloadCsv = (sourceRows = entries, suffix = 'all') => {
-    const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Discount', 'Net'];
+    const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Price Increase', 'Discount', 'Receivable', 'Payment', 'Net'];
     const rows = sourceRows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
-      `"${String(e.entryType === 'return' ? 'Return' : 'Sale').replace(/"/g, '""')}"`,
+      `"${String(e.entryType === 'return' ? 'Return' : e.entryType === 'gift' ? 'Gift' : e.entryType === 'pay_later' ? 'Pay Later' : 'Sale').replace(/"/g, '""')}"`,
       `"${String(e.customerName || '-').replace(/"/g, '""')}"`,
       `"${String(e.customerWhatsapp || '-').replace(/"/g, '""')}"`,
       `"${String(e.customerEmail || '-').replace(/"/g, '""')}"`,
       `"${String(e.productName || '').replace(/"/g, '""')}"`,
       `"${String(e.quantity || 0)}"`,
       `"${Number(e.grossAmount || 0).toFixed(2)}"`,
+      `"${Number(e.priceIncreaseAmount || 0).toFixed(2)}"`,
       `"${Number(e.discountAmount || 0).toFixed(2)}"`,
+      `"${Number(e.receivableAmount || 0).toFixed(2)}"`,
+      `"${String(e.paymentStatus || '-').replace(/"/g, '""')}"`,
       `"${Number(e.netAmount || 0).toFixed(2)}"`,
     ].join(','));
     const csv = [headers.join(','), ...rows].join('\n');
@@ -328,7 +391,7 @@ const SalePoint = () => {
     const q = transactionSearch.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((e) =>
-      String(e.entryType === 'return' ? 'Return' : 'Sale').toLowerCase().includes(q) ||
+      String(e.entryType === 'return' ? 'Return' : e.entryType === 'gift' ? 'Gift' : e.entryType === 'pay_later' ? 'Pay Later' : 'Sale').toLowerCase().includes(q) ||
       String(e.customerName || '').toLowerCase().includes(q) ||
       String(e.customerWhatsapp || '').toLowerCase().includes(q) ||
       String(e.customerEmail || '').toLowerCase().includes(q) ||
@@ -356,7 +419,7 @@ const SalePoint = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="bg-white rounded shadow p-4 mb-5 grid grid-cols-1 md:grid-cols-6 gap-3">
         <div>
           <label className="block text-sm font-medium mb-1">Product</label>
           <select value={productId} onChange={(e) => setProductId(e.target.value)} className="w-full border p-2 rounded">
@@ -370,11 +433,79 @@ const SalePoint = () => {
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Discount</label>
-          <input type="number" min={0} value={discountAmount} onChange={(e) => setDiscountAmount(e.target.value)} className="w-full border p-2 rounded" placeholder="Discount amount" />
+          <input type="number" min={0} value={discountAmount} onChange={(e) => setDiscountAmount(e.target.value)} disabled={isGiftItem} className="w-full border p-2 rounded disabled:bg-gray-100" placeholder="Discount amount" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Price Increase</label>
+          <input type="number" min={0} value={priceIncreaseAmount} onChange={(e) => setPriceIncreaseAmount(e.target.value)} disabled={isGiftItem} className="w-full border p-2 rounded disabled:bg-gray-100" placeholder="Extra amount" />
+        </div>
+        <div className="flex items-center">
+          <label className="inline-flex items-center gap-2 text-sm font-semibold text-green-800">
+            <input
+              type="checkbox"
+              checked={isGiftItem}
+              onChange={(e) => {
+                setIsGiftItem(e.target.checked);
+                if (e.target.checked) {
+                  setIsPayLaterItem(false);
+                  setDiscountAmount('');
+                  setPriceIncreaseAmount('');
+                }
+              }}
+            />
+            Gift from Owners
+          </label>
+        </div>
+        <div className="flex items-center">
+          <label className="inline-flex items-center gap-2 text-sm font-semibold text-amber-800">
+            <input
+              type="checkbox"
+              checked={isPayLaterItem}
+              onChange={(e) => {
+                setIsPayLaterItem(e.target.checked);
+                if (e.target.checked) {
+                  setIsGiftItem(false);
+                  setGiftSourceId('');
+                }
+              }}
+            />
+            Pay Later
+          </label>
         </div>
         <div className="flex items-end">
           <button onClick={addSaleItem} className="bg-blue-600 text-white px-4 py-2 rounded w-full">Add Item</button>
         </div>
+        {isGiftItem && (
+          <div className="md:col-span-6 bg-green-50 border border-green-200 rounded p-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">Gift Source / Family Member *</label>
+              <select value={giftSourceId} onChange={(e) => setGiftSourceId(e.target.value)} className="w-full border p-2 rounded">
+                <option value="">Select source</option>
+                {giftSources.map((source) => <option key={source._id} value={source._id}>{source.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Gift Recipient Name *</label>
+              <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} className="w-full border p-2 rounded" placeholder="Recipient name" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Gift Recipient Contact *</label>
+              <input type="text" value={customerWhatsapp} onChange={(e) => setCustomerWhatsapp(e.target.value)} className="w-full border p-2 rounded" placeholder="Contact / WhatsApp number" />
+            </div>
+          </div>
+        )}
+        {isPayLaterItem && (
+          <div className="md:col-span-6 bg-amber-50 border border-amber-200 rounded p-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div>
+              <label className="block text-sm font-medium mb-1">Friends/Family Customer Name *</label>
+              <input type="text" value={customerName} onChange={(e) => setCustomerName(e.target.value)} className="w-full border p-2 rounded" placeholder="Customer name" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Customer Contact *</label>
+              <input type="text" value={customerWhatsapp} onChange={(e) => setCustomerWhatsapp(e.target.value)} className="w-full border p-2 rounded" placeholder="Contact / WhatsApp number" />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="overflow-x-auto bg-white rounded shadow mb-5">
@@ -385,7 +516,9 @@ const SalePoint = () => {
               <th className="border px-3 py-2">Product</th>
               <th className="border px-3 py-2">Qty</th>
               <th className="border px-3 py-2">Unit Price</th>
+              <th className="border px-3 py-2">Price Increase</th>
               <th className="border px-3 py-2">Discount</th>
+              <th className="border px-3 py-2">Status</th>
               <th className="border px-3 py-2">Line Total</th>
               <th className="border px-3 py-2">Action</th>
             </tr>
@@ -396,16 +529,24 @@ const SalePoint = () => {
                 <td className="border px-3 py-2">{i.productName}</td>
                 <td className="border px-3 py-2">{i.quantity}</td>
                 <td className="border px-3 py-2">PKR {i.unitPrice.toFixed(2)}</td>
+                <td className="border px-3 py-2">PKR {Number(i.priceIncreaseAmount || 0).toFixed(2)}</td>
                 <td className="border px-3 py-2">PKR {Number(i.discountAmount || 0).toFixed(2)}</td>
-                <td className="border px-3 py-2">PKR {Math.max(0, i.unitPrice * i.quantity - Number(i.discountAmount || 0)).toFixed(2)}</td>
+                <td className="border px-3 py-2">{i.isGift ? `Gift (${i.giftSourceName || '-'})` : i.isPayLater ? 'Pay Later' : 'Sale'}</td>
+                <td className="border px-3 py-2">
+                  PKR {(i.isGift || i.isPayLater ? 0 : Math.max(0, i.unitPrice * i.quantity + Number(i.priceIncreaseAmount || 0) - Number(i.discountAmount || 0))).toFixed(2)}
+                </td>
                 <td className="border px-3 py-2"><button onClick={() => setSaleItems((prev) => prev.filter((_, x) => x !== idx))} className="text-red-600 hover:underline">Remove</button></td>
               </tr>
             ))}
-            {saleItems.length === 0 && <tr><td colSpan={6} className="border px-3 py-3 text-center text-gray-500">No items added.</td></tr>}
+            {saleItems.length === 0 && <tr><td colSpan={8} className="border px-3 py-3 text-center text-gray-500">No items added.</td></tr>}
           </tbody>
         </table>
         <div className="p-4 text-sm">
           <div>Gross: <strong>PKR {saleTotals.gross.toFixed(2)}</strong></div>
+          <div>Gift Value: <strong>PKR {saleTotals.giftValue.toFixed(2)}</strong></div>
+          <div>Pay Later Receivable: <strong>PKR {saleTotals.payLaterValue.toFixed(2)}</strong></div>
+          <div>Chargeable Gross: <strong>PKR {saleTotals.chargeableGross.toFixed(2)}</strong></div>
+          <div>Price Increase: <strong>PKR {saleTotals.priceIncrease.toFixed(2)}</strong></div>
           <div>Discount: <strong>PKR {saleTotals.discount.toFixed(2)}</strong></div>
           <div>Net: <strong>PKR {saleTotals.net.toFixed(2)}</strong></div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
