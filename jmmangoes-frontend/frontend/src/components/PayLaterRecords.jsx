@@ -5,6 +5,11 @@ import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const todayISO = new Date().toISOString().slice(0, 10);
+const lastWeekStartISO = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  return d.toISOString().slice(0, 10);
+})();
 const money = (v) => `PKR ${Number(v || 0).toFixed(2)}`;
 
 const PayLaterRecords = () => {
@@ -13,7 +18,7 @@ const PayLaterRecords = () => {
   const canManage = user?.role === 'admin' || user?.permissions?.payLaterRecords?.manage;
   const [sites, setSites] = useState([]);
   const [siteId, setSiteId] = useState('');
-  const [dateFrom, setDateFrom] = useState(todayISO);
+  const [dateFrom, setDateFrom] = useState(lastWeekStartISO);
   const [dateTo, setDateTo] = useState(todayISO);
   const [rows, setRows] = useState([]);
   const [search, setSearch] = useState('');
@@ -30,7 +35,11 @@ const PayLaterRecords = () => {
     const params = { dateFrom, dateTo };
     if (siteId) params.siteId = siteId;
     const res = await api.get('/sales/pay-later', { params });
-    const list = res.data || [];
+    const list = (res.data || []).filter((row) =>
+      row.entryType === 'pay_later' &&
+      ['pending', 'paid'].includes(String(row.paymentStatus || '')) &&
+      Number(row.receivableAmount || 0) > 0
+    );
     setRows(list);
     setEditAmounts(Object.fromEntries(list.map((r) => [r._id, Number(r.receivableAmount || 0)])));
   };

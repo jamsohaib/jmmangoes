@@ -27,7 +27,7 @@ const GiftingRecords = () => {
     const params = { dateFrom, dateTo };
     if (siteId) params.siteId = siteId;
     const res = await api.get('/sales/gifts', { params });
-    setRows(res.data || []);
+    setRows((res.data || []).filter((row) => row.entryType === 'gift'));
   };
 
   useEffect(() => {

@@ -10,6 +10,22 @@ const lastWeekStartISO = (() => {
   d.setDate(d.getDate() - 6);
   return d.toISOString().slice(0, 10);
 })();
+const CASH_PAYMENT_METHOD_ID = 'cash_payment';
+const CASH_PAYMENT_METHOD_NAME = 'Cash Payment';
+
+const saleTypeLabel = (entryType) => (
+  entryType === 'return' ? 'Return' :
+  entryType === 'gift' ? 'Gift' :
+  entryType === 'pay_later' ? 'Pay Later' :
+  'Sale'
+);
+
+const salePaymentMethodLabel = (entry) => {
+  if ((entry?.entryType || 'sale') === 'sale') return entry?.paymentMethodName || CASH_PAYMENT_METHOD_NAME;
+  if (entry?.entryType === 'pay_later') return 'Pay Later';
+  if (entry?.entryType === 'gift') return 'Gift';
+  return '-';
+};
 
 const SalePoint = () => {
   const user = useAuthStore((state) => state.user);
@@ -23,6 +39,8 @@ const SalePoint = () => {
   const [stock, setStock] = useState([]);
   const [entries, setEntries] = useState([]);
   const [giftSources, setGiftSources] = useState([]);
+  const [paymentMethods, setPaymentMethods] = useState([]);
+  const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState(CASH_PAYMENT_METHOD_ID);
   const [dateFrom, setDateFrom] = useState(lastWeekStartISO);
   const [dateTo, setDateTo] = useState(todayISO);
 
@@ -59,6 +77,11 @@ const SalePoint = () => {
     setGiftSources(res.data || []);
   };
 
+  const loadPaymentMethods = async () => {
+    const res = await api.get('/sales/payment-methods');
+    setPaymentMethods(res.data || []);
+  };
+
   const loadStock = async (id) => {
     if (!id) return setStock([]);
     const res = await api.get('/sales/site-stock', { params: { siteId: id } });
@@ -78,6 +101,7 @@ const SalePoint = () => {
     if (canView) {
       loadSites().catch(console.error);
       loadGiftSources().catch(console.error);
+      loadPaymentMethods().catch(console.error);
     }
   }, [canView]);
 
@@ -90,6 +114,11 @@ const SalePoint = () => {
 
   const selectedProduct = useMemo(() => stock.find((p) => p._id === productId) || null, [stock, productId]);
   const selectedSite = useMemo(() => sites.find((s) => String(s._id) === String(siteId)) || null, [sites, siteId]);
+  const hasChargeableSaleItems = useMemo(() => saleItems.some((i) => !i.isGift && !i.isPayLater), [saleItems]);
+  const selectedPaymentMethodName = useMemo(() => {
+    if (selectedPaymentMethodId === CASH_PAYMENT_METHOD_ID) return CASH_PAYMENT_METHOD_NAME;
+    return paymentMethods.find((m) => String(m._id) === String(selectedPaymentMethodId))?.name || CASH_PAYMENT_METHOD_NAME;
+  }, [paymentMethods, selectedPaymentMethodId]);
 
   const addSaleItem = () => {
     if (!productId) return toast.warn('Select product first.');
@@ -146,7 +175,8 @@ const SalePoint = () => {
   const proceedPayment = async () => {
     if (!canManage) return toast.warn('No manage permission.');
     if (!siteId || saleItems.length === 0) return toast.warn('Add at least one sale item.');
-    const ok = window.confirm(`Confirm payment and save sale?\nNet Amount: PKR ${saleTotals.net.toFixed(2)}`);
+    const paymentLine = hasChargeableSaleItems ? `\nPayment Mode: ${selectedPaymentMethodName}` : '';
+    const ok = window.confirm(`Confirm payment and save sale?\nNet Amount: PKR ${saleTotals.net.toFixed(2)}${paymentLine}`);
     if (!ok) return;
     try {
       await api.post('/sales/checkout', {
@@ -155,6 +185,7 @@ const SalePoint = () => {
         customerName,
         customerWhatsapp,
         customerEmail,
+        paymentMethodId: hasChargeableSaleItems ? selectedPaymentMethodId : '',
         items: saleItems.map((i) => ({
           productId: i.productId,
           quantity: i.quantity,
@@ -170,6 +201,7 @@ const SalePoint = () => {
       setCustomerName('');
       setCustomerWhatsapp('');
       setCustomerEmail('');
+      setSelectedPaymentMethodId(CASH_PAYMENT_METHOD_ID);
       await loadStock(siteId);
       await loadEntries(siteId, dateFrom, dateTo);
     } catch (err) {
@@ -336,6 +368,23 @@ const SalePoint = () => {
     }
   };
 
+  const deleteTransaction = async (row) => {
+    if (!canManage) return toast.warn('No manage permission.');
+    const type = saleTypeLabel(row.entryType);
+    const ok = window.confirm(
+      `Delete this ${type} transaction?\n\nProduct: ${row.productName || '-'}\nQuantity: ${row.quantity || 0}\nNet Amount: PKR ${Number(row.netAmount || 0).toFixed(2)}\n\nStock will be reversed and reports will update after deletion.`
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/sales/entries/${row._id}`);
+      toast.success('Transaction deleted and stock reversed.');
+      await loadStock(siteId);
+      await loadEntries(siteId, dateFrom, dateTo);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to delete transaction.');
+    }
+  };
+
   const transactionNet = useMemo(() => entries.reduce((sum, e) => sum + Number(e.netAmount || 0), 0), [entries]);
 
   const transactionColumns = useMemo(() => ([
@@ -345,7 +394,7 @@ const SalePoint = () => {
       sortable: true,
       wrap: true,
     },
-    { name: 'Type', selector: (row) => (row.entryType === 'return' ? 'Return' : row.entryType === 'gift' ? 'Gift' : row.entryType === 'pay_later' ? 'Pay Later' : 'Sale'), sortable: true },
+    { name: 'Type', selector: (row) => saleTypeLabel(row.entryType), sortable: true },
     { name: 'Customer Name', selector: (row) => row.customerName || '-', sortable: true, wrap: true },
     { name: 'WhatsApp', selector: (row) => row.customerWhatsapp || '-', wrap: true },
     { name: 'Email', selector: (row) => row.customerEmail || '-', wrap: true },
@@ -355,15 +404,29 @@ const SalePoint = () => {
     { name: 'Price Increase', selector: (row) => Number(row.priceIncreaseAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.priceIncreaseAmount || 0).toFixed(2)}` },
     { name: 'Discount', selector: (row) => Number(row.discountAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.discountAmount || 0).toFixed(2)}` },
     { name: 'Receivable', selector: (row) => Number(row.receivableAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.receivableAmount || 0).toFixed(2)}` },
-    { name: 'Payment', selector: (row) => row.paymentStatus || '-', sortable: true, wrap: true },
+    { name: 'Payment Method', selector: (row) => salePaymentMethodLabel(row), sortable: true, wrap: true },
+    { name: 'Payment Status', selector: (row) => row.paymentStatus || '-', sortable: true, wrap: true },
     { name: 'Net', selector: (row) => Number(row.netAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.netAmount || 0).toFixed(2)}` },
-  ]), []);
+    {
+      name: 'Action',
+      minWidth: '120px',
+      cell: (row) => (
+        <button
+          disabled={!canManage}
+          onClick={() => deleteTransaction(row)}
+          className="bg-red-600 disabled:bg-gray-400 text-white px-3 py-1 rounded text-xs"
+        >
+          Delete
+        </button>
+      ),
+    },
+  ]), [canManage, siteId, dateFrom, dateTo]);
 
   const downloadCsv = (sourceRows = entries, suffix = 'all') => {
-    const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Price Increase', 'Discount', 'Receivable', 'Payment', 'Net'];
+    const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Price Increase', 'Discount', 'Receivable', 'Payment Method', 'Payment Status', 'Net'];
     const rows = sourceRows.map((e) => [
       `"${new Date(e.createdAt || e.date).toLocaleString().replace(/"/g, '""')}"`,
-      `"${String(e.entryType === 'return' ? 'Return' : e.entryType === 'gift' ? 'Gift' : e.entryType === 'pay_later' ? 'Pay Later' : 'Sale').replace(/"/g, '""')}"`,
+      `"${String(saleTypeLabel(e.entryType)).replace(/"/g, '""')}"`,
       `"${String(e.customerName || '-').replace(/"/g, '""')}"`,
       `"${String(e.customerWhatsapp || '-').replace(/"/g, '""')}"`,
       `"${String(e.customerEmail || '-').replace(/"/g, '""')}"`,
@@ -373,6 +436,7 @@ const SalePoint = () => {
       `"${Number(e.priceIncreaseAmount || 0).toFixed(2)}"`,
       `"${Number(e.discountAmount || 0).toFixed(2)}"`,
       `"${Number(e.receivableAmount || 0).toFixed(2)}"`,
+      `"${String(salePaymentMethodLabel(e)).replace(/"/g, '""')}"`,
       `"${String(e.paymentStatus || '-').replace(/"/g, '""')}"`,
       `"${Number(e.netAmount || 0).toFixed(2)}"`,
     ].join(','));
@@ -391,11 +455,12 @@ const SalePoint = () => {
     const q = transactionSearch.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((e) =>
-      String(e.entryType === 'return' ? 'Return' : e.entryType === 'gift' ? 'Gift' : e.entryType === 'pay_later' ? 'Pay Later' : 'Sale').toLowerCase().includes(q) ||
+      String(saleTypeLabel(e.entryType)).toLowerCase().includes(q) ||
       String(e.customerName || '').toLowerCase().includes(q) ||
       String(e.customerWhatsapp || '').toLowerCase().includes(q) ||
       String(e.customerEmail || '').toLowerCase().includes(q) ||
-      String(e.productName || '').toLowerCase().includes(q)
+      String(e.productName || '').toLowerCase().includes(q) ||
+      String(salePaymentMethodLabel(e)).toLowerCase().includes(q)
     );
   }, [entries, transactionSearch]);
 
@@ -549,6 +614,21 @@ const SalePoint = () => {
           <div>Price Increase: <strong>PKR {saleTotals.priceIncrease.toFixed(2)}</strong></div>
           <div>Discount: <strong>PKR {saleTotals.discount.toFixed(2)}</strong></div>
           <div>Net: <strong>PKR {saleTotals.net.toFixed(2)}</strong></div>
+          {hasChargeableSaleItems && (
+            <div className="mt-3 max-w-md">
+              <label className="block text-sm font-medium mb-1">Payment Mode</label>
+              <select
+                value={selectedPaymentMethodId}
+                onChange={(e) => setSelectedPaymentMethodId(e.target.value)}
+                className="w-full border p-2 rounded"
+              >
+                <option value={CASH_PAYMENT_METHOD_ID}>{CASH_PAYMENT_METHOD_NAME}</option>
+                {paymentMethods.map((method) => (
+                  <option key={method._id} value={method._id}>{method.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
             <input
               type="text"

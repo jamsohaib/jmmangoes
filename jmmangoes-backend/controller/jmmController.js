@@ -1351,7 +1351,7 @@ async function handleGetSiteStock(req, res) {
 
 async function handleCreateSalePointEntry(req, res) {
   try {
-    const { siteId, productId, quantity, discountAmount = 0, priceIncreaseAmount = 0, date } = req.body;
+    const { siteId, productId, quantity, discountAmount = 0, priceIncreaseAmount = 0, date, paymentMethodId = '' } = req.body;
     const qty = Number(quantity);
     const discount = Number(discountAmount || 0);
     const priceIncrease = Number(priceIncreaseAmount || 0);
@@ -1384,6 +1384,12 @@ async function handleCreateSalePointEntry(req, res) {
     const unitPrice = getProductSitePrice(product, siteId, product.price);
     const grossAmount = unitPrice * qty;
     const netAmount = Math.max(0, grossAmount + priceIncrease - discount);
+    let paymentMethod = { id: null, name: 'Cash Payment', code: 'cash_payment' };
+    if (paymentMethodId && !['cash', 'cash_payment'].includes(String(paymentMethodId))) {
+      const method = await PaymentMethod.findOne({ _id: paymentMethodId, isActive: true });
+      if (!method) return res.status(400).json({ message: 'Selected payment method is not available' });
+      paymentMethod = { id: method._id, name: method.name, code: method.code || '' };
+    }
 
     await consumeSiteProductLots(siteId, product._id, qty);
 
@@ -1398,6 +1404,9 @@ async function handleCreateSalePointEntry(req, res) {
       grossAmount,
       priceIncreaseAmount: priceIncrease,
       discountAmount: discount,
+      paymentMethodId: paymentMethod.id,
+      paymentMethodName: paymentMethod.name,
+      paymentMethodCode: paymentMethod.code,
       netAmount,
       createdBy: req.user.id === 'super-admin' ? null : req.user.id,
       createdByName: req.user.name || req.user.username || '',
@@ -1411,7 +1420,7 @@ async function handleCreateSalePointEntry(req, res) {
 
 async function handleCreateSaleCheckout(req, res) {
   try {
-    const { siteId, date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '' } = req.body;
+    const { siteId, date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '', paymentMethodId = '' } = req.body;
     if (!siteId || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Invalid sale checkout data' });
     }
@@ -1433,6 +1442,7 @@ async function handleCreateSaleCheckout(req, res) {
     }));
     const hasGiftItems = normalizedItems.some((it) => it.isGift);
     const hasPayLaterItems = normalizedItems.some((it) => it.isPayLater);
+    const hasSaleItems = normalizedItems.some((it) => !it.isGift && !it.isPayLater);
     if (normalizedItems.some((it) => it.isGift && it.isPayLater)) {
       return res.status(400).json({ message: 'An item cannot be both gift and pay later' });
     }
@@ -1441,6 +1451,12 @@ async function handleCreateSaleCheckout(req, res) {
     }
     if (hasPayLaterItems && (!String(customerName || '').trim() || !String(customerWhatsapp || '').trim())) {
       return res.status(400).json({ message: 'Customer name and contact number are required for pay later items' });
+    }
+    let paymentMethod = { id: null, name: 'Cash Payment', code: 'cash_payment' };
+    if (hasSaleItems && paymentMethodId && !['cash', 'cash_payment'].includes(String(paymentMethodId))) {
+      const method = await PaymentMethod.findOne({ _id: paymentMethodId, isActive: true });
+      if (!method) return res.status(400).json({ message: 'Selected payment method is not available' });
+      paymentMethod = { id: method._id, name: method.name, code: method.code || '' };
     }
     for (const it of normalizedItems) {
       if (
@@ -1500,6 +1516,9 @@ async function handleCreateSaleCheckout(req, res) {
         discountAmount: lineDiscount,
         receivableAmount,
         paymentStatus: it.isPayLater ? 'pending' : 'not_applicable',
+        paymentMethodId: !it.isGift && !it.isPayLater ? paymentMethod.id : null,
+        paymentMethodName: !it.isGift && !it.isPayLater ? paymentMethod.name : '',
+        paymentMethodCode: !it.isGift && !it.isPayLater ? paymentMethod.code : '',
         giftSourceId: it.isGift ? it.giftSourceId : null,
         giftSourceName: it.isGift ? it.giftSourceName : '',
         netAmount,
@@ -1617,8 +1636,30 @@ async function handleGetSalePointEntries(req, res) {
 
 async function handleGetGiftEntries(req, res) {
   try {
-    req.query.entryType = 'gift';
-    return handleGetSalePointEntries(req, res);
+    const { siteId, dateFrom, dateTo } = req.query;
+    const query = { entryType: 'gift' };
+    if (siteId) query.siteId = siteId;
+    if (dateFrom || dateTo) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+      query.date = range;
+    }
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      if (siteId && !allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
+      if (!siteId) query.siteId = { $in: Array.from(allowedSet) };
+    }
+    const entries = await SalePointEntry.find(query).sort({ createdAt: -1 }).limit(1000);
+    return res.status(200).json(entries);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1626,8 +1667,115 @@ async function handleGetGiftEntries(req, res) {
 
 async function handleGetPayLaterEntries(req, res) {
   try {
-    req.query.entryType = 'pay_later';
-    return handleGetSalePointEntries(req, res);
+    const { siteId, dateFrom, dateTo } = req.query;
+    const query = {
+      entryType: 'pay_later',
+      paymentStatus: { $in: ['pending', 'paid'] },
+      receivableAmount: { $gt: 0 },
+    };
+    if (siteId) query.siteId = siteId;
+    if (dateFrom || dateTo) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+      query.date = range;
+    }
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      if (siteId && !allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
+      if (!siteId) query.siteId = { $in: Array.from(allowedSet) };
+    }
+    const entries = await SalePointEntry.find(query).sort({ createdAt: -1 }).limit(1000);
+    return res.status(200).json(entries);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteSalePointEntry(req, res) {
+  try {
+    const row = await SalePointEntry.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Sale transaction not found' });
+    if (req.user.role !== 'admin') {
+      const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      if (!allowedSet.has(String(row.siteId))) return res.status(403).json({ message: 'Site access denied' });
+    }
+
+    const product = await Product.findById(row.productId);
+    const productRef = product || { _id: row.productId, name: row.productName };
+    const qty = Number(row.quantity || 0);
+    if (qty <= 0) return res.status(400).json({ message: 'Invalid transaction quantity' });
+
+    if (row.entryType === 'return') {
+      const consumed = await consumeSiteProductLots(row.siteId, row.productId, qty);
+      if (!consumed.ok) {
+        return res.status(400).json({ message: `Unable to delete return. Only ${consumed.available} stock available to reverse.` });
+      }
+      for (const lot of consumed.touched) {
+        await createStockLedgerRow({
+          movementType: 'out',
+          holderType: 'site',
+          holderId: row.siteId,
+          holderName: row.siteName,
+          productId: row.productId,
+          productName: row.productName,
+          lotId: lot.lotId,
+          lotCode: lot.lotCode,
+          quantity: -Math.abs(Number(lot.qty || 0)),
+          unitCost: Number(lot.unitCost || 0),
+          referenceType: 'sale_transaction_delete',
+          referenceId: row._id,
+          remarks: `Deleted return transaction for ${row.productName}`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || req.user.username || '',
+        });
+      }
+    } else {
+      const lot = await addSiteProductReturnLot(row.siteId, row.siteName, productRef, qty, Number(row.unitPrice || 0));
+      await createStockLedgerRow({
+        movementType: 'in',
+        holderType: 'site',
+        holderId: row.siteId,
+        holderName: row.siteName,
+        productId: row.productId,
+        productName: row.productName,
+        lotId: lot._id,
+        lotCode: lot.lotCode,
+        quantity: qty,
+        unitCost: Number(row.unitPrice || 0),
+        referenceType: 'sale_transaction_delete',
+        referenceId: row._id,
+        remarks: `Deleted ${row.entryType || 'sale'} transaction and restored stock`,
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || req.user.username || '',
+      });
+    }
+
+    await SalePointEntry.deleteOne({ _id: row._id });
+    await recordAction(req, {
+      action: 'delete_sale_transaction',
+      module: 'Sales',
+      entityType: 'SalePointEntry',
+      entityId: row._id,
+      entityLabel: `${row.siteName} - ${row.productName} x ${row.quantity}`,
+      details: {
+        entryType: row.entryType,
+        siteName: row.siteName,
+        productName: row.productName,
+        quantity: row.quantity,
+        netAmount: row.netAmount,
+      },
+    });
+
+    return res.status(200).json({ success: true, message: 'Sale transaction deleted and stock reversed.' });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -8134,6 +8282,7 @@ module.exports = {
     handleCreateSaleCheckout,
     handleCreateSaleReturn,
     handleGetSalePointEntries,
+    handleDeleteSalePointEntry,
     handleGetGiftEntries,
     handleGetPayLaterEntries,
     handleUpdatePayLaterAmount,

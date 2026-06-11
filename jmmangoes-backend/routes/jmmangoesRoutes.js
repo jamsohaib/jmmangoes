@@ -156,10 +156,12 @@ jmm_route.post('/stocks/adjust-holder', authenticateUser, authorizePage('manageS
 jmm_route.get('/sales/sites', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetAssignedSites);
 jmm_route.get('/sales/gift-sites', authenticateUser, authorizeAnyPage(['giftingRecords', 'payLaterRecords'], 'view'), jmm_controller.handleGetAssignedSites);
 jmm_route.get('/sales/site-stock', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetSiteStock);
+jmm_route.get('/sales/payment-methods', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetCashDepositPaymentMethods);
 jmm_route.post('/sales/entries', authenticateUser, authorizePage('salePoint', 'manage'), jmm_controller.handleCreateSalePointEntry);
 jmm_route.post('/sales/checkout', authenticateUser, authorizePage('salePoint', 'manage'), jmm_controller.handleCreateSaleCheckout);
 jmm_route.post('/sales/return', authenticateUser, authorizePage('salePoint', 'manage'), jmm_controller.handleCreateSaleReturn);
 jmm_route.get('/sales/entries', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetSalePointEntries);
+jmm_route.delete('/sales/entries/:id', authenticateUser, authorizePage('salePoint', 'manage'), jmm_controller.handleDeleteSalePointEntry);
 jmm_route.get('/sales/gifts', authenticateUser, authorizePage('giftingRecords', 'view'), jmm_controller.handleGetGiftEntries);
 jmm_route.get('/sales/pay-later', authenticateUser, authorizePage('payLaterRecords', 'view'), jmm_controller.handleGetPayLaterEntries);
 jmm_route.put('/sales/pay-later/:id/amount', authenticateUser, authorizePage('payLaterRecords', 'manage'), jmm_controller.handleUpdatePayLaterAmount);
