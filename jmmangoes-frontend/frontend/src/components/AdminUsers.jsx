@@ -3,52 +3,74 @@ import { toast } from 'react-toastify';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
-const permissionKeys = [
-  { key: 'productsPage', label: 'Products Page' },
-  { key: 'shippingRates', label: 'Shipping Rates' },
-  { key: 'manageCities', label: 'Manage Cities' },
-  { key: 'adminSites', label: 'Sites' },
-  { key: 'manageStocks', label: 'Manage Stocks' },
-  { key: 'stockMovement', label: 'Stock Movement' },
-  { key: 'salePoint', label: 'Sale Point' },
-  { key: 'giftingRecords', label: 'Gifting Records' },
-  { key: 'giftSourceManagement', label: 'Gift Sources' },
-  { key: 'payLaterRecords', label: 'Pay Later Records' },
-  { key: 'stockWasted', label: 'Stock Wasted' },
-  { key: 'customerDirectory', label: 'Customer Directory' },
-  { key: 'manageExpense', label: 'Manage Expense' },
-  { key: 'addExpense', label: 'Add Expenses' },
-  { key: 'companyCashDeposits', label: 'Company Cash Deposit Register' },
-  { key: 'emailAlerts', label: 'Email Alerts' },
-  { key: 'communications', label: 'Communications' },
-  { key: 'paymentManager', label: 'Payment Manager' },
-  { key: 'courierManagement', label: 'Courier Management' },
-  { key: 'orderManagement', label: 'Order Management' },
-  { key: 'feedbackReport', label: 'Feedback Report' },
-  { key: 'salesDashboard', label: 'Sales Dashboard' },
-  { key: 'salesCashTransactions', label: 'Sales Cash Transactions' },
-  { key: 'warehouseManagement', label: 'Warehouse Management' },
-  { key: 'wholesellerManagement', label: 'Wholeseller Management' },
-  { key: 'stockTransfer', label: 'Stock Transfer' },
-  { key: 'userManagement', label: 'User Management' },
-  { key: 'farmBlocks', label: 'Farm Blocks' },
-  { key: 'farmBlockDetails', label: 'Farm Block Details' },
-  { key: 'farmBlockLogs', label: 'Farm Block Logs' },
-  { key: 'farmDashboard', label: 'Farm Dashboard' },
-  { key: 'farmVarieties', label: 'Farm Varieties' },
-  { key: 'farmTrees', label: 'Farm Trees' },
-  { key: 'farmTreeLogs', label: 'Farm Tree Logs' },
-  { key: 'farmMaintenanceTasks', label: 'Farm Maintenance Tasks' },
-  { key: 'farmLogs', label: 'Farm Logs (Legacy)' },
-  { key: 'farmExpenseManage', label: 'Farm Manage Expenses' },
-  { key: 'farmExpenseAdd', label: 'Farm Add Expenses' },
-  { key: 'farmExpenseDashboard', label: 'Farm Expense Dashboard' },
-  { key: 'financialYears', label: 'Manage Financial Years' },
-  { key: 'adminFinancialDashboard', label: 'Admin Financial Dashboard' },
-  { key: 'farmHR', label: 'Farm HR' },
-  { key: 'farmHRExpenses', label: 'Farm HR Expenses' },
-  { key: 'actionLogs', label: 'Action Logs' },
+const permissionGroups = [
+  {
+    title: 'Admin Tab',
+    items: [
+      { key: 'adminFinancialDashboard', label: 'Financial Dashboard' },
+      { key: 'userManagement', label: 'User Management' },
+      { key: 'actionLogs', label: 'Action Logs' },
+      { key: 'productsPage', label: 'Products' },
+      { key: 'adminSites', label: 'Sites' },
+      { key: 'warehouseManagement', label: 'Warehouse Management' },
+      { key: 'wholesellerManagement', label: 'Wholeseller Management' },
+      { key: 'shippingRates', label: 'Shipping Rates' },
+      { key: 'manageCities', label: 'Manage Cities' },
+      { key: 'paymentManager', label: 'Payment Manager' },
+      { key: 'courierManagement', label: 'Courier Management' },
+      { key: 'manageExpense', label: 'Manage Expense' },
+      { key: 'emailAlerts', label: 'Email Alerts' },
+      { key: 'feedbackReport', label: 'Feedback Report' },
+    ],
+  },
+  {
+    title: 'Sales Tab',
+    items: [
+      { key: 'salesDashboard', label: 'Sales Dashboard' },
+      { key: 'salesCashTransactions', label: 'Cash Transactions' },
+      { key: 'companyCashDeposits', label: 'Company Cash Deposit Register' },
+      { key: 'salePoint', label: 'Sale Point' },
+      { key: 'orderManagement', label: 'Order Management' },
+      { key: 'customerDirectory', label: 'Customer Directory' },
+      { key: 'manageStocks', label: 'Manage Stocks' },
+      { key: 'stockMovement', label: 'Stock Movement' },
+      { key: 'stockTransfer', label: 'Stock Transfer & Receiving' },
+      { key: 'stockWasted', label: 'Stock Wasted' },
+      { key: 'addExpense', label: 'Add Expenses' },
+      { key: 'payLaterRecords', label: 'Pay Later Records' },
+      { key: 'giftingRecords', label: 'Gifting Records' },
+      { key: 'giftSourceManagement', label: 'Gift Sources' },
+    ],
+  },
+  {
+    title: 'Farm Tab',
+    items: [
+      { key: 'farmDashboard', label: 'Farm Dashboard' },
+      { key: 'farmExpenseDashboard', label: 'Farm Expense Dashboard' },
+      { key: 'farmBlocks', label: 'Manage Land Blocks' },
+      { key: 'farmBlockDetails', label: 'Block Details' },
+      { key: 'farmBlockLogs', label: 'Block Logs' },
+      { key: 'farmVarieties', label: 'Mango Varieties' },
+      { key: 'farmTrees', label: 'Manage Trees' },
+      { key: 'farmTreeLogs', label: 'Tree Logs' },
+      { key: 'farmMaintenanceTasks', label: 'Maintenance Tasks' },
+      { key: 'farmExpenseManage', label: 'Farm Manage Expenses' },
+      { key: 'farmExpenseAdd', label: 'Farm Add Expenses' },
+      { key: 'financialYears', label: 'Manage Financial Years' },
+      { key: 'farmHR', label: 'Farm HR' },
+      { key: 'farmHRExpenses', label: 'Farm HR Expenses' },
+      { key: 'farmLogs', label: 'Farm Logs (Legacy)' },
+    ],
+  },
+  {
+    title: 'Communications Tab',
+    items: [
+      { key: 'communications', label: 'Communications' },
+    ],
+  },
 ];
+
+const permissionKeys = permissionGroups.flatMap((group) => group.items);
 
 const blankPermissions = permissionKeys.reduce((acc, p) => {
   acc[p.key] = { view: false, manage: false };
@@ -279,6 +301,31 @@ const AdminUsers = () => {
     }));
   };
 
+  const renderPermissionGroups = () => (
+    <div className="space-y-4">
+      {permissionGroups.map((group) => (
+        <div key={group.title} className="border rounded p-3 bg-gray-50">
+          <div className="font-semibold text-green-800 mb-2">{group.title}</div>
+          <div className="space-y-2">
+            {group.items.map((p) => (
+              <div key={p.key} className="flex flex-wrap items-center gap-3 bg-white rounded px-3 py-2 border">
+                <span className="min-w-56 font-medium">{p.label}</span>
+                <label className="inline-flex items-center gap-1">
+                  <input type="checkbox" checked={!!form.permissions?.[p.key]?.view} onChange={(e) => setPermission(p.key, 'view', e.target.checked)} />
+                  Show
+                </label>
+                <label className="inline-flex items-center gap-1">
+                  <input type="checkbox" checked={!!form.permissions?.[p.key]?.manage} onChange={(e) => setPermission(p.key, 'manage', e.target.checked)} />
+                  Manage
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
 
   return (
@@ -402,21 +449,7 @@ const AdminUsers = () => {
         </div>
         <div>
           <div className="font-semibold mb-1">Page Permissions</div>
-          <div className="space-y-2">
-            {permissionKeys.map((p) => (
-              <div key={p.key} className="flex flex-wrap items-center gap-3">
-                <span className="min-w-40">{p.label}</span>
-                <label className="inline-flex items-center gap-1">
-                  <input type="checkbox" checked={!!form.permissions?.[p.key]?.view} onChange={(e) => setPermission(p.key, 'view', e.target.checked)} />
-                  Show
-                </label>
-                <label className="inline-flex items-center gap-1">
-                  <input type="checkbox" checked={!!form.permissions?.[p.key]?.manage} onChange={(e) => setPermission(p.key, 'manage', e.target.checked)} />
-                  Manage
-                </label>
-              </div>
-            ))}
-          </div>
+          {renderPermissionGroups()}
         </div>
         <button className="bg-green-600 text-white px-4 py-2 rounded">Create User</button>
       </form>
@@ -525,21 +558,7 @@ const AdminUsers = () => {
 
               <div>
                 <div className="font-semibold mb-1">Page Permissions</div>
-                <div className="space-y-2">
-                  {permissionKeys.map((p) => (
-                    <div key={p.key} className="flex flex-wrap items-center gap-3">
-                      <span className="min-w-40">{p.label}</span>
-                      <label className="inline-flex items-center gap-1">
-                        <input type="checkbox" checked={!!form.permissions?.[p.key]?.view} onChange={(e) => setPermission(p.key, 'view', e.target.checked)} />
-                        Show
-                      </label>
-                      <label className="inline-flex items-center gap-1">
-                        <input type="checkbox" checked={!!form.permissions?.[p.key]?.manage} onChange={(e) => setPermission(p.key, 'manage', e.target.checked)} />
-                        Manage
-                      </label>
-                    </div>
-                  ))}
-                </div>
+                {renderPermissionGroups()}
               </div>
             </form>
             <div className="flex justify-end gap-2 mt-4">
