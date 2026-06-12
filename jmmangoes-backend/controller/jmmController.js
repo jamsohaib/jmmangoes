@@ -2845,6 +2845,25 @@ async function handleGetSalesDashboardSummary(req, res) {
     }
     const siteIdToName = new Map(activeSites.map((s) => [String(s._id), s.name]));
     const onlineSite = activeSites.find((s) => String(s.name || '').trim().toLowerCase() === 'online') || null;
+    const warehouseHolders = req.user.role === 'admin'
+      ? await Warehouse.find({ isActive: true }).select('_id name')
+      : await Warehouse.find({ _id: { $in: (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
+    const wholesellerHolders = req.user.role === 'admin'
+      ? await Wholeseller.find({ isActive: true }).select('_id name')
+      : await Wholeseller.find({ _id: { $in: (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
+    const activeSiteIds = activeSites.map((s) => new mongoose.Types.ObjectId(String(s._id)));
+    const activeWarehouseIds = warehouseHolders.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+    const activeWholesellerIds = wholesellerHolders.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+
+    const activeHolderAccessMatch = () => ({
+      $or: [
+        { holderType: 'site', holderId: { $in: activeSiteIds } },
+        { holderType: 'online', holderId: { $in: activeSiteIds } },
+        { holderType: 'warehouse', holderId: { $in: activeWarehouseIds } },
+        { holderType: 'wholeseller', holderId: { $in: activeWholesellerIds } },
+        { siteId: { $in: activeSiteIds } }, // backward compatibility for old expense rows
+      ],
+    });
 
     const baseSiteMatch = (range) => {
       const match = {
@@ -2886,20 +2905,8 @@ async function handleGetSalesDashboardSummary(req, res) {
     ]);
 
     const baseExpenseMatch = (range) => {
-      const match = {};
+      const match = activeHolderAccessMatch();
       if (range) match.date = range;
-      if (req.user.role !== 'admin') {
-        const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
-        const warehouseIds = (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
-        const wholesellerIds = (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
-        match.$or = [
-          { holderType: 'site', holderId: { $in: siteIds } },
-          { holderType: 'online', holderId: { $in: siteIds } },
-          { holderType: 'warehouse', holderId: { $in: warehouseIds } },
-          { holderType: 'wholeseller', holderId: { $in: wholesellerIds } },
-          { siteId: { $in: siteIds } }, // backward compatibility for old expense rows
-        ];
-      }
       return match;
     };
 
@@ -2930,9 +2937,8 @@ async function handleGetSalesDashboardSummary(req, res) {
     ]);
 
     const baseDepositMatch = (range) => {
-      const match = {};
+      const match = activeHolderAccessMatch();
       if (range) match.date = range;
-      if (req.user.role !== 'admin') Object.assign(match, buildCompanyDepositAccessMatch(req));
       return match;
     };
 
@@ -3036,12 +3042,6 @@ async function handleGetSalesDashboardSummary(req, res) {
     const onlineRange = onlineRangeAgg[0] || { salesAmount: 0, salesQty: 0 };
 
     const allHolderKeys = new Set(activeSites.map((s) => `site:${String(s._id)}`));
-    const warehouseHolders = req.user.role === 'admin'
-      ? await Warehouse.find({ isActive: true }).select('_id name')
-      : await Warehouse.find({ _id: { $in: (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
-    const wholesellerHolders = req.user.role === 'admin'
-      ? await Wholeseller.find({ isActive: true }).select('_id name')
-      : await Wholeseller.find({ _id: { $in: (req.user.wholesellerAccess || []).map((id) => new mongoose.Types.ObjectId(String(id))) }, isActive: true }).select('_id name');
     const holderNameMap = new Map();
     activeSites.forEach((s) => {
       holderNameMap.set(`site:${String(s._id)}`, s.name);
