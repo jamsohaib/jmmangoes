@@ -3,8 +3,11 @@ const mongoose = require('mongoose');
 const salePointEntrySchema = new mongoose.Schema(
   {
     entryType: { type: String, enum: ['sale', 'return', 'gift', 'pay_later'], default: 'sale' },
-    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', required: true },
-    siteName: { type: String, required: true, trim: true },
+    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },
+    siteName: { type: String, default: '', trim: true },
+    holderType: { type: String, enum: ['site', 'warehouse', 'wholeseller', 'online'], default: 'site' },
+    holderId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    holderName: { type: String, default: '', trim: true },
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     productName: { type: String, required: true, trim: true },
     date: { type: Date, required: true },

@@ -1,5 +1,5 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { useState } from 'react'
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css';
@@ -72,6 +72,43 @@ import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
 import PrivacyPolicy from './components/PrivacyPolicy';
 import WhatsAppLogs from './components/WhatsAppLogs';
+import api from './lib/api';
+import useAuthStore from './store/authStore';
+
+const PublicRoute = () => <Outlet />;
+
+const ProtectedRoute = () => {
+  const location = useLocation();
+  const user = useAuthStore((state) => state.user);
+  const setUser = useAuthStore((state) => state.setUser);
+  const clearUser = useAuthStore((state) => state.clearUser);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const verifySession = async () => {
+      setChecking(true);
+      try {
+        const res = await api.get('/session');
+        if (!active) return;
+        if (res.data?.user) setUser(res.data.user);
+      } catch (_) {
+        if (!active) return;
+        clearUser();
+      } finally {
+        if (active) setChecking(false);
+      }
+    };
+    verifySession();
+    return () => {
+      active = false;
+    };
+  }, [location.pathname, setUser, clearUser]);
+
+  if (checking) return <div className="p-4 text-black">Checking session...</div>;
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  return <Outlet />;
+};
 
 function App() {
   return (
@@ -93,8 +130,22 @@ function App() {
         <Navbar />
         <main className="flex-grow">
           <Routes>
-            <Route path="/" element={<Home />} />
+            <Route element={<PublicRoute />}>
+              <Route path="/" element={<Home />} />
              {/* <Route path="/products" element={<ProductList />} />  */}
+              <Route path="/products/:id" element={<ProductDetail />} /> 
+              <Route path="/cart" element={<Cart />} /> 
+              <Route path="/checkout" element={<Checkout />} />
+              <Route path="/order-success" element={<OrderSuccess />} />
+              <Route path="/orders" element={<OrderHistory />} /> 
+              <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
+              <Route path="/contact" element={<ContactPage />} />
+              <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/register" element={<Register />} /> 
+            </Route>
+            <Route element={<ProtectedRoute />}>
              <Route path="/productsPage" element={<ProductsPage />} />
              <Route path="/manage-cities" element={<ManageCities />} />
              <Route path="/shipping-rates" element={<ShippingRatesPage />} />
@@ -116,11 +167,6 @@ function App() {
              <Route path="/company-cash-deposits" element={<CompanyCashDeposits />} />
              <Route path="/sales-cash-transactions" element={<SalesCashTransactions />} />
              <Route path="/admin-users" element={<AdminUsers />} />
-             <Route path="/products/:id" element={<ProductDetail />} /> 
-             <Route path="/cart" element={<Cart />} /> 
-             <Route path="/checkout" element={<Checkout />} />
-             <Route path="/order-success" element={<OrderSuccess />} />
-             <Route path="/orders" element={<OrderHistory />} /> 
              <Route path="/email-alerts" element={<EmailAlertsManagement />} />
              <Route path="/courier-management" element={<CourierManagement />} />
              <Route path="/payment-manager" element={<PaymentManager />} />
@@ -128,9 +174,6 @@ function App() {
              <Route path="/communications/whatsapp-logs" element={<WhatsAppLogs />} />
              <Route path="/order-management" element={<OrderManagement />} />
              <Route path="/feedback-report" element={<FeedbackReport />} />
-             <Route path="/feedback/:orderNumber" element={<OrderFeedback />} />
-             <Route path="/contact" element={<ContactPage />} />
-             <Route path="/privacy-policy" element={<PrivacyPolicy />} />
              <Route path="/farm-blocks" element={<FarmBlocks />} />
              <Route path="/farm-block-details" element={<FarmBlockDetails />} />
              <Route path="/farm-block-logs" element={<FarmBlockLogs />} />
@@ -147,9 +190,7 @@ function App() {
              <Route path="/farm-hr" element={<FarmHR />} />
              <Route path="/farm-hr-expenses" element={<FarmHRExpenses />} />
              <Route path="/action-logs" element={<ActionLogs />} />
-             <Route path="/login" element={<Login />} />
-             <Route path="/reset-password" element={<ResetPassword />} />
-             <Route path="/register" element={<Register />} /> 
+            </Route>
              <Route path="*" element={<NotFound />} />
             {/* Add other routes as needed */}
           </Routes>

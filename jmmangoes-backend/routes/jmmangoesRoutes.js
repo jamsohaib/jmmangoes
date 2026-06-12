@@ -94,6 +94,7 @@ jmm_route.post('/register',jmm_controller.handleRegister );
 
 jmm_route.post('/login',jmm_controller.handleLogin );
 jmm_route.post('/logout',jmm_controller.handleLogout );
+jmm_route.get('/session', authenticateUser, jmm_controller.handleSession);
 jmm_route.get('/auth/human-challenge', jmm_controller.handleGetHumanChallenge);
 jmm_route.post('/auth/forgot-password', jmm_controller.handleForgotPassword);
 jmm_route.post('/auth/reset-password', jmm_controller.handleResetPassword);
@@ -153,7 +154,7 @@ jmm_route.get('/stocks/adjustments', authenticateUser, authorizePage('manageStoc
 jmm_route.get('/stocks/ledger', authenticateUser, authorizeAnyPage(['manageStocks', 'stockMovement'], 'view'), jmm_controller.handleStockLedger);
 jmm_route.post('/stocks/adjust', authenticateUser, authorizePage('manageStocks', 'manage'), jmm_controller.handleAdjustStock);
 jmm_route.post('/stocks/adjust-holder', authenticateUser, authorizePage('manageStocks', 'manage'), jmm_controller.handleAdjustHolderStock);
-jmm_route.get('/sales/sites', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetAssignedSites);
+jmm_route.get('/sales/sites', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetSaleHolders);
 jmm_route.get('/sales/gift-sites', authenticateUser, authorizeAnyPage(['giftingRecords', 'payLaterRecords'], 'view'), jmm_controller.handleGetAssignedSites);
 jmm_route.get('/sales/site-stock', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetSiteStock);
 jmm_route.get('/sales/payment-methods', authenticateUser, authorizePage('salePoint', 'view'), jmm_controller.handleGetCashDepositPaymentMethods);

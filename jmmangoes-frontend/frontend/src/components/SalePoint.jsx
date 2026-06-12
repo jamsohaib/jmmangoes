@@ -27,6 +27,13 @@ const salePaymentMethodLabel = (entry) => {
   return '-';
 };
 
+const parseHolderSelection = (value) => {
+  const [type, ...rest] = String(value || '').split(':');
+  const id = rest.join(':');
+  if (['site', 'warehouse', 'online', 'wholeseller'].includes(type) && id) return { holderType: type, holderId: id };
+  return { holderType: 'site', holderId: value };
+};
+
 const SalePoint = () => {
   const user = useAuthStore((state) => state.user);
   const isSuperAdmin = user?.id === 'super-admin' || String(user?.username || '').toLowerCase() === 'admin';
@@ -85,13 +92,27 @@ const SalePoint = () => {
 
   const loadStock = async (id) => {
     if (!id) return setStock([]);
-    const res = await api.get('/sales/site-stock', { params: { siteId: id } });
+    const holder = sites.find((s) => String(s._id) === String(id));
+    const parsed = parseHolderSelection(id);
+    const res = await api.get('/sales/site-stock', {
+      params: {
+        holderType: holder?.holderType || parsed.holderType,
+        holderId: holder?.holderId || parsed.holderId,
+        siteId: holder?.holderType === 'site' ? holder.holderId : undefined,
+      },
+    });
     setStock(res.data || []);
   };
 
   const loadEntries = async (id, from, to) => {
     if (!id) return setEntries([]);
-    const params = { siteId: id };
+    const holder = sites.find((s) => String(s._id) === String(id));
+    const parsed = parseHolderSelection(id);
+    const params = {
+      holderType: holder?.holderType || parsed.holderType,
+      holderId: holder?.holderId || parsed.holderId,
+      siteId: holder?.holderType === 'site' ? holder.holderId : undefined,
+    };
     if (from) params.dateFrom = from;
     if (to) params.dateTo = to;
     const res = await api.get('/sales/entries', { params });
@@ -181,7 +202,9 @@ const SalePoint = () => {
     if (!ok) return;
     try {
       await api.post('/sales/checkout', {
-        siteId,
+        siteId: selectedSite?.holderType === 'site' ? selectedSite.holderId : undefined,
+        holderType: selectedSite?.holderType || parseHolderSelection(siteId).holderType,
+        holderId: selectedSite?.holderId || parseHolderSelection(siteId).holderId,
         date: entryDate,
         customerName,
         customerWhatsapp,
@@ -350,7 +373,9 @@ const SalePoint = () => {
     if (!ok) return;
     try {
       await api.post('/sales/return', {
-        siteId,
+        siteId: selectedSite?.holderType === 'site' ? selectedSite.holderId : undefined,
+        holderType: selectedSite?.holderType || parseHolderSelection(siteId).holderType,
+        holderId: selectedSite?.holderId || parseHolderSelection(siteId).holderId,
         date: entryDate,
         customerName: returnCustomerName,
         customerWhatsapp: returnCustomerWhatsapp,
@@ -474,8 +499,8 @@ const SalePoint = () => {
         <div>
           <label className="block text-sm font-medium mb-1">Sales Site</label>
           <select value={siteId} onChange={(e) => { setSiteId(e.target.value); }} className="w-full border p-2 rounded">
-            <option value="">Select Site</option>
-            {sites.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+            <option value="">Select Sale Point / Warehouse</option>
+            {sites.map((s) => <option key={s._id} value={s._id}>{s.label || s.name}</option>)}
           </select>
         </div>
         <div>

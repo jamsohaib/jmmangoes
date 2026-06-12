@@ -38,7 +38,7 @@ const ProductsPage = () => {
   const [editImageFile, setEditImageFile] = useState(null);
 
   const BACKEND_ORIGIN = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api').replace(/\/api\/?$/, '');
-  const activeSites = useMemo(() => (sites || []).filter((s) => s.isActive), [sites]);
+  const activeSites = useMemo(() => (sites || []).filter((s) => s.isActive !== false), [sites]);
 
   const loadData = async () => {
     const [productsRes, sitesRes] = await Promise.all([api.get('/getProducts'), api.get('/products/sites')]);
@@ -88,20 +88,23 @@ const ProductsPage = () => {
   const handleAssignToStore = async (e) => {
     e.preventDefault();
     if (!canManage) return toast.warn('No manage permission.');
-    if (!assignForm.productId || !assignForm.siteId) return toast.warn('Select product and store.');
+    if (!assignForm.productId || !assignForm.siteId) return toast.warn('Select product and store/warehouse.');
     const site = sites.find((s) => String(s._id) === String(assignForm.siteId));
     const priceNum = Number(assignForm.price);
     if (!site || Number.isNaN(priceNum) || priceNum < 0) return toast.warn('Enter valid price.');
     try {
       await api.post(`/products/${assignForm.productId}/location-price`, {
-        siteId: site._id,
-        siteName: site.name,
+        siteId: site.holderType === 'site' ? site.holderId : undefined,
+        siteName: site.holderType === 'site' ? site.name : '',
+        holderType: site.holderType || 'site',
+        holderId: site.holderId || site._id,
+        holderName: site.name,
         price: priceNum,
       });
       await api.put(`/products/${assignForm.productId}/toggle-availability`, {
         isAvailableForCart: !!assignForm.isAvailableForCart,
       });
-      toast.success('Product assigned to store with price.');
+      toast.success('Product assigned with price.');
       setAssignForm((prev) => ({ ...prev, price: '' }));
       await loadData();
     } catch (err) {
@@ -121,7 +124,7 @@ const ProductsPage = () => {
   const handleBulkAssignToStores = async (e) => {
     e.preventDefault();
     if (!canManage) return toast.warn('No manage permission.');
-    if (!bulkAssignForm.productId || !bulkAssignForm.siteIds.length) return toast.warn('Select product and at least one store.');
+    if (!bulkAssignForm.productId || !bulkAssignForm.siteIds.length) return toast.warn('Select product and at least one store/warehouse.');
     const priceNum = Number(bulkAssignForm.price);
     if (Number.isNaN(priceNum) || priceNum < 0) return toast.warn('Enter valid price.');
     try {
@@ -129,15 +132,18 @@ const ProductsPage = () => {
         const site = sites.find((s) => String(s._id) === String(siteId));
         if (!site) continue;
         await api.post(`/products/${bulkAssignForm.productId}/location-price`, {
-          siteId: site._id,
-          siteName: site.name,
+          siteId: site.holderType === 'site' ? site.holderId : undefined,
+          siteName: site.holderType === 'site' ? site.name : '',
+          holderType: site.holderType || 'site',
+          holderId: site.holderId || site._id,
+          holderName: site.name,
           price: priceNum,
         });
       }
       await api.put(`/products/${bulkAssignForm.productId}/toggle-availability`, {
         isAvailableForCart: !!bulkAssignForm.isAvailableForCart,
       });
-      toast.success(`Assigned product to ${bulkAssignForm.siteIds.length} stores.`);
+      toast.success(`Assigned product to ${bulkAssignForm.siteIds.length} holders.`);
       setBulkAssignForm((prev) => ({ ...prev, siteIds: [], price: '' }));
       await loadData();
     } catch (err) {
@@ -145,11 +151,11 @@ const ProductsPage = () => {
     }
   };
 
-  const handleRemoveStoreAssignment = async (productId, siteId, productName = 'this product', storeName = 'this store') => {
+  const handleRemoveStoreAssignment = async (productId, siteId, productName = 'this product', storeName = 'this store', holderType = 'site') => {
     if (!canManage) return toast.warn('No manage permission.');
     if (!window.confirm(`Remove "${productName}" from "${storeName}"?`)) return;
     try {
-      await api.post(`/products/${productId}/remove-location-price`, { siteId });
+      await api.post(`/products/${productId}/remove-location-price`, { siteId: holderType === 'site' ? siteId : undefined, holderType, holderId: siteId });
       toast.success('Store assignment removed.');
       await loadData();
     } catch (err) {
@@ -233,8 +239,9 @@ const ProductsPage = () => {
           rows.push({
             productId: p._id,
             productName: p.name,
-            siteId: lp.siteId,
-            siteName: lp.siteName,
+            siteId: lp.holderId || lp.siteId,
+            siteName: lp.holderName || lp.siteName,
+            holderType: lp.holderType || 'site',
             price: lp.price,
             isActive: p.isActive !== false,
             isAvailableForCart: p.isAvailableForCart !== false,
@@ -275,22 +282,22 @@ const ProductsPage = () => {
       </div>
 
       <div className="bg-white rounded shadow p-4 mb-6">
-        <h3 className="text-xl font-semibold mb-3">Step 2: Add Product to Store / Site</h3>
+        <h3 className="text-xl font-semibold mb-3">Step 2: Add Product Price to Store / Warehouse</h3>
         <form onSubmit={handleAssignToStore} className="grid grid-cols-1 md:grid-cols-4 gap-2">
           <select value={assignForm.productId} onChange={(e) => setAssignForm((p) => ({ ...p, productId: e.target.value }))} className="border p-2 rounded" required>
             <option value="">Select Product Item</option>
             {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
           </select>
           <select value={assignForm.siteId} onChange={(e) => setAssignForm((p) => ({ ...p, siteId: e.target.value }))} className="border p-2 rounded" required>
-            <option value="">Select Store / Site</option>
-            {activeSites.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+            <option value="">Select Store / Warehouse</option>
+            {activeSites.map((s) => <option key={s._id} value={s._id}>{s.label || s.name}</option>)}
           </select>
-          <input type="number" placeholder="Store Price" value={assignForm.price} onChange={(e) => setAssignForm((p) => ({ ...p, price: e.target.value }))} className="border p-2 rounded" required />
+          <input type="number" placeholder="Price" value={assignForm.price} onChange={(e) => setAssignForm((p) => ({ ...p, price: e.target.value }))} className="border p-2 rounded" required />
           <label className="inline-flex items-center gap-2 border p-2 rounded">
             <input type="checkbox" checked={!!assignForm.isAvailableForCart} onChange={(e) => setAssignForm((p) => ({ ...p, isAvailableForCart: e.target.checked }))} />
             Available
           </label>
-          <button type="submit" disabled={!canManage} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">Add To Store</button>
+          <button type="submit" disabled={!canManage} className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-60">Add Price</button>
         </form>
       </div>
 
@@ -307,12 +314,12 @@ const ProductsPage = () => {
             Mark product available after bulk assignment
           </label>
           <div className="md:col-span-2 border rounded p-3">
-            <p className="font-medium mb-2">Select Stores/Sites</p>
+            <p className="font-medium mb-2">Select Stores / Warehouses</p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               {activeSites.map((s) => (
                 <label key={s._id} className="inline-flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={bulkAssignForm.siteIds.includes(s._id)} onChange={() => toggleBulkSite(s._id)} />
-                  {s.name}
+                  {s.label || s.name}
                 </label>
               ))}
             </div>
@@ -322,7 +329,7 @@ const ProductsPage = () => {
       </div>
 
       <div className="mb-6">
-        <h3 className="text-xl font-semibold mb-3">Store Assignments (Store Wise)</h3>
+        <h3 className="text-xl font-semibold mb-3">Price Assignments (Store / Warehouse Wise)</h3>
         {Object.keys(assignedRowsByStore).length === 0 ? (
           <div className="bg-white rounded shadow p-4 text-gray-500">No store assignments yet.</div>
         ) : (
@@ -351,7 +358,7 @@ const ProductsPage = () => {
                           <button className="text-blue-600 hover:underline" onClick={() => openEditModal(products.find((p) => p._id === r.productId))}>Edit Item</button>
                           <button className="text-yellow-700 hover:underline" onClick={() => handleToggleProductActive(r.productId, r.isActive)}>{r.isActive ? 'Disable' : 'Enable'}</button>
                           <button className="text-orange-700 hover:underline" onClick={() => handleToggleAvailability(r.productId, r.isAvailableForCart)}>{r.isAvailableForCart ? 'Mark Unavailable' : 'Mark Available'}</button>
-                          {r.siteId ? <button className="text-red-600 hover:underline" onClick={() => handleRemoveStoreAssignment(r.productId, r.siteId, r.productName, r.siteName || storeName)}>Remove From Store</button> : null}
+                          {r.siteId ? <button className="text-red-600 hover:underline" onClick={() => handleRemoveStoreAssignment(r.productId, r.siteId, r.productName, r.siteName || storeName, r.holderType)}>Remove Assignment</button> : null}
                         </div>
                       </td>
                     </tr>

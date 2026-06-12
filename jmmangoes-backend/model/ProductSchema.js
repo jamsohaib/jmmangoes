@@ -3,8 +3,11 @@ const mongoose = require('mongoose');
 
 const locationPriceSchema = new mongoose.Schema(
   {
-    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', required: true },
-    siteName: { type: String, required: true, trim: true },
+    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },
+    siteName: { type: String, default: '', trim: true },
+    holderType: { type: String, enum: ['site', 'warehouse', 'wholeseller', 'online'], default: 'site' },
+    holderId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    holderName: { type: String, default: '', trim: true },
     price: { type: Number, required: true, min: 0 },
   },
   { _id: false }

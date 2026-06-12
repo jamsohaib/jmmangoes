@@ -195,37 +195,56 @@ async function makeSimpleLotCode(productName, quantity) {
 }
 
 function productHasSiteAssignment(product, siteId, siteName = '') {
-  const siteIdStr = String(siteId || '');
-  const siteNameNorm = String(siteName || '').trim().toLowerCase();
+  return productHasHolderAssignment(product, 'site', siteId, siteName);
+}
+
+function productHasHolderAssignment(product, holderType, holderId, holderName = '') {
+  const normalizedType = normalizeEntityType(holderType) || 'site';
+  const holderIdStr = String(holderId || '');
+  const holderNameNorm = String(holderName || '').trim().toLowerCase();
   const locationPrices = Array.isArray(product?.locationPrices) ? product.locationPrices : [];
-  return locationPrices.some((lp) => String(lp.siteId || '') === siteIdStr || (siteNameNorm && String(lp.siteName || '').trim().toLowerCase() === siteNameNorm));
+  return locationPrices.some((lp) => {
+    const lpType = normalizeEntityType(lp.holderType) || 'site';
+    const lpId = String(lp.holderId || lp.siteId || '');
+    const lpName = String(lp.holderName || lp.siteName || '').trim().toLowerCase();
+    return lpType === normalizedType && (lpId === holderIdStr || (holderNameNorm && lpName === holderNameNorm));
+  });
 }
 
 function getProductSitePrice(product, siteId, fallbackPrice = 0) {
-  const siteIdStr = String(siteId || '');
+  return getProductHolderPrice(product, 'site', siteId, fallbackPrice);
+}
+
+function getProductHolderPrice(product, holderType, holderId, fallbackPrice = 0) {
+  const normalizedType = normalizeEntityType(holderType) || 'site';
+  const holderIdStr = String(holderId || '');
   const locationPrices = Array.isArray(product?.locationPrices) ? product.locationPrices : [];
-  const lp = locationPrices.find((x) => String(x.siteId || '') === siteIdStr);
+  const lp = locationPrices.find((x) => (normalizeEntityType(x.holderType) || 'site') === normalizedType && String(x.holderId || x.siteId || '') === holderIdStr);
   if (lp && Number.isFinite(Number(lp.price))) return Number(lp.price);
   return Number(fallbackPrice || product?.price || 0);
 }
 
 
 async function getSiteProductAvailableQty(siteId, productId) {
+  return getHolderProductAvailableQty('site', siteId, productId);
+}
+
+async function getHolderProductAvailableQty(holderType, holderId, productId) {
   const rows = await StockLot.find({
-    holderType: 'site',
-    holderId: siteId,
+    holderType: normalizeEntityType(holderType),
+    holderId,
     productId,
     quantityAvailable: { $gt: 0 },
   }).select('quantityAvailable');
   return rows.reduce((sum, r) => sum + Number(r.quantityAvailable || 0), 0);
 }
 
-async function consumeSiteProductLots(siteId, productId, qty) {
+async function consumeHolderProductLots(holderType, holderId, productId, qty) {
   let remaining = Number(qty || 0);
   const touched = [];
   const lots = await StockLot.find({
-    holderType: 'site',
-    holderId: siteId,
+    holderType: normalizeEntityType(holderType),
+    holderId,
     productId,
     quantityAvailable: { $gt: 0 },
   }).sort({ receivedAt: 1, createdAt: 1 });
@@ -245,12 +264,20 @@ async function consumeSiteProductLots(siteId, productId, qty) {
   return { ok: true, available, touched };
 }
 
+async function consumeSiteProductLots(siteId, productId, qty) {
+  return consumeHolderProductLots('site', siteId, productId, qty);
+}
+
 async function addSiteProductReturnLot(siteId, siteName, product, qty, unitCost = 0) {
+  return addHolderProductReturnLot('site', siteId, siteName, product, qty, unitCost);
+}
+
+async function addHolderProductReturnLot(holderType, holderId, holderName, product, qty, unitCost = 0) {
   const lotCode = await makeSimpleLotCode(product?.name || 'Product', Number(qty || 0));
   return StockLot.create({
-    holderType: 'site',
-    holderId: siteId,
-    holderName: siteName,
+    holderType: normalizeEntityType(holderType),
+    holderId,
+    holderName,
     productId: product._id,
     productName: product.name,
     lotCode,
@@ -678,10 +705,13 @@ async function handleAddProducts(req,res){
     const onlineSite = await ensureOnlineSite();
     const normalizedLocationPrices = Array.isArray(locationPrices)
       ? locationPrices
-          .filter((lp) => lp && lp.siteId && lp.siteName && typeof lp.price === 'number')
+          .filter((lp) => lp && (lp.holderId || lp.siteId) && (lp.holderName || lp.siteName) && typeof lp.price === 'number')
           .map((lp) => ({
-            siteId: lp.siteId,
-            siteName: lp.siteName.trim(),
+            siteId: lp.siteId || (lp.holderType === 'site' || lp.holderType === 'online' ? lp.holderId : null),
+            siteName: String(lp.siteName || lp.holderName || '').trim(),
+            holderType: normalizeEntityType(lp.holderType) || 'site',
+            holderId: lp.holderId || lp.siteId,
+            holderName: String(lp.holderName || lp.siteName || '').trim(),
             price: lp.price,
           }))
       : [];
@@ -691,6 +721,9 @@ async function handleAddProducts(req,res){
       normalizedLocationPrices.push({
         siteId: onlineSite._id,
         siteName: 'online',
+        holderType: 'site',
+        holderId: onlineSite._id,
+        holderName: 'online',
         price,
       });
     }
@@ -786,6 +819,13 @@ async function handleUpdateProductPrice(req, res) {
     logger.error('Error updating product quantity', { error: err?.message || String(err) });
     res.status(500).json({ message: 'Server error', error: err.message });
   }
+}
+
+async function handleSession(req, res) {
+  return res.status(200).json({
+    success: true,
+    user: req.user,
+  });
 }
 
 async function handleGetHumanChallenge(req, res) {
@@ -1003,26 +1043,37 @@ async function handleToggleProductAvailability(req, res) {
 
 async function handleUpsertLocationPrice(req, res) {
   const { id } = req.params;
-  const { siteId, siteName, price } = req.body;
+  const { siteId, siteName, holderType = 'site', holderId = '', holderName = '', price } = req.body;
   try {
     const product = await Product.findById(id);
     if (!product) return res.status(404).json({ message: 'Product not found' });
+    const normalizedType = normalizeEntityType(holderType) || 'site';
+    const effectiveHolderId = holderId || siteId;
+    const effectiveHolderName = String(holderName || siteName || '').trim();
+    if (!effectiveHolderId || !effectiveHolderName) return res.status(400).json({ message: 'Holder is required' });
 
     const existingIndex = product.locationPrices.findIndex(
-      (lp) => String(lp.siteId) === String(siteId)
+      (lp) => (normalizeEntityType(lp.holderType) || 'site') === normalizedType && String(lp.holderId || lp.siteId) === String(effectiveHolderId)
     );
     if (existingIndex >= 0) {
       product.locationPrices[existingIndex].price = Number(price);
-      product.locationPrices[existingIndex].siteName = siteName;
+      product.locationPrices[existingIndex].siteName = normalizedType === 'site' || normalizedType === 'online' ? effectiveHolderName : '';
+      product.locationPrices[existingIndex].siteId = normalizedType === 'site' || normalizedType === 'online' ? effectiveHolderId : null;
+      product.locationPrices[existingIndex].holderType = normalizedType;
+      product.locationPrices[existingIndex].holderId = effectiveHolderId;
+      product.locationPrices[existingIndex].holderName = effectiveHolderName;
     } else {
       product.locationPrices.push({
-        siteId,
-        siteName,
+        siteId: normalizedType === 'site' || normalizedType === 'online' ? effectiveHolderId : null,
+        siteName: normalizedType === 'site' || normalizedType === 'online' ? effectiveHolderName : '',
+        holderType: normalizedType,
+        holderId: effectiveHolderId,
+        holderName: effectiveHolderName,
         price: Number(price),
       });
     }
 
-    if (siteName?.toLowerCase() === 'online') product.price = Number(price);
+    if (effectiveHolderName?.toLowerCase() === 'online') product.price = Number(price);
     await product.save();
     return res.status(200).json({ success: true, product });
   } catch (err) {
@@ -1032,11 +1083,16 @@ async function handleUpsertLocationPrice(req, res) {
 
 async function handleRemoveLocationPrice(req, res) {
   const { id } = req.params;
-  const { siteId } = req.body;
+  const { siteId, holderType = 'site', holderId = '' } = req.body;
   try {
     const product = await Product.findById(id);
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    product.locationPrices = product.locationPrices.filter((lp) => String(lp.siteId) !== String(siteId));
+    const normalizedType = normalizeEntityType(holderType) || 'site';
+    const effectiveHolderId = holderId || siteId;
+    product.locationPrices = product.locationPrices.filter((lp) => !(
+      (normalizeEntityType(lp.holderType) || 'site') === normalizedType &&
+      String(lp.holderId || lp.siteId) === String(effectiveHolderId)
+    ));
     await product.save();
     return res.status(200).json({ success: true, product });
   } catch (err) {
@@ -1083,11 +1139,31 @@ async function handleGetProductSites(req, res) {
   try {
     await ensureOnlineSite();
     let sites = await Site.find({ isActive: true }).sort({ name: 1 });
+    let warehouses = await Warehouse.find({ isActive: true }).sort({ name: 1 });
     if (req.user.role !== 'admin') {
       const allowedSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
       sites = sites.filter((s) => allowedSet.has(String(s._id)));
+      warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
     }
-    return res.status(200).json(sites);
+    return res.status(200).json([
+      ...sites.map((s) => ({
+        _id: `site:${s._id}`,
+        holderType: 'site',
+        holderId: s._id,
+        name: s.name,
+        label: `Sale Point / Site - ${s.name}`,
+        isActive: s.isActive,
+      })),
+      ...warehouses.map((w) => ({
+        _id: `warehouse:${w._id}`,
+        holderType: 'warehouse',
+        holderId: w._id,
+        name: w.name,
+        label: `Warehouse - ${w.name}`,
+        isActive: w.isActive,
+      })),
+    ]);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1320,30 +1396,63 @@ async function handleGetAssignedSites(req, res) {
   }
 }
 
+async function handleGetSaleHolders(req, res) {
+  try {
+    await ensureOnlineSite();
+    let sites = await Site.find({ isActive: true }).sort({ name: 1 });
+    let warehouses = await Warehouse.find({ isActive: true }).sort({ name: 1 });
+    if (req.user.role !== 'admin') {
+      const siteSet = new Set((req.user.siteAccess || []).map(String));
+      const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+      sites = sites.filter((s) => siteSet.has(String(s._id)));
+      warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
+    }
+    const rows = [
+      ...sites.map((s) => ({
+        _id: `site:${s._id}`,
+        holderType: 'site',
+        holderId: s._id,
+        name: s.name,
+        label: `Sale Point / Site - ${s.name}`,
+        contactNumber: s.contactNumber || '',
+      })),
+      ...warehouses.map((w) => ({
+        _id: `warehouse:${w._id}`,
+        holderType: 'warehouse',
+        holderId: w._id,
+        name: w.name,
+        label: `Warehouse - ${w.name}`,
+      })),
+    ];
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetSiteStock(req, res) {
   try {
-    const { siteId } = req.query;
-    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-    }
-    const site = await Site.findById(siteId).select('name');
-    if (!site) return res.status(404).json({ message: 'Site not found' });
+    const { siteId, holderType = 'site', holderId = '' } = req.query;
+    const resolvedHolderType = normalizeEntityType(holderType || 'site') || 'site';
+    const resolvedHolderId = holderId || siteId;
+    if (!resolvedHolderId) return res.status(400).json({ message: 'holderId is required' });
+    const holder = await resolveEntity(resolvedHolderType, resolvedHolderId, { allowOnlineName: true });
+    if (!holder) return res.status(404).json({ message: 'Holder not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
     const products = await Product.find({ isActive: { $ne: false } }).sort({ name: 1 });
-    const filtered = products.filter((p) => productHasSiteAssignment(p, siteId, site.name));
+    const filtered = products.filter((p) => productHasHolderAssignment(p, holder.type, holder.id, holder.name));
     const mapped = await Promise.all(
       filtered.map(async (p) => {
-        const qty = await getSiteProductAvailableQty(siteId, p._id);
+        const qty = await getHolderProductAvailableQty(holder.type, holder.id, p._id);
         const obj = p.toObject ? p.toObject() : p;
         return {
           ...obj,
-          price: getProductSitePrice(p, siteId, p.price),
+          price: getProductHolderPrice(p, holder.type, holder.id, p.price),
           quantity: qty,
         };
       })
     );
-    return res.status(200).json(mapped);
+    return res.status(200).json(mapped.filter((p) => holder.type === 'site' || Number(p.quantity || 0) > 0));
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -1351,11 +1460,12 @@ async function handleGetSiteStock(req, res) {
 
 async function handleCreateSalePointEntry(req, res) {
   try {
-    const { siteId, productId, quantity, discountAmount = 0, priceIncreaseAmount = 0, date, paymentMethodId = '' } = req.body;
+    const { siteId, holderType = 'site', holderId = '', productId, quantity, discountAmount = 0, priceIncreaseAmount = 0, date, paymentMethodId = '' } = req.body;
     const qty = Number(quantity);
     const discount = Number(discountAmount || 0);
     const priceIncrease = Number(priceIncreaseAmount || 0);
-    if (!siteId || !productId || Number.isNaN(qty) || qty <= 0) {
+    const holder = await resolveEntity(holderType || 'site', holderId || siteId, { allowOnlineName: true });
+    if (!holder || !productId || Number.isNaN(qty) || qty <= 0) {
       return res.status(400).json({ message: 'Invalid sale entry data' });
     }
     if (Number.isNaN(discount) || discount < 0) {
@@ -1364,24 +1474,19 @@ async function handleCreateSalePointEntry(req, res) {
     if (Number.isNaN(priceIncrease) || priceIncrease < 0) {
       return res.status(400).json({ message: 'Invalid price increase amount' });
     }
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-    }
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
 
-    const site = await Site.findById(siteId);
-    if (!site) return res.status(404).json({ message: 'Site not found' });
     const product = await Product.findById(productId);
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    if (!productHasSiteAssignment(product, siteId, site.name)) {
-      return res.status(400).json({ message: 'Selected product does not belong to this site' });
+    if (!productHasHolderAssignment(product, holder.type, holder.id, holder.name)) {
+      return res.status(400).json({ message: 'Selected product is not assigned to this holder' });
     }
-    const availableQty = await getSiteProductAvailableQty(siteId, product._id);
+    const availableQty = await getHolderProductAvailableQty(holder.type, holder.id, product._id);
     if (availableQty < qty) {
       return res.status(400).json({ message: 'Insufficient stock available' });
     }
 
-    const unitPrice = getProductSitePrice(product, siteId, product.price);
+    const unitPrice = getProductHolderPrice(product, holder.type, holder.id, product.price);
     const grossAmount = unitPrice * qty;
     const netAmount = Math.max(0, grossAmount + priceIncrease - discount);
     let paymentMethod = { id: null, name: 'Cash Payment', code: 'cash_payment' };
@@ -1391,11 +1496,14 @@ async function handleCreateSalePointEntry(req, res) {
       paymentMethod = { id: method._id, name: method.name, code: method.code || '' };
     }
 
-    await consumeSiteProductLots(siteId, product._id, qty);
+    await consumeHolderProductLots(holder.type, holder.id, product._id, qty);
 
     const entry = await SalePointEntry.create({
-      siteId: site._id,
-      siteName: site.name,
+      siteId: holder.type === 'site' || holder.type === 'online' ? holder.id : null,
+      siteName: holder.name,
+      holderType: holder.type,
+      holderId: holder.id,
+      holderName: holder.name,
       productId: product._id,
       productName: product.name,
       date: date ? new Date(date) : new Date(),
@@ -1420,16 +1528,12 @@ async function handleCreateSalePointEntry(req, res) {
 
 async function handleCreateSaleCheckout(req, res) {
   try {
-    const { siteId, date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '', paymentMethodId = '' } = req.body;
-    if (!siteId || !Array.isArray(items) || items.length === 0) {
+    const { siteId, holderType = 'site', holderId = '', date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '', paymentMethodId = '' } = req.body;
+    const holder = await resolveEntity(holderType || 'site', holderId || siteId, { allowOnlineName: true });
+    if (!holder || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Invalid sale checkout data' });
     }
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-    }
-    const site = await Site.findById(siteId);
-    if (!site) return res.status(404).json({ message: 'Site not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
 
     const normalizedItems = items.map((it) => ({
       productId: it.productId,
@@ -1472,15 +1576,15 @@ async function handleCreateSaleCheckout(req, res) {
       }
       const product = await Product.findById(it.productId);
       if (!product) return res.status(404).json({ message: 'Product not found' });
-      if (!productHasSiteAssignment(product, siteId, site.name)) {
-        return res.status(400).json({ message: `Product "${product.name}" does not belong to selected site` });
+      if (!productHasHolderAssignment(product, holder.type, holder.id, holder.name)) {
+        return res.status(400).json({ message: `Product "${product.name}" is not assigned to selected holder` });
       }
       if (it.isGift) {
         const source = await GiftSource.findById(it.giftSourceId);
         if (!source || !source.isActive) return res.status(400).json({ message: 'Active gifting source is required for gift items' });
         it.giftSourceName = source.name;
       }
-      const availableQty = await getSiteProductAvailableQty(siteId, product._id);
+      const availableQty = await getHolderProductAvailableQty(holder.type, holder.id, product._id);
       if (availableQty < it.quantity) {
         return res.status(400).json({ message: `Insufficient stock for "${product.name}"` });
       }
@@ -1493,19 +1597,22 @@ async function handleCreateSaleCheckout(req, res) {
     let netTotal = 0;
     for (const it of normalizedItems) {
       const product = await Product.findById(it.productId);
-      const unitPrice = getProductSitePrice(product, siteId, product.price);
+      const unitPrice = getProductHolderPrice(product, holder.type, holder.id, product.price);
       const grossAmount = it.isGift ? 0 : unitPrice * it.quantity;
       const linePriceIncrease = it.isGift ? 0 : it.priceIncreaseAmount;
       const lineDiscount = it.isGift ? 0 : it.discountAmount;
       const receivableAmount = it.isPayLater ? Math.max(0, grossAmount + linePriceIncrease - lineDiscount) : 0;
       const netAmount = it.isGift || it.isPayLater ? 0 : Math.max(0, grossAmount + linePriceIncrease - lineDiscount);
 
-      await consumeSiteProductLots(siteId, product._id, it.quantity);
+      await consumeHolderProductLots(holder.type, holder.id, product._id, it.quantity);
 
       const entry = await SalePointEntry.create({
         entryType: it.isGift ? 'gift' : it.isPayLater ? 'pay_later' : 'sale',
-        siteId: site._id,
-        siteName: site.name,
+        siteId: holder.type === 'site' || holder.type === 'online' ? holder.id : null,
+        siteName: holder.name,
+        holderType: holder.type,
+        holderId: holder.id,
+        holderName: holder.name,
         productId: product._id,
         productName: product.name,
         date: date ? new Date(date) : new Date(),
@@ -1543,16 +1650,12 @@ async function handleCreateSaleCheckout(req, res) {
 
 async function handleCreateSaleReturn(req, res) {
   try {
-    const { siteId, date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '' } = req.body;
-    if (!siteId || !Array.isArray(items) || items.length === 0) {
+    const { siteId, holderType = 'site', holderId = '', date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '' } = req.body;
+    const holder = await resolveEntity(holderType || 'site', holderId || siteId, { allowOnlineName: true });
+    if (!holder || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Invalid return data' });
     }
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-    }
-    const site = await Site.findById(siteId);
-    if (!site) return res.status(404).json({ message: 'Site not found' });
+    if (!userCanAccessEntity(req, holder.type, holder.id)) return res.status(403).json({ message: 'Holder access denied' });
 
     const createdEntries = [];
     for (const raw of items) {
@@ -1563,21 +1666,24 @@ async function handleCreateSaleReturn(req, res) {
       }
       const product = await Product.findById(raw.productId);
       if (!product) return res.status(404).json({ message: 'Product not found' });
-      if (!productHasSiteAssignment(product, siteId, site.name)) {
-        return res.status(400).json({ message: `Product "${product.name}" does not belong to selected site` });
+      if (!productHasHolderAssignment(product, holder.type, holder.id, holder.name)) {
+        return res.status(400).json({ message: `Product "${product.name}" is not assigned to selected holder` });
       }
 
-      await addSiteProductReturnLot(site._id, site.name, product, quantity, quantity > 0 ? returnAmount / quantity : 0);
+      await addHolderProductReturnLot(holder.type, holder.id, holder.name, product, quantity, quantity > 0 ? returnAmount / quantity : 0);
 
       const entry = await SalePointEntry.create({
         entryType: 'return',
-        siteId: site._id,
-        siteName: site.name,
+        siteId: holder.type === 'site' || holder.type === 'online' ? holder.id : null,
+        siteName: holder.name,
+        holderType: holder.type,
+        holderId: holder.id,
+        holderName: holder.name,
         productId: product._id,
         productName: product.name,
         date: date ? new Date(date) : new Date(),
         quantity,
-        unitPrice: quantity > 0 ? returnAmount / quantity : getProductSitePrice(product, siteId, product.price),
+        unitPrice: quantity > 0 ? returnAmount / quantity : getProductHolderPrice(product, holder.type, holder.id, product.price),
         grossAmount: returnAmount,
         discountAmount: 0,
         netAmount: -Math.abs(returnAmount),
@@ -1598,9 +1704,24 @@ async function handleCreateSaleReturn(req, res) {
 
 async function handleGetSalePointEntries(req, res) {
   try {
-    const { siteId, date, dateFrom, dateTo, entryType = '' } = req.query;
+    const { siteId, holderType = '', holderId = '', date, dateFrom, dateTo, entryType = '' } = req.query;
     const query = {};
-    if (siteId) query.siteId = siteId;
+    const normalizedHolderType = normalizeEntityType(holderType);
+    const effectiveHolderId = holderId || siteId;
+    if (normalizedHolderType && effectiveHolderId) {
+      if (normalizedHolderType === 'site') {
+        query.$or = [
+          { holderType: 'site', holderId: effectiveHolderId },
+          { siteId: effectiveHolderId, holderType: { $exists: false } },
+          { siteId: effectiveHolderId, holderType: 'site' },
+        ];
+      } else {
+        query.holderType = normalizedHolderType;
+        query.holderId = effectiveHolderId;
+      }
+    } else if (siteId) {
+      query.siteId = siteId;
+    }
     if (['sale', 'return', 'gift', 'pay_later'].includes(String(entryType))) query.entryType = entryType;
     if (dateFrom || dateTo) {
       const range = {};
@@ -1622,9 +1743,20 @@ async function handleGetSalePointEntries(req, res) {
       query.date = { $gte: start, $lt: end };
     }
     if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (siteId && !allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
-      if (!siteId) query.siteId = { $in: Array.from(allowedSet) };
+      if (normalizedHolderType && effectiveHolderId) {
+        if (!userCanAccessEntity(req, normalizedHolderType, effectiveHolderId)) return res.status(403).json({ message: 'Holder access denied' });
+      } else if (siteId) {
+        const allowedSet = new Set((req.user.siteAccess || []).map(String));
+        if (!allowedSet.has(String(siteId))) return res.status(403).json({ message: 'Site access denied' });
+      } else {
+        const siteIds = Array.from(new Set((req.user.siteAccess || []).map(String)));
+        const warehouseIds = Array.from(new Set((req.user.warehouseAccess || []).map(String)));
+        query.$or = [
+          { siteId: { $in: siteIds } },
+          { holderType: 'site', holderId: { $in: siteIds } },
+          { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+        ];
+      }
     }
 
     const entries = await SalePointEntry.find(query).sort({ createdAt: -1 }).limit(200);
@@ -1707,10 +1839,9 @@ async function handleDeleteSalePointEntry(req, res) {
 
     const row = await SalePointEntry.findById(req.params.id);
     if (!row) return res.status(404).json({ message: 'Sale transaction not found' });
-    if (req.user.role !== 'admin') {
-      const allowedSet = new Set((req.user.siteAccess || []).map(String));
-      if (!allowedSet.has(String(row.siteId))) return res.status(403).json({ message: 'Site access denied' });
-    }
+    const rowHolderType = normalizeEntityType(row.holderType) || 'site';
+    const rowHolderId = row.holderId || row.siteId;
+    if (!userCanAccessEntity(req, rowHolderType, rowHolderId)) return res.status(403).json({ message: 'Holder access denied' });
 
     const product = await Product.findById(row.productId);
     const productRef = product || { _id: row.productId, name: row.productName };
@@ -1718,16 +1849,16 @@ async function handleDeleteSalePointEntry(req, res) {
     if (qty <= 0) return res.status(400).json({ message: 'Invalid transaction quantity' });
 
     if (row.entryType === 'return') {
-      const consumed = await consumeSiteProductLots(row.siteId, row.productId, qty);
+      const consumed = await consumeHolderProductLots(rowHolderType, rowHolderId, row.productId, qty);
       if (!consumed.ok) {
         return res.status(400).json({ message: `Unable to delete return. Only ${consumed.available} stock available to reverse.` });
       }
       for (const lot of consumed.touched) {
         await createStockLedgerRow({
           movementType: 'out',
-          holderType: 'site',
-          holderId: row.siteId,
-          holderName: row.siteName,
+          holderType: rowHolderType,
+          holderId: rowHolderId,
+          holderName: row.holderName || row.siteName,
           productId: row.productId,
           productName: row.productName,
           lotId: lot.lotId,
@@ -1742,12 +1873,12 @@ async function handleDeleteSalePointEntry(req, res) {
         });
       }
     } else {
-      const lot = await addSiteProductReturnLot(row.siteId, row.siteName, productRef, qty, Number(row.unitPrice || 0));
+      const lot = await addHolderProductReturnLot(rowHolderType, rowHolderId, row.holderName || row.siteName, productRef, qty, Number(row.unitPrice || 0));
       await createStockLedgerRow({
         movementType: 'in',
-        holderType: 'site',
-        holderId: row.siteId,
-        holderName: row.siteName,
+        holderType: rowHolderType,
+        holderId: rowHolderId,
+        holderName: row.holderName || row.siteName,
         productId: row.productId,
         productName: row.productName,
         lotId: lot._id,
@@ -2880,15 +3011,35 @@ async function handleGetSalesDashboardSummary(req, res) {
           { entryType: 'pay_later', paymentStatus: 'paid', ...(range ? { paymentReceivedAt: range } : {}) },
         ],
       };
-      if (allowedSiteIds) match.siteId = { $in: allowedSiteIds };
+      if (req.user.role !== 'admin') {
+        const siteIds = (req.user.siteAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        const warehouseIds = (req.user.warehouseAccess || []).map((id) => new mongoose.Types.ObjectId(String(id)));
+        match.$and = [{
+          $or: [
+            { siteId: { $in: siteIds } },
+            { holderType: 'site', holderId: { $in: siteIds } },
+            { holderType: 'online', holderId: { $in: siteIds } },
+            { holderType: 'warehouse', holderId: { $in: warehouseIds } },
+          ],
+        }];
+      }
       return match;
     };
 
     const salesGroupPipeline = (range) => ([
       { $match: baseSiteMatch(range) },
       {
+        $addFields: {
+          effectiveHolderType: { $ifNull: ['$holderType', 'site'] },
+          effectiveHolderId: { $ifNull: ['$holderId', '$siteId'] },
+        },
+      },
+      {
         $group: {
-          _id: '$siteId',
+          _id: {
+            holderType: '$effectiveHolderType',
+            holderId: '$effectiveHolderId',
+          },
           salesAmount: {
             $sum: {
               $cond: [
@@ -3094,10 +3245,15 @@ async function handleGetSalesDashboardSummary(req, res) {
     };
     const toDualMap = (rows) => {
       const m = new Map();
-      rows.forEach((r) => m.set(String(r._id || '').trim(), {
+      rows.forEach((r) => {
+        const type = String(r?._id?.holderType || '').trim();
+        const id = String(r?._id?.holderId || '').trim();
+        if (!type || !id) return;
+        m.set(`${type}:${id}`, {
         salesAmount: Number(r.salesAmount || 0),
         salesQty: Number(r.salesQty || 0),
-      }));
+        });
+      });
       return m;
     };
 
@@ -3113,19 +3269,20 @@ async function handleGetSalesDashboardSummary(req, res) {
 
     if (allowOnline && onlineSite?._id) {
       const onlineSiteId = String(onlineSite._id);
-      const existingOverall = salesOverallMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
-      const existingDaily = salesDailyMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
-      const existingRange = salesRangeMap.get(onlineSiteId) || { salesAmount: 0, salesQty: 0 };
-      salesOverallMap.set(onlineSiteId, {
+      const onlineKey = `site:${onlineSiteId}`;
+      const existingOverall = salesOverallMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
+      const existingDaily = salesDailyMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
+      const existingRange = salesRangeMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
+      salesOverallMap.set(onlineKey, {
         salesAmount: Number(existingOverall.salesAmount || 0) + Number(onlineOverall.salesAmount || 0),
         salesQty: Number(existingOverall.salesQty || 0) + Number(onlineOverall.salesQty || 0),
       });
-      salesDailyMap.set(onlineSiteId, {
+      salesDailyMap.set(onlineKey, {
         salesAmount: Number(existingDaily.salesAmount || 0) + Number(onlineDaily.salesAmount || 0),
         salesQty: Number(existingDaily.salesQty || 0) + Number(onlineDaily.salesQty || 0),
       });
       if (selectedRange) {
-        salesRangeMap.set(onlineSiteId, {
+        salesRangeMap.set(onlineKey, {
           salesAmount: Number(existingRange.salesAmount || 0) + Number(onlineRange.salesAmount || 0),
           salesQty: Number(existingRange.salesQty || 0) + Number(onlineRange.salesQty || 0),
         });
@@ -3139,10 +3296,9 @@ async function handleGetSalesDashboardSummary(req, res) {
       .map((holderKey) => {
         const [holderType, siteId] = String(holderKey).split(':');
         const siteName = holderNameMap.get(holderKey) || siteIdToName.get(siteId) || 'Unknown Site';
-        const isSiteLike = holderType === 'site' || holderType === 'online';
-        const ovSales = isSiteLike ? (salesOverallMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
-        const dySales = isSiteLike ? (salesDailyMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
-        const rgSales = isSiteLike ? (salesRangeMap.get(siteId) || { salesAmount: 0, salesQty: 0 }) : { salesAmount: 0, salesQty: 0 };
+        const ovSales = salesOverallMap.get(holderKey) || { salesAmount: 0, salesQty: 0 };
+        const dySales = salesDailyMap.get(holderKey) || { salesAmount: 0, salesQty: 0 };
+        const rgSales = salesRangeMap.get(holderKey) || { salesAmount: 0, salesQty: 0 };
         const ovExp = Number(expenseOverallMap.get(holderKey) || 0);
         const dyExp = Number(expenseDailyMap.get(holderKey) || 0);
         const rgExp = Number(expenseRangeMap.get(holderKey) || 0);
@@ -3707,17 +3863,26 @@ function buildCompanyDepositAccessMatch(req) {
 async function calculateCashPositionForHolder(holder) {
   const holderId = new mongoose.Types.ObjectId(String(holder.id));
   const holderMatch = { holderType: holder.type, holderId };
-  const isSiteLike = holder.type === 'site' || holder.type === 'online';
-  const saleMatch = isSiteLike
-    ? {
-        siteId: holderId,
+  const saleMatch = {
+    $and: [
+      {
         $or: [
           { entryType: { $in: ['sale', 'return'] } },
           { entryType: { $exists: false } },
           { entryType: 'pay_later', paymentStatus: 'paid' },
         ],
-      }
-    : { _id: null };
+      },
+      holder.type === 'site'
+        ? {
+            $or: [
+              { siteId: holderId, holderType: { $exists: false } },
+              { siteId: holderId, holderType: 'site' },
+              { holderType: 'site', holderId },
+            ],
+          }
+        : { holderType: holder.type, holderId },
+    ],
+  };
 
   const [salesAgg, expensesAgg, depositsAgg] = await Promise.all([
     SalePointEntry.aggregate([
@@ -8333,6 +8498,7 @@ module.exports = {
     handleRegister,
     handleLogin,
     handleLogout,
+    handleSession,
     handleGetHumanChallenge,
     handleForgotPassword,
     handleResetPassword,
@@ -8363,6 +8529,7 @@ module.exports = {
     handleGetStockHolders,
     handleGetStockTransferHolders,
     handleGetAssignedSites,
+    handleGetSaleHolders,
     handleGetExpenseHolders,
     handleGetSiteStock,
     handleCreateSalePointEntry,
