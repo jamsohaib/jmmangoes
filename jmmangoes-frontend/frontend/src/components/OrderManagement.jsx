@@ -97,6 +97,22 @@ const OrderManagement = () => {
       setCouriers([]);
     }
   };
+
+  const deleteTestOrder = async (order) => {
+    if (!isSuperAdmin) return toast.warn('Only super admin can delete orders.');
+    const ok = window.confirm(
+      `Delete test order ${order.orderNumber}?\n\nCustomer: ${order.customer?.name || '-'}\nAmount: PKR ${amount(order)}\n\nThis removes it from order management and dashboards. If online dispatch stock was deducted, it will be restored.`
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/orders/${order._id}`);
+      toast.success('Order deleted.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to delete order.');
+    }
+  };
+
   useEffect(() => { if (canView) load().catch(console.error); }, [canView]);
   useEffect(() => {
     if (!canView) return;
@@ -749,6 +765,9 @@ const OrderManagement = () => {
           ) : (
             <button onClick={() => sendFeedbackReminder(o._id)} className="text-blue-700 hover:underline">Send Feedback Reminder</button>
           )}
+          {isSuperAdmin ? (
+            <button onClick={() => deleteTestOrder(o)} className="text-red-700 hover:underline">Delete Test Order</button>
+          ) : null}
         </div>
       ))}
       {renderTable('returned', 'Returned Orders', grouped.returned, (o) => (

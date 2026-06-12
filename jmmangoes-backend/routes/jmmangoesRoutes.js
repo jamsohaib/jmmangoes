@@ -228,6 +228,7 @@ jmm_route.put('/orders/:id/returned/mark-wasted', authenticateUser, authorizePag
 jmm_route.put('/orders/:id/returned/return-to-store', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleResolveReturnedToStore);
 jmm_route.post('/orders/:id/returned/redirect', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRedirectReturnedOrder);
 jmm_route.put('/orders/:id/verify-payment', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleVerifyOrderPayment);
+jmm_route.delete('/orders/:id', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleDeleteOrder);
 jmm_route.put('/orders/:id/feedback-reminder', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleSendFeedbackReminder);
 jmm_route.get('/orders/feedback-report', authenticateUser, authorizePage('feedbackReport', 'view'), jmm_controller.handleFeedbackReport);
 jmm_route.get('/expenses/sites', authenticateUser, authorizePage('addExpense', 'view'), jmm_controller.handleGetAssignedSites);

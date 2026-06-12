@@ -29,6 +29,7 @@ const salePaymentMethodLabel = (entry) => {
 
 const SalePoint = () => {
   const user = useAuthStore((state) => state.user);
+  const isSuperAdmin = user?.id === 'super-admin' || String(user?.username || '').toLowerCase() === 'admin';
   const canView = user?.role === 'admin' || user?.permissions?.salePoint?.view;
   const canManage = user?.role === 'admin' || user?.permissions?.salePoint?.manage;
 
@@ -369,7 +370,7 @@ const SalePoint = () => {
   };
 
   const deleteTransaction = async (row) => {
-    if (!canManage) return toast.warn('No manage permission.');
+    if (!isSuperAdmin) return toast.warn('Only super admin can delete sale transactions.');
     const type = saleTypeLabel(row.entryType);
     const ok = window.confirm(
       `Delete this ${type} transaction?\n\nProduct: ${row.productName || '-'}\nQuantity: ${row.quantity || 0}\nNet Amount: PKR ${Number(row.netAmount || 0).toFixed(2)}\n\nStock will be reversed and reports will update after deletion.`
@@ -407,20 +408,19 @@ const SalePoint = () => {
     { name: 'Payment Method', selector: (row) => salePaymentMethodLabel(row), sortable: true, wrap: true },
     { name: 'Payment Status', selector: (row) => row.paymentStatus || '-', sortable: true, wrap: true },
     { name: 'Net', selector: (row) => Number(row.netAmount || 0), sortable: true, right: true, cell: (row) => `PKR ${Number(row.netAmount || 0).toFixed(2)}` },
-    {
+    ...(isSuperAdmin ? [{
       name: 'Action',
       minWidth: '120px',
       cell: (row) => (
         <button
-          disabled={!canManage}
           onClick={() => deleteTransaction(row)}
           className="bg-red-600 disabled:bg-gray-400 text-white px-3 py-1 rounded text-xs"
         >
           Delete
         </button>
       ),
-    },
-  ]), [canManage, siteId, dateFrom, dateTo]);
+    }] : []),
+  ]), [isSuperAdmin, siteId, dateFrom, dateTo]);
 
   const downloadCsv = (sourceRows = entries, suffix = 'all') => {
     const headers = ['Date & Time', 'Type', 'Customer Name', 'WhatsApp', 'Email', 'Product', 'Qty', 'Gross', 'Price Increase', 'Discount', 'Receivable', 'Payment Method', 'Payment Status', 'Net'];

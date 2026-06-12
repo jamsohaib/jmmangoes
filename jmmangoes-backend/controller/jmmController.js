@@ -1702,6 +1702,9 @@ async function handleGetPayLaterEntries(req, res) {
 
 async function handleDeleteSalePointEntry(req, res) {
   try {
+    const isSuperAdmin = req.user?.id === 'super-admin' || String(req.user?.username || '').toLowerCase() === 'admin';
+    if (!isSuperAdmin) return res.status(403).json({ message: 'Only super admin can delete sale transactions' });
+
     const row = await SalePointEntry.findById(req.params.id);
     if (!row) return res.status(404).json({ message: 'Sale transaction not found' });
     if (req.user.role !== 'admin') {
@@ -4553,6 +4556,83 @@ async function handleGetOrders(req, res) {
   try {
     const rows = await Order.find({}).sort({ createdAt: -1 });
     return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteOrder(req, res) {
+  try {
+    const isSuperAdmin = req.user?.id === 'super-admin' || String(req.user?.username || '').toLowerCase() === 'admin';
+    if (!isSuperAdmin) return res.status(403).json({ message: 'Only super admin can delete orders' });
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const restoredLots = [];
+    if (order?.stockReservation?.onlineDispatchDeductedAt) {
+      const onlineSite = await ensureOnlineSite();
+      for (const item of (order.stockReservation.items || [])) {
+        const qty = Number(item.reservedQty || item.requestedQty || 0);
+        if (!item.productId || qty <= 0) continue;
+        const product = await Product.findById(item.productId).select('name');
+        const productName = product?.name || item.productName || 'Product';
+        const lotCode = await makeSimpleLotCode(productName, qty);
+        const lot = await StockLot.create({
+          holderType: 'online',
+          holderId: onlineSite._id,
+          holderName: 'online',
+          productId: item.productId,
+          productName,
+          lotCode,
+          quantityInitial: qty,
+          quantityAvailable: qty,
+          unitCost: 0,
+          sourceRefType: 'order_delete_restore',
+          sourceRefId: order._id,
+          notes: `Deleted order ${order.orderNumber} stock restoration`,
+        });
+        restoredLots.push(lot.lotCode);
+        await createStockLedgerRow({
+          movementType: 'in',
+          holderType: 'online',
+          holderId: onlineSite._id,
+          holderName: 'online',
+          productId: item.productId,
+          productName,
+          lotId: lot._id,
+          lotCode: lot.lotCode,
+          quantity: qty,
+          unitCost: 0,
+          referenceType: 'order_delete_restore',
+          referenceId: order._id,
+          remarks: `Deleted order ${order.orderNumber} and restored dispatched online stock`,
+          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+          createdByName: req.user.name || req.user.username || '',
+        });
+      }
+    }
+
+    if (order?.stockRequest?.requestId) {
+      await OrderStockRequest.deleteOne({ _id: order.stockRequest.requestId });
+    }
+    await Order.deleteOne({ _id: order._id });
+    await recordAction(req, {
+      action: 'delete_order',
+      module: 'Orders',
+      entityType: 'Order',
+      entityId: order._id,
+      entityLabel: order.orderNumber,
+      details: {
+        orderNumber: order.orderNumber,
+        status: order.status,
+        customer: order.customer?.name || '',
+        finalAmount: order.finalAmount,
+        restoredLots,
+      },
+    });
+
+    return res.status(200).json({ success: true, message: 'Order deleted successfully.', restoredLots });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -8340,6 +8420,7 @@ module.exports = {
     handleUpdatePaymentMethod,
     handleDeletePaymentMethod,
     handleGetOrders,
+    handleDeleteOrder,
     handleGetOrderStockOptions,
     handleReserveOrderStock,
     handleCreateOrderStockRequest,
