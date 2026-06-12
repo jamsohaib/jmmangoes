@@ -2833,6 +2833,13 @@ async function handleGetSalesDashboardSummary(req, res) {
     };
 
     const selectedRange = makeRange(dateFrom, dateTo);
+    const salesExpenseStartDate = new Date(2026, 5, 9); // Sales-side live expense tracking started on 09-Jun-2026.
+    salesExpenseStartDate.setHours(0, 0, 0, 0);
+    const applySalesExpenseCutoff = (range) => {
+      const adjusted = { ...(range || {}) };
+      if (!adjusted.$gte || adjusted.$gte < salesExpenseStartDate) adjusted.$gte = salesExpenseStartDate;
+      return adjusted;
+    };
 
     let allowedSiteIds = null;
     let allowOnline = true;
@@ -2906,7 +2913,7 @@ async function handleGetSalesDashboardSummary(req, res) {
 
     const baseExpenseMatch = (range) => {
       const match = activeHolderAccessMatch();
-      if (range) match.date = range;
+      match.date = applySalesExpenseCutoff(range);
       return match;
     };
 
