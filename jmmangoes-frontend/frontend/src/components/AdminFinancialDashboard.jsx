@@ -76,6 +76,9 @@ const AdminFinancialDashboard = () => {
         <Card title="Company Deposits Accepted" value={money(selectedSummary?.companyCashDeposits?.accepted?.amount)} tone="blue" />
         <Card title="Company Deposits Pending Verification" value={money(selectedSummary?.companyCashDeposits?.pending?.amount)} tone="blue" />
         <Card title="Total Gifting Crates" value={`${Number(selectedSummary?.gifting?.quantity || 0)} qty`} tone="blue" />
+        <Card title="Total Payable Usher" value={money(selectedSummary?.usher?.totalPayable)} tone="red" />
+        <Card title="Usher Already Paid" value={money(selectedSummary?.usher?.paid)} tone="green" />
+        <Card title="Usher Remaining" value={money(selectedSummary?.usher?.remaining)} tone={Number(selectedSummary?.usher?.remaining || 0) > 0 ? 'red' : 'blue'} />
       </div>
 
       <div className="bg-white rounded shadow p-4 mb-4">
@@ -87,6 +90,7 @@ const AdminFinancialDashboard = () => {
           <div className="border rounded p-3"><span className="font-semibold">Accepted Company Deposits:</span> {money(selectedSummary?.companyCashDeposits?.accepted?.amount)} ({Number(selectedSummary?.companyCashDeposits?.accepted?.count || 0)} entries)</div>
           <div className="border rounded p-3"><span className="font-semibold">Pending Company Deposits:</span> {money(selectedSummary?.companyCashDeposits?.pending?.amount)} ({Number(selectedSummary?.companyCashDeposits?.pending?.count || 0)} entries)</div>
           <div className="border rounded p-3"><span className="font-semibold">Gifting Value:</span> {money(selectedSummary?.gifting?.value)} ({Number(selectedSummary?.gifting?.quantity || 0)} qty)</div>
+          <div className="border rounded p-3"><span className="font-semibold">Usher Yield Value:</span> {money(selectedSummary?.usher?.totalYieldValue)} ({Number(selectedSummary?.usher?.percentage || 5)}%)</div>
           <div className="border rounded p-3"><span className="font-semibold">Tree Production Logged:</span> {kg(selectedSummary?.treeProductionKg)}</div>
           <div className="border rounded p-3"><span className="font-semibold">Block Production Logged:</span> {kg(selectedSummary?.blockProductionKg)}</div>
           <div className="border rounded p-3 md:col-span-2">
@@ -121,6 +125,9 @@ const AdminFinancialDashboard = () => {
             { name: 'Accepted Deposits', selector: (row) => Number(row.summary?.companyCashDeposits?.accepted?.amount || 0), sortable: true, cell: (row) => money(row.summary?.companyCashDeposits?.accepted?.amount) },
             { name: 'Pending Deposits', selector: (row) => Number(row.summary?.companyCashDeposits?.pending?.amount || 0), sortable: true, cell: (row) => money(row.summary?.companyCashDeposits?.pending?.amount) },
             { name: 'Gift Qty', selector: (row) => Number(row.summary?.gifting?.quantity || 0), sortable: true, cell: (row) => `${Number(row.summary?.gifting?.quantity || 0)} qty` },
+            { name: 'Payable Usher', selector: (row) => Number(row.summary?.usher?.totalPayable || 0), sortable: true, cell: (row) => money(row.summary?.usher?.totalPayable) },
+            { name: 'Usher Paid', selector: (row) => Number(row.summary?.usher?.paid || 0), sortable: true, cell: (row) => money(row.summary?.usher?.paid) },
+            { name: 'Usher Remaining', selector: (row) => Number(row.summary?.usher?.remaining || 0), sortable: true, cell: (row) => money(row.summary?.usher?.remaining) },
             { name: 'Net', selector: (row) => Number(row.summary?.net || 0), sortable: true, cell: (row) => money(row.summary?.net) },
           ]}
           data={filteredRows}

@@ -59,6 +59,10 @@ const permissionGroups = [
       { key: 'financialYears', label: 'Manage Financial Years' },
       { key: 'farmHR', label: 'Farm HR' },
       { key: 'farmHRExpenses', label: 'Farm HR Expenses' },
+      { key: 'farmUsherManage', label: 'Farm Manage Usher' },
+      { key: 'farmUsherBeneficiaries', label: 'Farm Usher Beneficiaries' },
+      { key: 'farmUsherEntries', label: 'Farm Usher Entries' },
+      { key: 'farmUsherReport', label: 'Farm Usher Report' },
       { key: 'farmLogs', label: 'Farm Logs (Legacy)' },
     ],
   },
@@ -66,6 +70,13 @@ const permissionGroups = [
     title: 'Communications Tab',
     items: [
       { key: 'communications', label: 'Communications' },
+    ],
+  },
+  {
+    title: 'Owners Tab',
+    items: [
+      { key: 'ownerManagement', label: 'Manage Owners' },
+      { key: 'ownerShareReport', label: 'Owner Share Report' },
     ],
   },
 ];

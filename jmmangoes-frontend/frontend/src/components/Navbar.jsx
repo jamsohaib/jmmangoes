@@ -13,8 +13,20 @@ const Navbar = () => {
   const [adminOpen, setAdminOpen] = useState(false);
   const [salesOpen, setSalesOpen] = useState(false);
   const [farmOpen, setFarmOpen] = useState(false);
+  const [charityOpen, setCharityOpen] = useState(false);
+  const [ownersOpen, setOwnersOpen] = useState(false);
   const [communicationsOpen, setCommunicationsOpen] = useState(false);
   const cartCount = useCartStore((state) => state.totalItems());
+
+  const closeMenus = () => {
+    setMenuOpen(false);
+    setAdminOpen(false);
+    setSalesOpen(false);
+    setFarmOpen(false);
+    setCharityOpen(false);
+    setOwnersOpen(false);
+    setCommunicationsOpen(false);
+  };
 
   const isAdmin = user?.role === 'admin';
   const canView = (key) => {
@@ -81,8 +93,22 @@ const Navbar = () => {
     { to: '/farm-hr', label: 'HR', key: 'farmHR' },
     { to: '/farm-hr-expenses', label: 'HR Expenses', key: 'farmHRExpenses' },
   ];
+  const charityLinks = [
+    { to: '/farm-manage-usher', label: 'Manage Usher (Charity)', key: 'farmUsherManage' },
+    { to: '/farm-usher-beneficiaries', label: 'Usher Beneficiaries', key: 'farmUsherBeneficiaries' },
+    { to: '/farm-usher-entries', label: 'Add Usher Entries', key: 'farmUsherEntries' },
+    { to: '/farm-usher-report', label: 'Usher Report', key: 'farmUsherReport' },
+  ];
   const visibleFarmLinks = farmLinks.filter((link) => canView(link.key));
   const showFarmMenu = visibleFarmLinks.length > 0;
+  const visibleCharityLinks = charityLinks.filter((link) => canView(link.key));
+  const showCharityMenu = visibleCharityLinks.length > 0;
+  const ownerLinks = [
+    { to: '/owners/manage', label: 'Manage Owners', key: 'ownerManagement' },
+    { to: '/owners/share-report', label: 'Share Report', key: 'ownerShareReport' },
+  ];
+  const visibleOwnerLinks = ownerLinks.filter((link) => canView(link.key));
+  const showOwnersMenu = visibleOwnerLinks.length > 0;
   const communicationsLinks = [
     { to: '/communications/test-whatsapp', label: 'Test WhatsApp', key: 'communications' },
     { to: '/communications/whatsapp-logs', label: 'WhatsApp Logs', key: 'communications' },
@@ -98,11 +124,7 @@ const Navbar = () => {
     } finally {
       clearUser();
       navigate('/');
-      setMenuOpen(false);
-      setAdminOpen(false);
-      setSalesOpen(false);
-      setFarmOpen(false);
-      setCommunicationsOpen(false);
+      closeMenus();
     }
   };
 
@@ -110,18 +132,10 @@ const Navbar = () => {
     if (location.pathname === '/') {
       const section = document.getElementById(sectionId);
       if (section) section.scrollIntoView({ behavior: 'smooth' });
-      setMenuOpen(false);
-      setAdminOpen(false);
-      setSalesOpen(false);
-      setFarmOpen(false);
-      setCommunicationsOpen(false);
+      closeMenus();
     } else {
       navigate('/', { state: { scrollTo: sectionId } });
-      setMenuOpen(false);
-      setAdminOpen(false);
-      setSalesOpen(false);
-      setFarmOpen(false);
-      setCommunicationsOpen(false);
+      closeMenus();
     }
   };
 
@@ -136,14 +150,14 @@ const Navbar = () => {
   return (
     <nav className="bg-white shadow">
       <div className="w-full pl-0 pr-4 py-3 md:py-4 flex flex-wrap justify-between items-center">
-        <Link to="/" className="flex items-center ml-2 md:ml-3" onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }}>
+        <Link to="/" className="flex items-center ml-2 md:ml-3" onClick={closeMenus}>
           <img src="/images/JM_Mangoes_Logo.png?v=20260523" alt="JM Mangoes Logo" className="h-20 md:h-36 w-auto object-contain cursor-pointer" />
         </Link>
 
         <div className="md:hidden flex items-center gap-2">
           <Link
             to="/checkout"
-            onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }}
+            onClick={closeMenus}
             className="relative inline-flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
             aria-label="Open cart and checkout"
           >
@@ -162,6 +176,8 @@ const Navbar = () => {
               setAdminOpen(false);
               setSalesOpen(false);
               setFarmOpen(false);
+              setCharityOpen(false);
+              setOwnersOpen(false);
               setCommunicationsOpen(false);
             }}
             className="inline-flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
@@ -180,8 +196,8 @@ const Navbar = () => {
           <ul className="flex flex-col md:flex-row md:items-center gap-3 md:gap-6">
             <li><a href="#features" onClick={() => handleNavClick('features')} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Features</a></li>
             <li><a href="#pricing" onClick={() => handleNavClick('pricing')} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Pricing</a></li>
-            <li><Link to="/contact" onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Contact</Link></li>
-            <li><Link to="/checkout" onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Checkout</Link></li>
+            <li><Link to="/contact" onClick={closeMenus} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Contact</Link></li>
+            <li><Link to="/checkout" onClick={closeMenus} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Checkout</Link></li>
 
             {visibleAdminLinks.length > 0 && (
               <li className="relative group">
@@ -191,6 +207,8 @@ const Navbar = () => {
                     setAdminOpen((prev) => !prev);
                     setSalesOpen(false);
                     setFarmOpen(false);
+                    setCharityOpen(false);
+                    setOwnersOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -205,7 +223,7 @@ const Navbar = () => {
                 <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${adminOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
                   {visibleAdminLinks.map((link) => (
                     <li key={link.to}>
-                      <Link to={link.to} onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
                         <LinkIcon />{link.label}
                       </Link>
                     </li>
@@ -221,6 +239,8 @@ const Navbar = () => {
                     setSalesOpen((prev) => !prev);
                     setAdminOpen(false);
                     setFarmOpen(false);
+                    setCharityOpen(false);
+                    setOwnersOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -235,7 +255,7 @@ const Navbar = () => {
                 <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${salesOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
                   {visibleSalesLinks.map((link) => (
                     <li key={link.to}>
-                      <Link to={link.to} onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
                         <LinkIcon />{link.label}
                       </Link>
                     </li>
@@ -251,6 +271,8 @@ const Navbar = () => {
                     setFarmOpen((prev) => !prev);
                     setAdminOpen(false);
                     setSalesOpen(false);
+                    setCharityOpen(false);
+                    setOwnersOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -265,7 +287,71 @@ const Navbar = () => {
                 <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${farmOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
                   {visibleFarmLinks.map((link) => (
                     <li key={link.to}>
-                      <Link to={link.to} onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                        <LinkIcon />{link.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
+            {showCharityMenu && (
+              <li className="relative group">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCharityOpen((prev) => !prev);
+                    setAdminOpen(false);
+                    setSalesOpen(false);
+                    setFarmOpen(false);
+                    setOwnersOpen(false);
+                    setCommunicationsOpen(false);
+                  }}
+                  className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
+                >
+                  Charity
+                  <span className="inline-flex items-center" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                </button>
+                <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${charityOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
+                  {visibleCharityLinks.map((link) => (
+                    <li key={link.to}>
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                        <LinkIcon />{link.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
+            {showOwnersMenu && (
+              <li className="relative group">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOwnersOpen((prev) => !prev);
+                    setAdminOpen(false);
+                    setSalesOpen(false);
+                    setFarmOpen(false);
+                    setCharityOpen(false);
+                    setCommunicationsOpen(false);
+                  }}
+                  className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
+                >
+                  Owners
+                  <span className="inline-flex items-center" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                </button>
+                <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${ownersOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
+                  {visibleOwnerLinks.map((link) => (
+                    <li key={link.to}>
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
                         <LinkIcon />{link.label}
                       </Link>
                     </li>
@@ -282,6 +368,8 @@ const Navbar = () => {
                     setAdminOpen(false);
                     setSalesOpen(false);
                     setFarmOpen(false);
+                    setCharityOpen(false);
+                    setOwnersOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
                 >
@@ -295,7 +383,7 @@ const Navbar = () => {
                 <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${communicationsOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
                   {visibleCommunicationsLinks.map((link) => (
                     <li key={link.to}>
-                      <Link to={link.to} onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
                         <LinkIcon />{link.label}
                       </Link>
                     </li>
@@ -307,7 +395,7 @@ const Navbar = () => {
             {user ? (
               <li><a onClick={handleLogout} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Logout</a></li>
             ) : (
-              <li><Link to="/login" onClick={() => { setMenuOpen(false); setAdminOpen(false); setSalesOpen(false); setFarmOpen(false); setCommunicationsOpen(false); }} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Login</Link></li>
+              <li><Link to="/login" onClick={closeMenus} className="text-green-600 font-bold hover:text-yellow-400 cursor-pointer">Login</Link></li>
             )}
           </ul>
 

@@ -39,6 +39,9 @@ const FarmExpenseEntry = require('../model/FarmExpenseEntrySchema');
 const FinancialYear = require('../model/FinancialYearSchema');
 const FarmHRStaff = require('../model/FarmHRStaffSchema');
 const FarmHRPayment = require('../model/FarmHRPaymentSchema');
+const FarmUsherSetting = require('../model/FarmUsherSettingSchema');
+const FarmUsherEntry = require('../model/FarmUsherEntrySchema');
+const FarmUsherBeneficiary = require('../model/FarmUsherBeneficiarySchema');
 const ActionLog = require('../model/ActionLogSchema');
 const Warehouse = require('../model/WarehouseSchema');
 const Wholeseller = require('../model/WholesellerSchema');
@@ -48,6 +51,7 @@ const StockTransfer = require('../model/StockTransferSchema');
 const OrderStockRequest = require('../model/OrderStockRequestSchema');
 const WhatsAppEvent = require('../model/WhatsAppEventSchema');
 const GiftSource = require('../model/GiftSourceSchema');
+const Owner = require('../model/OwnerSchema');
 const { sendMail } = require('../services/mailer');
 const logger = require('../utils/logger');
 
@@ -7431,7 +7435,7 @@ async function handleSetCurrentFinancialYear(req, res) {
   }
 }
 
-async function calculateFinancialSummaryByRange(startDate, endDate) {
+async function calculateFinancialSummaryByRange(startDate, endDate, financialYearId = '') {
   const range = { $gte: new Date(startDate), $lte: new Date(endDate) };
   range.$gte.setHours(0, 0, 0, 0);
   range.$lte.setHours(23, 59, 59, 999);
@@ -7557,6 +7561,9 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
     acc.total.count += Number(row.count || 0);
     return acc;
   }, { pending: { amount: 0, count: 0 }, accepted: { amount: 0, count: 0 }, rejected: { amount: 0, count: 0 }, total: { amount: 0, count: 0 } });
+  const usherSummary = financialYearId ? await calculateFarmUsherSummary(financialYearId) : null;
+  const usher = usherSummary?.totals || {};
+  const usherPaid = Number(usher.usherPaid || 0);
   return {
     revenue,
     salePointRevenue,
@@ -7564,8 +7571,8 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
     salesExpenses,
     farmExpenses,
     farmHrExpenses,
-    totalExpenses: salesExpenses + farmExpenses,
-    net: revenue - salesExpenses - farmExpenses,
+    totalExpenses: salesExpenses + farmExpenses + usherPaid,
+    net: revenue - salesExpenses - farmExpenses - usherPaid,
     quantity: Number(salePointRows?.[0]?.quantity || 0) + Number(onlineRows?.[0]?.quantity || 0),
     farmProductionKg,
     treeProductionKg,
@@ -7590,6 +7597,13 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
         value: Number(row.value || 0),
       })),
     },
+    usher: {
+      totalYieldValue: Number(usher.totalYieldValue || 0),
+      totalPayable: Number(usher.totalPayableUsher || 0),
+      paid: usherPaid,
+      remaining: Number(usher.usherRemaining || 0),
+      percentage: Number(usher.usherPercentage || 5),
+    },
   };
 }
 
@@ -7600,12 +7614,130 @@ async function handleGetAdminFinancialDashboard(req, res) {
     const selectedYear = financialYearId
       ? await FinancialYear.findById(financialYearId)
       : years.find((y) => y.isCurrent) || years[0] || null;
-    const selectedSummary = selectedYear ? await calculateFinancialSummaryByRange(selectedYear.startDate, selectedYear.endDate) : null;
+    const selectedSummary = selectedYear ? await calculateFinancialSummaryByRange(selectedYear.startDate, selectedYear.endDate, selectedYear._id) : null;
     const yearlyRows = await Promise.all(years.map(async (year) => ({
       financialYear: year,
-      summary: await calculateFinancialSummaryByRange(year.startDate, year.endDate),
+      summary: await calculateFinancialSummaryByRange(year.startDate, year.endDate, year._id),
     })));
     return res.status(200).json({ years, selectedYear, selectedSummary, yearlyRows });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetOwners(req, res) {
+  try {
+    const rows = await Owner.find({}).sort({ isActive: -1, name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateOwner(req, res) {
+  try {
+    const { name, contactNumber = '', email = '', sharePercentage } = req.body || {};
+    const share = Number(sharePercentage);
+    if (!String(name || '').trim() || Number.isNaN(share) || share < 0 || share > 100) {
+      return res.status(400).json({ message: 'Owner name and valid share percentage are required' });
+    }
+    const row = await Owner.create({
+      name: String(name).trim(),
+      contactNumber,
+      email,
+      sharePercentage: share,
+      isActive: true,
+      createdBy: req.user?._id || null,
+      createdByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'owners',
+      entityType: 'Owner',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, sharePercentage: row.sharePercentage },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateOwner(req, res) {
+  try {
+    const row = await Owner.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Owner not found' });
+    const { name, contactNumber = '', email = '', sharePercentage } = req.body || {};
+    const share = Number(sharePercentage);
+    if (!String(name || '').trim() || Number.isNaN(share) || share < 0 || share > 100) {
+      return res.status(400).json({ message: 'Owner name and valid share percentage are required' });
+    }
+    row.name = String(name).trim();
+    row.contactNumber = contactNumber;
+    row.email = email;
+    row.sharePercentage = share;
+    await row.save();
+    await recordAction(req, {
+      action: 'update',
+      module: 'owners',
+      entityType: 'Owner',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, sharePercentage: row.sharePercentage },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteOwner(req, res) {
+  try {
+    const row = await Owner.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Owner not found' });
+    await row.deleteOne();
+    await recordAction(req, {
+      action: 'delete',
+      module: 'owners',
+      entityType: 'Owner',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, sharePercentage: row.sharePercentage },
+    });
+    return res.status(200).json({ success: true, message: 'Owner removed' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetOwnerShareReport(req, res) {
+  try {
+    const fy = await resolveFinancialYear(req.query?.financialYearId || '');
+    if (!fy) return res.status(200).json({ financialYear: null, summary: null, rows: [] });
+    const [summary, owners] = await Promise.all([
+      calculateFinancialSummaryByRange(fy.startDate, fy.endDate, fy._id),
+      Owner.find({ isActive: true }).sort({ name: 1 }),
+    ]);
+    const net = Number(summary?.net || 0);
+    const usherRemaining = Number(summary?.usher?.remaining || 0);
+    const rows = owners.map((owner) => ({
+      ownerId: owner._id,
+      name: owner.name,
+      contactNumber: owner.contactNumber,
+      email: owner.email,
+      sharePercentage: Number(owner.sharePercentage || 0),
+      ownerNetShare: net * (Number(owner.sharePercentage || 0) / 100),
+      remainingUsherDueShare: usherRemaining * (Number(owner.sharePercentage || 0) / 100),
+    }));
+    return res.status(200).json({
+      financialYear: fy,
+      summary,
+      rows,
+      totalSharePercentage: rows.reduce((sum, row) => sum + Number(row.sharePercentage || 0), 0),
+      totalOwnerNetShare: rows.reduce((sum, row) => sum + Number(row.ownerNetShare || 0), 0),
+      totalRemainingUsherDueShare: rows.reduce((sum, row) => sum + Number(row.remainingUsherDueShare || 0), 0),
+    });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -7614,6 +7746,417 @@ async function handleGetAdminFinancialDashboard(req, res) {
 async function resolveFinancialYear(financialYearId = '') {
   if (financialYearId) return FinancialYear.findById(financialYearId);
   return FinancialYear.findOne({ isCurrent: true, isActive: true });
+}
+
+const normalizeVarietyName = (name) => String(name || 'Unassigned').trim() || 'Unassigned';
+const gradeKeys = ['gradeA', 'gradeB', 'gradeC', 'gradeD'];
+
+async function calculateFarmUsherSummary(financialYearId = '') {
+  const fy = await resolveFinancialYear(financialYearId);
+  if (!fy) return { financialYear: null, setting: null, varieties: [], productionByVariety: [], totals: {} };
+
+  const range = { $gte: new Date(fy.startDate), $lte: new Date(fy.endDate) };
+  range.$gte.setHours(0, 0, 0, 0);
+  range.$lte.setHours(23, 59, 59, 999);
+  const [setting, varieties, treeLogs, blockProductionRows, paidRows] = await Promise.all([
+    FarmUsherSetting.findOne({ financialYearId: fy._id }),
+    FarmVariety.find({ isActive: true }).sort({ name: 1 }),
+    FarmTreeLog.find({ logDate: range, logType: { $in: ['production', 'harvest'] } }).select('treeId gradeA gradeB gradeC gradeD quantity'),
+    FarmBlockLog.aggregate([
+      { $match: { logDate: range, logType: 'production' } },
+      { $group: { _id: null, quantity: { $sum: '$quantity' } } },
+    ]),
+    FarmUsherEntry.aggregate([
+      { $match: { financialYearId: fy._id } },
+      { $group: { _id: null, amount: { $sum: '$amount' } } },
+    ]),
+  ]);
+  const treeIds = [...new Set(treeLogs.map((row) => String(row.treeId || '')).filter(Boolean))];
+  const trees = await FarmTree.find({ _id: { $in: treeIds.map((id) => new mongoose.Types.ObjectId(id)) } }).select('_id varieties');
+  const treeVarietyMap = new Map(trees.map((tree) => [String(tree._id), (tree.varieties || []).map(normalizeVarietyName).filter(Boolean)]));
+  const priceMap = new Map((setting?.gradePrices || []).map((row) => [normalizeVarietyName(row.varietyName).toLowerCase(), row]));
+  const productionMap = new Map();
+
+  const ensureProduction = (varietyName) => {
+    const key = normalizeVarietyName(varietyName);
+    if (!productionMap.has(key)) {
+      productionMap.set(key, { varietyName: key, gradeA: 0, gradeB: 0, gradeC: 0, gradeD: 0, totalKg: 0, totalValue: 0 });
+    }
+    return productionMap.get(key);
+  };
+
+  treeLogs.forEach((log) => {
+    const varietyNames = treeVarietyMap.get(String(log.treeId || '')) || ['Unassigned'];
+    const shareCount = Math.max(varietyNames.length, 1);
+    const gradeValues = {
+      gradeA: Number(log.gradeA || 0),
+      gradeB: Number(log.gradeB || 0),
+      gradeC: Number(log.gradeC || 0),
+      gradeD: Number(log.gradeD || 0),
+    };
+    const loggedGradeTotal = gradeKeys.reduce((sum, key) => sum + gradeValues[key], 0);
+    if (!loggedGradeTotal && Number(log.quantity || 0) > 0) gradeValues.gradeA = Number(log.quantity || 0);
+    varietyNames.forEach((varietyName) => {
+      const row = ensureProduction(varietyName);
+      gradeKeys.forEach((key) => {
+        row[key] += gradeValues[key] / shareCount;
+      });
+    });
+  });
+
+  const defaultRows = varieties.map((v) => normalizeVarietyName(v.name));
+  defaultRows.forEach(ensureProduction);
+  const productionByVariety = [...productionMap.values()].map((row) => {
+    const prices = priceMap.get(row.varietyName.toLowerCase()) || {};
+    row.totalKg = gradeKeys.reduce((sum, key) => sum + Number(row[key] || 0), 0);
+    row.totalValue = gradeKeys.reduce((sum, key) => sum + Number(row[key] || 0) * Number(prices[key] || 0), 0);
+    row.prices = {
+      gradeA: Number(prices.gradeA || 0),
+      gradeB: Number(prices.gradeB || 0),
+      gradeC: Number(prices.gradeC || 0),
+      gradeD: Number(prices.gradeD || 0),
+    };
+    return row;
+  }).sort((a, b) => a.varietyName.localeCompare(b.varietyName));
+
+  const treeProductionKg = productionByVariety.reduce((sum, row) => sum + Number(row.totalKg || 0), 0);
+  const blockProductionKg = Number(blockProductionRows?.[0]?.quantity || 0);
+  const totalYieldValue = productionByVariety.reduce((sum, row) => sum + Number(row.totalValue || 0), 0);
+  const usherPercentage = Number(setting?.usherPercentage ?? 5);
+  const totalPayableUsher = totalYieldValue * (usherPercentage / 100);
+  const usherPaid = Number(paidRows?.[0]?.amount || 0);
+
+  return {
+    financialYear: fy,
+    setting: setting || {
+      financialYearId: fy._id,
+      financialYearName: fy.name,
+      usherPercentage: 5,
+      gradePrices: [],
+    },
+    varieties,
+    productionByVariety,
+    totals: {
+      treeProductionKg,
+      blockProductionKg,
+      totalProductionKg: treeProductionKg + blockProductionKg,
+      totalYieldValue,
+      usherPercentage,
+      totalPayableUsher,
+      usherPaid,
+      usherRemaining: totalPayableUsher - usherPaid,
+    },
+  };
+}
+
+async function handleGetFarmUsherSummary(req, res) {
+  try {
+    const summary = await calculateFarmUsherSummary(req.query?.financialYearId || '');
+    return res.status(200).json(summary);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleSaveFarmUsherSetting(req, res) {
+  try {
+    const { financialYearId, usherPercentage = 5, gradePrices = [] } = req.body || {};
+    const fy = await resolveFinancialYear(financialYearId);
+    if (!fy) return res.status(400).json({ message: 'Financial year is required' });
+    const cleanPrices = (Array.isArray(gradePrices) ? gradePrices : []).map((row) => ({
+      varietyId: row.varietyId || null,
+      varietyName: normalizeVarietyName(row.varietyName),
+      gradeA: Number(row.gradeA || 0),
+      gradeB: Number(row.gradeB || 0),
+      gradeC: Number(row.gradeC || 0),
+      gradeD: Number(row.gradeD || 0),
+    }));
+    const row = await FarmUsherSetting.findOneAndUpdate(
+      { financialYearId: fy._id },
+      {
+        financialYearId: fy._id,
+        financialYearName: fy.name,
+        usherPercentage: Number(usherPercentage || 0),
+        gradePrices: cleanPrices,
+        updatedBy: req.user?._id || null,
+        updatedByName: req.user?.name || req.user?.username || '',
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-usher',
+      entityType: 'FarmUsherSetting',
+      entityId: row._id,
+      entityLabel: fy.name,
+      details: { financialYearName: fy.name, usherPercentage: row.usherPercentage, gradePrices: row.gradePrices },
+    });
+    const summary = await calculateFarmUsherSummary(fy._id);
+    return res.status(200).json(summary);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmUsherEntries(req, res) {
+  try {
+    const fy = await resolveFinancialYear(req.query?.financialYearId || '');
+    if (!fy) return res.status(200).json({ financialYear: null, rows: [], totalPaid: 0 });
+    const rows = await FarmUsherEntry.find({ financialYearId: fy._id }).sort({ date: -1, createdAt: -1 }).limit(1500);
+    const totalPaid = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    return res.status(200).json({ financialYear: fy, rows, totalPaid });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmUsherBeneficiaries(req, res) {
+  try {
+    const { activeOnly = '' } = req.query || {};
+    const query = {};
+    if (String(activeOnly) === 'true') query.isActive = true;
+    const rows = await FarmUsherBeneficiary.find(query).sort({ isActive: -1, name: 1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmUsherBeneficiary(req, res) {
+  try {
+    const { name, contactNumber = '', address = '', isRelative = false } = req.body || {};
+    if (!String(name || '').trim()) return res.status(400).json({ message: 'Beneficiary name is required' });
+    const row = await FarmUsherBeneficiary.create({
+      name: String(name).trim(),
+      contactNumber,
+      address,
+      isRelative: Boolean(isRelative),
+      isActive: true,
+      createdBy: req.user?._id || null,
+      createdByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'farm-usher-beneficiaries',
+      entityType: 'FarmUsherBeneficiary',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, contactNumber: row.contactNumber, isRelative: row.isRelative },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmUsherBeneficiary(req, res) {
+  try {
+    const row = await FarmUsherBeneficiary.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Beneficiary not found' });
+    const { name, contactNumber = '', address = '', isRelative = false } = req.body || {};
+    if (!String(name || '').trim()) return res.status(400).json({ message: 'Beneficiary name is required' });
+    row.name = String(name).trim();
+    row.contactNumber = contactNumber;
+    row.address = address;
+    row.isRelative = Boolean(isRelative);
+    await row.save();
+    await FarmUsherEntry.updateMany(
+      { beneficiaryId: row._id },
+      { $set: { personName: row.name, contactNumber: row.contactNumber, isRelative: row.isRelative } }
+    );
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-usher-beneficiaries',
+      entityType: 'FarmUsherBeneficiary',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name, contactNumber: row.contactNumber, isRelative: row.isRelative },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleToggleFarmUsherBeneficiary(req, res) {
+  try {
+    const row = await FarmUsherBeneficiary.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Beneficiary not found' });
+    row.isActive = !row.isActive;
+    await row.save();
+    await recordAction(req, {
+      action: row.isActive ? 'activate' : 'deactivate',
+      module: 'farm-usher-beneficiaries',
+      entityType: 'FarmUsherBeneficiary',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { isActive: row.isActive },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmUsherBeneficiary(req, res) {
+  try {
+    const row = await FarmUsherBeneficiary.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Beneficiary not found' });
+    const used = await FarmUsherEntry.countDocuments({ beneficiaryId: row._id });
+    if (used > 0) return res.status(400).json({ message: 'Beneficiary has Usher entries. Mark inactive instead.' });
+    await row.deleteOne();
+    await recordAction(req, {
+      action: 'delete',
+      module: 'farm-usher-beneficiaries',
+      entityType: 'FarmUsherBeneficiary',
+      entityId: row._id,
+      entityLabel: row.name,
+      details: { name: row.name },
+    });
+    return res.status(200).json({ success: true, message: 'Beneficiary deleted' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetFarmUsherReport(req, res) {
+  try {
+    const fy = await resolveFinancialYear(req.query?.financialYearId || '');
+    if (!fy) return res.status(200).json({ financialYear: null, summary: null, rows: [] });
+    const summary = await calculateFarmUsherSummary(fy._id);
+    const rows = await FarmUsherEntry.aggregate([
+      { $match: { financialYearId: fy._id } },
+      {
+        $group: {
+          _id: { beneficiaryId: '$beneficiaryId', personName: '$personName', contactNumber: '$contactNumber', isRelative: '$isRelative' },
+          amount: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { amount: -1, '_id.personName': 1 } },
+    ]);
+    const reportRows = rows.map((row) => ({
+      beneficiaryId: row._id.beneficiaryId,
+      personName: row._id.personName || 'Other',
+      contactNumber: row._id.contactNumber || '',
+      isRelative: Boolean(row._id.isRelative),
+      amount: Number(row.amount || 0),
+      count: Number(row.count || 0),
+    }));
+    return res.status(200).json({
+      financialYear: fy,
+      summary,
+      rows: reportRows,
+      totalPaid: reportRows.reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleCreateFarmUsherEntry(req, res) {
+  try {
+    const { financialYearId, date, beneficiaryId = '', personName, contactNumber = '', amount, details = '' } = req.body || {};
+    const value = Number(amount);
+    const fy = await resolveFinancialYear(financialYearId);
+    let beneficiary = null;
+    if (beneficiaryId && beneficiaryId !== 'other') {
+      beneficiary = await FarmUsherBeneficiary.findById(beneficiaryId);
+      if (!beneficiary || !beneficiary.isActive) return res.status(400).json({ message: 'Select an active beneficiary' });
+    }
+    const finalName = beneficiary ? beneficiary.name : String(personName || '').trim();
+    const finalContact = beneficiary ? beneficiary.contactNumber : contactNumber;
+    if (!fy || !date || !finalName || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Financial year, date, beneficiary/person name, and valid amount are required' });
+    }
+    const row = await FarmUsherEntry.create({
+      financialYearId: fy._id,
+      financialYearName: fy.name,
+      date,
+      beneficiaryId: beneficiary?._id || null,
+      personName: finalName,
+      contactNumber: finalContact,
+      isRelative: Boolean(beneficiary?.isRelative || false),
+      amount: value,
+      details,
+      enteredBy: req.user?._id || null,
+      enteredByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create',
+      module: 'farm-usher-entries',
+      entityType: 'FarmUsherEntry',
+      entityId: row._id,
+      entityLabel: `${row.personName} - ${row.amount}`,
+      details: { financialYearName: row.financialYearName, personName: row.personName, amount: row.amount },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmUsherEntry(req, res) {
+  try {
+    const row = await FarmUsherEntry.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Usher entry not found' });
+    const { financialYearId, date, beneficiaryId = '', personName, contactNumber = '', amount, details = '' } = req.body || {};
+    const value = Number(amount);
+    const fy = await resolveFinancialYear(financialYearId);
+    let beneficiary = null;
+    if (beneficiaryId && beneficiaryId !== 'other') {
+      beneficiary = await FarmUsherBeneficiary.findById(beneficiaryId);
+      if (!beneficiary || !beneficiary.isActive) return res.status(400).json({ message: 'Select an active beneficiary' });
+    }
+    const finalName = beneficiary ? beneficiary.name : String(personName || '').trim();
+    const finalContact = beneficiary ? beneficiary.contactNumber : contactNumber;
+    if (!fy || !date || !finalName || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Financial year, date, beneficiary/person name, and valid amount are required' });
+    }
+    const previous = { financialYearName: row.financialYearName, date: row.date, personName: row.personName, amount: row.amount, details: row.details };
+    row.financialYearId = fy._id;
+    row.financialYearName = fy.name;
+    row.date = date;
+    row.beneficiaryId = beneficiary?._id || null;
+    row.personName = finalName;
+    row.contactNumber = finalContact;
+    row.isRelative = Boolean(beneficiary?.isRelative || false);
+    row.amount = value;
+    row.details = details;
+    await row.save();
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-usher-entries',
+      entityType: 'FarmUsherEntry',
+      entityId: row._id,
+      entityLabel: `${row.personName} - ${row.amount}`,
+      details: { previous, updated: { financialYearName: row.financialYearName, date: row.date, personName: row.personName, amount: row.amount, details: row.details } },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmUsherEntry(req, res) {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ message: 'Only Super Admin can delete Usher entries' });
+    const row = await FarmUsherEntry.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Usher entry not found' });
+    const details = { financialYearName: row.financialYearName, date: row.date, personName: row.personName, amount: row.amount, details: row.details };
+    await row.deleteOne();
+    await recordAction(req, {
+      action: 'delete',
+      module: 'farm-usher-entries',
+      entityType: 'FarmUsherEntry',
+      entityId: row._id,
+      entityLabel: `${row.personName} - ${row.amount}`,
+      details,
+    });
+    return res.status(200).json({ success: true, message: 'Usher entry deleted' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
 }
 
 async function handleGetFarmHRStaff(req, res) {
@@ -7772,6 +8315,78 @@ async function handleCreateFarmHRPayment(req, res) {
       details: { staffName: row.staffName, financialYearName: row.financialYearName, amount: row.amount, remarks: row.remarks },
     });
     return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateFarmHRPayment(req, res) {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ message: 'Only Super Admin can edit HR payment history' });
+    const row = await FarmHRPayment.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'HR payment not found' });
+
+    const { staffId, financialYearId = '', paymentDate, amount, remarks = '' } = req.body || {};
+    const value = Number(amount);
+    if (!staffId || !paymentDate || Number.isNaN(value) || value < 0) {
+      return res.status(400).json({ message: 'Staff, payment date, and valid amount are required' });
+    }
+    const staff = await FarmHRStaff.findById(staffId);
+    if (!staff) return res.status(404).json({ message: 'Farm HR staff not found' });
+    const fy = await resolveFinancialYear(financialYearId);
+
+    const previous = {
+      staffName: row.staffName,
+      financialYearName: row.financialYearName,
+      paymentDate: row.paymentDate,
+      amount: row.amount,
+      remarks: row.remarks,
+    };
+    row.staffId = staff._id;
+    row.staffName = staff.name;
+    row.financialYearId = fy?._id || null;
+    row.financialYearName = fy?.name || '';
+    row.paymentDate = paymentDate;
+    row.amount = value;
+    row.remarks = remarks;
+    await row.save();
+
+    await recordAction(req, {
+      action: 'update',
+      module: 'farm-hr-expenses',
+      entityType: 'FarmHRPayment',
+      entityId: row._id,
+      entityLabel: `${row.staffName} - ${row.amount}`,
+      details: { previous, updated: { staffName: row.staffName, financialYearName: row.financialYearName, paymentDate: row.paymentDate, amount: row.amount, remarks: row.remarks } },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteFarmHRPayment(req, res) {
+  try {
+    if (req.user?.role !== 'admin') return res.status(403).json({ message: 'Only Super Admin can delete HR payment history' });
+    const row = await FarmHRPayment.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'HR payment not found' });
+    const details = {
+      staffName: row.staffName,
+      financialYearName: row.financialYearName,
+      paymentDate: row.paymentDate,
+      amount: row.amount,
+      remarks: row.remarks,
+    };
+    await row.deleteOne();
+    await recordAction(req, {
+      action: 'delete',
+      module: 'farm-hr-expenses',
+      entityType: 'FarmHRPayment',
+      entityId: row._id,
+      entityLabel: `${row.staffName} - ${row.amount}`,
+      details,
+    });
+    return res.status(200).json({ success: true, message: 'HR payment deleted' });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -8704,6 +9319,25 @@ module.exports = {
     handleResumeFarmHRStaff,
     handleGetFarmHRPayments,
     handleCreateFarmHRPayment,
+    handleUpdateFarmHRPayment,
+    handleDeleteFarmHRPayment,
+    handleGetFarmUsherSummary,
+    handleSaveFarmUsherSetting,
+    handleGetFarmUsherBeneficiaries,
+    handleCreateFarmUsherBeneficiary,
+    handleUpdateFarmUsherBeneficiary,
+    handleToggleFarmUsherBeneficiary,
+    handleDeleteFarmUsherBeneficiary,
+    handleGetFarmUsherEntries,
+    handleCreateFarmUsherEntry,
+    handleUpdateFarmUsherEntry,
+    handleDeleteFarmUsherEntry,
+    handleGetFarmUsherReport,
+    handleGetOwners,
+    handleCreateOwner,
+    handleUpdateOwner,
+    handleDeleteOwner,
+    handleGetOwnerShareReport,
     handleGetActionLogs,
     handleFarmDashboardSummary,
     handleGetOrderFeedbackMeta,

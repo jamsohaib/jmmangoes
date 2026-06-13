@@ -5,6 +5,13 @@ import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
 const today = new Date().toISOString().slice(0, 10);
+const toDateInput = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return localDate.toISOString().slice(0, 10);
+};
 
 const FarmAddExpenses = () => {
   const user = useAuthStore((state) => state.user);
@@ -14,6 +21,7 @@ const FarmAddExpenses = () => {
   const [heads, setHeads] = useState([]);
   const [items, setItems] = useState([]);
   const [staff, setStaff] = useState([]);
+  const [financialYears, setFinancialYears] = useState([]);
   const [entries, setEntries] = useState([]);
   const [summaryByStaff, setSummaryByStaff] = useState([]);
   const [entryType, setEntryType] = useState('expense');
@@ -25,24 +33,33 @@ const FarmAddExpenses = () => {
   const [amount, setAmount] = useState('');
   const [remarks, setRemarks] = useState('');
   const [editingEntryId, setEditingEntryId] = useState('');
-  const [dateFrom, setDateFrom] = useState(today);
-  const [dateTo, setDateTo] = useState(today);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
 
   const filteredItems = useMemo(() => items.filter((item) => String(item.headId) === String(headId)), [items, headId]);
 
   const loadSetup = async () => {
-    const [headsRes, itemsRes, staffRes] = await Promise.all([
+    const [headsRes, itemsRes, staffRes, yearsRes] = await Promise.all([
       api.get('/farm/expense-heads'),
       api.get('/farm/expense-items', { params: { activeOnly: true } }),
       api.get('/farm/hr/staff', { params: { includeLeft: false } }),
+      api.get('/financial-years'),
     ]);
+    const yearRows = yearsRes.data || [];
+    const currentYear = yearRows.find((year) => year.isCurrent) || yearRows[0];
     setHeads(headsRes.data || []);
     setItems(itemsRes.data || []);
     setStaff(staffRes.data || []);
+    setFinancialYears(yearRows);
+    if (!dateFrom && !dateTo) {
+      setDateFrom(toDateInput(currentYear?.startDate) || today);
+      setDateTo(toDateInput(currentYear?.endDate) || today);
+    }
   };
 
   const loadEntries = async () => {
+    if (!dateFrom && !dateTo) return;
     const res = await api.get('/farm/expense-entries', { params: { dateFrom, dateTo, withSummary: true } });
     setEntries(res.data?.rows || []);
     setSummaryByStaff(res.data?.summaryByStaff || []);
@@ -51,13 +68,19 @@ const FarmAddExpenses = () => {
   useEffect(() => {
     if (canView) {
       loadSetup().catch(() => toast.error('Failed to load farm expense setup.'));
-      loadEntries().catch(() => toast.error('Failed to load farm expense entries.'));
     }
   }, [canView]);
 
   useEffect(() => {
     if (canView) loadEntries().catch(() => toast.error('Failed to load farm expense entries.'));
   }, [canView, dateFrom, dateTo]);
+
+  const applyFinancialYearRange = (yearId) => {
+    const year = financialYears.find((row) => String(row._id) === String(yearId));
+    if (!year) return;
+    setDateFrom(toDateInput(year.startDate));
+    setDateTo(toDateInput(year.endDate));
+  };
 
   const saveEntry = async () => {
     const value = Number(amount);
@@ -243,17 +266,21 @@ const FarmAddExpenses = () => {
       <div className="bg-white rounded shadow p-4 mb-4">
         <h3 className="text-lg font-semibold mb-3">Farm Fund / Expense History</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
+          <select onChange={(e) => applyFinancialYearRange(e.target.value)} className="border p-2 rounded" defaultValue="">
+            <option value="">Select financial year range</option>
+            {financialYears.map((year) => <option key={year._id} value={year._id}>{year.name}{year.isCurrent ? ' (Current)' : ''}</option>)}
+          </select>
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="border p-2 rounded" />
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="border p-2 rounded" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search history..." className="border p-2 rounded" />
-          <div className="flex gap-2">
+          <div className="flex gap-2 md:col-span-4">
             <button onClick={() => downloadCsv(filteredEntries, 'visible')} className="bg-blue-700 text-white px-3 py-2 rounded text-sm">Download Visible</button>
             <button onClick={() => downloadCsv(entries, 'all')} className="bg-gray-700 text-white px-3 py-2 rounded text-sm">Download All</button>
           </div>
         </div>
         <DataTable
           columns={[
-            { name: 'Date', selector: (row) => row.date ? new Date(row.date).toLocaleString() : '-', sortable: true, wrap: true },
+            { id: 'date', name: 'Date', selector: (row) => row.date ? new Date(row.date).toLocaleString() : '-', sortable: true, wrap: true },
             { name: 'Type', selector: (row) => row.entryType || '', sortable: true, cell: (row) => <span className="capitalize">{row.entryType}</span> },
             { name: 'Staff', selector: (row) => row.staffName || '-', sortable: true, wrap: true },
             { name: 'Head', selector: (row) => row.headName || '-', sortable: true, wrap: true },
@@ -267,6 +294,8 @@ const FarmAddExpenses = () => {
             },
           ]}
           data={filteredEntries}
+          defaultSortFieldId="date"
+          defaultSortAsc={false}
           pagination
           dense
           highlightOnHover

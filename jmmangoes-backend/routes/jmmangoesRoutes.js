@@ -306,7 +306,7 @@ jmm_route.post('/farm/expense-entries', authenticateUser, authorizePage('farmExp
 jmm_route.get('/farm/expense-entries', authenticateUser, authorizeAnyPage(['farmExpenseAdd', 'farmExpenseDashboard'], 'view'), jmm_controller.handleGetFarmExpenseEntries);
 jmm_route.put('/farm/expense-entries/:id', authenticateUser, authorizePage('farmExpenseAdd', 'manage'), jmm_controller.handleUpdateFarmExpenseEntry);
 jmm_route.get('/farm/expense-dashboard', authenticateUser, authorizePage('farmExpenseDashboard', 'view'), jmm_controller.handleGetFarmExpenseDashboard);
-jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses'], 'view'), jmm_controller.handleGetFinancialYears);
+jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseAdd', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses', 'farmUsherManage', 'farmUsherEntries', 'farmUsherReport', 'ownerShareReport'], 'view'), jmm_controller.handleGetFinancialYears);
 jmm_route.post('/financial-years', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleCreateFinancialYear);
 jmm_route.put('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleUpdateFinancialYear);
 jmm_route.delete('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleDeleteFinancialYear);
@@ -319,6 +319,25 @@ jmm_route.put('/farm/hr/staff/:id/left', authenticateUser, authorizePage('farmHR
 jmm_route.put('/farm/hr/staff/:id/resume', authenticateUser, authorizePage('farmHR', 'manage'), jmm_controller.handleResumeFarmHRStaff);
 jmm_route.get('/farm/hr/payments', authenticateUser, authorizePage('farmHRExpenses', 'view'), jmm_controller.handleGetFarmHRPayments);
 jmm_route.post('/farm/hr/payments', authenticateUser, authorizePage('farmHRExpenses', 'manage'), jmm_controller.handleCreateFarmHRPayment);
+jmm_route.put('/farm/hr/payments/:id', authenticateUser, authorizePage('farmHRExpenses', 'manage'), jmm_controller.handleUpdateFarmHRPayment);
+jmm_route.delete('/farm/hr/payments/:id', authenticateUser, authorizePage('farmHRExpenses', 'manage'), jmm_controller.handleDeleteFarmHRPayment);
+jmm_route.get('/farm/usher/summary', authenticateUser, authorizeAnyPage(['farmUsherManage', 'farmUsherEntries', 'adminFinancialDashboard'], 'view'), jmm_controller.handleGetFarmUsherSummary);
+jmm_route.put('/farm/usher/settings', authenticateUser, authorizePage('farmUsherManage', 'manage'), jmm_controller.handleSaveFarmUsherSetting);
+jmm_route.get('/farm/usher/beneficiaries', authenticateUser, authorizeAnyPage(['farmUsherBeneficiaries', 'farmUsherEntries', 'farmUsherReport'], 'view'), jmm_controller.handleGetFarmUsherBeneficiaries);
+jmm_route.post('/farm/usher/beneficiaries', authenticateUser, authorizePage('farmUsherBeneficiaries', 'manage'), jmm_controller.handleCreateFarmUsherBeneficiary);
+jmm_route.put('/farm/usher/beneficiaries/:id', authenticateUser, authorizePage('farmUsherBeneficiaries', 'manage'), jmm_controller.handleUpdateFarmUsherBeneficiary);
+jmm_route.put('/farm/usher/beneficiaries/:id/toggle', authenticateUser, authorizePage('farmUsherBeneficiaries', 'manage'), jmm_controller.handleToggleFarmUsherBeneficiary);
+jmm_route.delete('/farm/usher/beneficiaries/:id', authenticateUser, authorizePage('farmUsherBeneficiaries', 'manage'), jmm_controller.handleDeleteFarmUsherBeneficiary);
+jmm_route.get('/farm/usher/entries', authenticateUser, authorizePage('farmUsherEntries', 'view'), jmm_controller.handleGetFarmUsherEntries);
+jmm_route.post('/farm/usher/entries', authenticateUser, authorizePage('farmUsherEntries', 'manage'), jmm_controller.handleCreateFarmUsherEntry);
+jmm_route.put('/farm/usher/entries/:id', authenticateUser, authorizePage('farmUsherEntries', 'manage'), jmm_controller.handleUpdateFarmUsherEntry);
+jmm_route.delete('/farm/usher/entries/:id', authenticateUser, authorizePage('farmUsherEntries', 'manage'), jmm_controller.handleDeleteFarmUsherEntry);
+jmm_route.get('/farm/usher/report', authenticateUser, authorizePage('farmUsherReport', 'view'), jmm_controller.handleGetFarmUsherReport);
+jmm_route.get('/owners', authenticateUser, authorizePage('ownerManagement', 'view'), jmm_controller.handleGetOwners);
+jmm_route.post('/owners', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleCreateOwner);
+jmm_route.put('/owners/:id', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleUpdateOwner);
+jmm_route.delete('/owners/:id', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleDeleteOwner);
+jmm_route.get('/owners/share-report', authenticateUser, authorizePage('ownerShareReport', 'view'), jmm_controller.handleGetOwnerShareReport);
 jmm_route.get('/action-logs', authenticateUser, authorizePage('actionLogs', 'view'), jmm_controller.handleGetActionLogs);
 
 jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'manage'), jmm_controller.handleUpdateShippingCosts);

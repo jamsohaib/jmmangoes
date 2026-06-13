@@ -10,6 +10,7 @@ const FarmHRExpenses = () => {
   const user = useAuthStore((state) => state.user);
   const canView = user?.role === 'admin' || user?.permissions?.farmHRExpenses?.view;
   const canManage = user?.role === 'admin' || user?.permissions?.farmHRExpenses?.manage;
+  const isSuperAdmin = user?.role === 'admin';
   const [staff, setStaff] = useState([]);
   const [years, setYears] = useState([]);
   const [financialYearId, setFinancialYearId] = useState('');
@@ -19,6 +20,8 @@ const FarmHRExpenses = () => {
   const [remarks, setRemarks] = useState('');
   const [payments, setPayments] = useState([]);
   const [search, setSearch] = useState('');
+  const [editingPaymentId, setEditingPaymentId] = useState('');
+  const [busyAction, setBusyAction] = useState('');
 
   const selectedStaff = useMemo(() => staff.find((s) => s._id === selectedStaffId), [staff, selectedStaffId]);
 
@@ -50,22 +53,66 @@ const FarmHRExpenses = () => {
   }, [canView, selectedStaffId, financialYearId]);
 
   const savePayment = async () => {
+    if (busyAction) return;
     const value = Number(amount);
     if (!selectedStaffId || !paymentDate || Number.isNaN(value) || value < 0) return toast.warn('Select HR, date, and valid amount.');
     try {
-      await api.post('/farm/hr/payments', {
+      setBusyAction(editingPaymentId ? 'update-payment' : 'create-payment');
+      const payload = {
         staffId: selectedStaffId,
         financialYearId,
         paymentDate,
         amount: value,
         remarks,
-      });
+      };
+      if (editingPaymentId) {
+        await api.put(`/farm/hr/payments/${editingPaymentId}`, payload);
+      } else {
+        await api.post('/farm/hr/payments', payload);
+      }
+      setEditingPaymentId('');
       setAmount('');
       setRemarks('');
-      toast.success('HR salary credit/payment saved.');
+      toast.success(editingPaymentId ? 'HR payment updated.' : 'HR salary credit/payment saved.');
       await loadPayments();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to save HR payment.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const startEditPayment = (row) => {
+    setEditingPaymentId(row._id);
+    setSelectedStaffId(String(row.staffId || ''));
+    setFinancialYearId(String(row.financialYearId || financialYearId || ''));
+    setPaymentDate(row.paymentDate ? new Date(row.paymentDate).toISOString().slice(0, 10) : today);
+    setAmount(String(Number(row.amount || 0)));
+    setRemarks(row.remarks || '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEdit = () => {
+    setEditingPaymentId('');
+    setAmount('');
+    setRemarks('');
+    setPaymentDate(today);
+  };
+
+  const deletePayment = async (row) => {
+    if (busyAction) return;
+    const ok = window.confirm(`Delete HR payment of PKR ${Number(row.amount || 0).toFixed(2)} for ${row.staffName || 'this staff member'}?`);
+    if (!ok) return;
+    try {
+      setBusyAction(`delete-${row._id}`);
+      await api.delete(`/farm/hr/payments/${row._id}`);
+      toast.success('HR payment deleted.');
+      if (editingPaymentId === row._id) cancelEdit();
+      await loadPayments();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to delete HR payment.');
+    } finally {
+      setBusyAction('');
     }
   };
 
@@ -101,7 +148,14 @@ const FarmHRExpenses = () => {
           <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} className="border p-2 rounded" />
           <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount" className="border p-2 rounded" />
           <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Remarks" className="border p-2 rounded md:col-span-3" />
-          <button onClick={savePayment} disabled={!canManage} className="bg-green-700 text-white px-4 py-2 rounded disabled:opacity-60">Save Salary Credit</button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={savePayment} disabled={!canManage || Boolean(busyAction)} className="bg-green-700 text-white px-4 py-2 rounded disabled:opacity-60">
+              {busyAction === 'create-payment' || busyAction === 'update-payment' ? 'Saving...' : editingPaymentId ? 'Update Payment' : 'Save Salary Credit'}
+            </button>
+            {editingPaymentId ? (
+              <button onClick={cancelEdit} disabled={Boolean(busyAction)} className="bg-gray-600 text-white px-4 py-2 rounded disabled:opacity-60">Cancel Edit</button>
+            ) : null}
+          </div>
         </div>
         {selectedStaff ? (
           <p className="text-sm text-gray-600 mt-3">
@@ -132,6 +186,19 @@ const FarmHRExpenses = () => {
             { name: 'Amount', selector: (row) => Number(row.amount || 0), sortable: true, cell: (row) => `PKR ${Number(row.amount || 0).toFixed(2)}` },
             { name: 'Remarks', selector: (row) => row.remarks || '-', wrap: true },
             { name: 'Entered By', selector: (row) => row.enteredByName || '-', sortable: true, wrap: true },
+            ...(isSuperAdmin ? [{
+              name: 'Actions',
+              button: true,
+              minWidth: '170px',
+              cell: (row) => (
+                <div className="flex flex-wrap gap-2 py-1">
+                  <button onClick={() => startEditPayment(row)} disabled={Boolean(busyAction)} className="bg-blue-700 text-white px-3 py-1 rounded disabled:opacity-60">Edit</button>
+                  <button onClick={() => deletePayment(row)} disabled={Boolean(busyAction)} className="bg-red-700 text-white px-3 py-1 rounded disabled:opacity-60">
+                    {busyAction === `delete-${row._id}` ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
+              ),
+            }] : []),
           ]}
           data={filteredPayments}
           pagination

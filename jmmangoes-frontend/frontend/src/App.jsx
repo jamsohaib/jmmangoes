@@ -67,6 +67,12 @@ import FinancialYears from './components/FinancialYears';
 import AdminFinancialDashboard from './components/AdminFinancialDashboard';
 import FarmHR from './components/FarmHR';
 import FarmHRExpenses from './components/FarmHRExpenses';
+import FarmManageUsher from './components/FarmManageUsher';
+import FarmUsherEntries from './components/FarmUsherEntries';
+import FarmUsherBeneficiaries from './components/FarmUsherBeneficiaries';
+import FarmUsherReport from './components/FarmUsherReport';
+import ManageOwners from './components/ManageOwners';
+import OwnerShareReport from './components/OwnerShareReport';
 import ActionLogs from './components/ActionLogs';
 import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
@@ -111,11 +117,19 @@ const ProtectedRoute = () => {
 };
 
 function App() {
+  const [mutationBusy, setMutationBusy] = useState(false);
+
+  useEffect(() => {
+    const onMutationBusy = (event) => setMutationBusy(Boolean(event.detail?.busy));
+    window.addEventListener('jmm:mutation-busy', onMutationBusy);
+    return () => window.removeEventListener('jmm:mutation-busy', onMutationBusy);
+  }, []);
+
   return (
 
       <Router>
         <ScrollToHash />
-      <div className="flex flex-col min-h-screen bg-gradient-to-b from-gray-200 to-orange-100 ">
+      <div className={`flex flex-col min-h-screen bg-gradient-to-b from-gray-200 to-orange-100 ${mutationBusy ? 'jmm-action-busy' : ''}`}>
         <ToastContainer
           position="top-right"
           autoClose={3000}
@@ -189,6 +203,12 @@ function App() {
              <Route path="/admin-financial-dashboard" element={<AdminFinancialDashboard />} />
              <Route path="/farm-hr" element={<FarmHR />} />
              <Route path="/farm-hr-expenses" element={<FarmHRExpenses />} />
+             <Route path="/farm-manage-usher" element={<FarmManageUsher />} />
+             <Route path="/farm-usher-entries" element={<FarmUsherEntries />} />
+             <Route path="/farm-usher-beneficiaries" element={<FarmUsherBeneficiaries />} />
+             <Route path="/farm-usher-report" element={<FarmUsherReport />} />
+             <Route path="/owners/manage" element={<ManageOwners />} />
+             <Route path="/owners/share-report" element={<OwnerShareReport />} />
              <Route path="/action-logs" element={<ActionLogs />} />
             </Route>
              <Route path="*" element={<NotFound />} />

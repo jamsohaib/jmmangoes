@@ -16,10 +16,41 @@ export const toPublicAssetUrl = (url) => {
 };
 
 let isRedirectingToLogin = false;
+let pendingMutations = 0;
+const mutationMethods = new Set(['post', 'put', 'patch', 'delete']);
+
+const emitMutationBusy = () => {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('jmm:mutation-busy', { detail: { busy: pendingMutations > 0 } }));
+};
+
+const startMutation = (config) => {
+  const method = String(config?.method || 'get').toLowerCase();
+  if (!mutationMethods.has(method)) return config;
+  config.__jmmMutationRequest = true;
+  pendingMutations += 1;
+  emitMutationBusy();
+  return config;
+};
+
+const finishMutation = (config) => {
+  if (!config?.__jmmMutationRequest) return;
+  // Keep action buttons locked briefly so duplicate clicks do not race the toast feedback.
+  setTimeout(() => {
+    pendingMutations = Math.max(0, pendingMutations - 1);
+    emitMutationBusy();
+  }, 3000);
+};
+
+api.interceptors.request.use(startMutation, (error) => Promise.reject(error));
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    finishMutation(response.config);
+    return response;
+  },
   (error) => {
+    finishMutation(error?.config);
     const status = error?.response?.status;
     const requestUrl = String(error?.config?.url || '');
     const isAuthRequest = requestUrl.includes('/login') || requestUrl.includes('/register');

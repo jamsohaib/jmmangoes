@@ -47,6 +47,28 @@ body {
   color: #0f172a !important;
   font-weight: 700 !important;
 }
+
+.rdt_Pagination *,
+.rdt_Pagination select,
+.rdt_Pagination option,
+.rdt_Pagination button,
+.rdt_TableCol_Sortable span,
+.rdt_TableCol_Sortable div,
+.rdt_TableCol_Sortable svg {
+  color: #111827 !important;
+  fill: #111827 !important;
+}
+
+.rdt_Pagination select {
+  background: #ffffff !important;
+  border-color: #d1d5db !important;
+}
+
+.jmm-action-busy button:not([data-allow-busy="true"]) {
+  pointer-events: none;
+  opacity: 0.65;
+  cursor: wait;
+}
 /* 
 h1 {
   font-size: 3.2em;
