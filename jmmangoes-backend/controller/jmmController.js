@@ -7433,15 +7433,44 @@ async function handleSetCurrentFinancialYear(req, res) {
 
 async function calculateFinancialSummaryByRange(startDate, endDate) {
   const range = { $gte: new Date(startDate), $lte: new Date(endDate) };
+  range.$gte.setHours(0, 0, 0, 0);
   range.$lte.setHours(23, 59, 59, 999);
+  const salesExpenseStartDate = new Date(2026, 5, 9); // Sales-side live expense tracking started on 09-Jun-2026.
+  salesExpenseStartDate.setHours(0, 0, 0, 0);
+  const salesExpenseRange = { ...range };
+  if (salesExpenseRange.$gte < salesExpenseStartDate) salesExpenseRange.$gte = salesExpenseStartDate;
+
+  const [activeSites, activeWarehouses, activeWholesellers] = await Promise.all([
+    Site.find({ isActive: true }).select('_id name'),
+    Warehouse.find({ isActive: true }).select('_id name'),
+    Wholeseller.find({ isActive: true }).select('_id name'),
+  ]);
+  const activeSiteIds = activeSites.map((s) => new mongoose.Types.ObjectId(String(s._id)));
+  const activeWarehouseIds = activeWarehouses.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+  const activeWholesellerIds = activeWholesellers.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+  const activeHolderMatch = {
+    $or: [
+      { holderType: 'site', holderId: { $in: activeSiteIds } },
+      { holderType: 'online', holderId: { $in: activeSiteIds } },
+      { holderType: 'warehouse', holderId: { $in: activeWarehouseIds } },
+      { holderType: 'wholeseller', holderId: { $in: activeWholesellerIds } },
+      { siteId: { $in: activeSiteIds } }, // backward compatibility for old sale/expense rows
+    ],
+  };
+
   const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows, pendingReceivableRows, giftRows, cashDepositRows] = await Promise.all([
     SalePointEntry.aggregate([
       {
         $match: {
-          $or: [
-            { entryType: { $in: ['sale', 'return'] }, date: range },
-            { entryType: { $exists: false }, date: range },
-            { entryType: 'pay_later', paymentStatus: 'paid', paymentReceivedAt: range },
+          $and: [
+            activeHolderMatch,
+            {
+              $or: [
+                { entryType: { $in: ['sale', 'return'] }, date: range },
+                { entryType: { $exists: false }, date: range },
+                { entryType: 'pay_later', paymentStatus: 'paid', paymentReceivedAt: range },
+              ],
+            },
           ],
         },
       },
@@ -7479,7 +7508,7 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
         },
       },
     ]),
-    ExpenseEntry.aggregate([{ $match: { date: range } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
+    ExpenseEntry.aggregate([{ $match: { $and: [activeHolderMatch, { date: salesExpenseRange }] } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
     FarmExpenseEntry.aggregate([{ $match: { date: range, entryType: 'expense' } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
     FarmHRPayment.aggregate([{ $match: { paymentDate: range } }, { $group: { _id: null, amount: { $sum: '$amount' } } }]),
     FarmTreeLog.aggregate([
@@ -7500,11 +7529,11 @@ async function calculateFinancialSummaryByRange(startDate, endDate) {
       { $group: { _id: null, quantity: { $sum: '$quantity' } } },
     ]),
     SalePointEntry.aggregate([
-      { $match: { date: range, entryType: 'pay_later', paymentStatus: 'pending' } },
+      { $match: { $and: [activeHolderMatch, { date: range, entryType: 'pay_later', paymentStatus: 'pending' }] } },
       { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
     ]),
     SalePointEntry.aggregate([
-      { $match: { date: range, entryType: 'gift' } },
+      { $match: { $and: [activeHolderMatch, { date: range, entryType: 'gift' }] } },
       { $group: { _id: '$giftSourceName', quantity: { $sum: '$quantity' }, value: { $sum: { $multiply: ['$unitPrice', '$quantity'] } } } },
       { $sort: { quantity: -1 } },
     ]),

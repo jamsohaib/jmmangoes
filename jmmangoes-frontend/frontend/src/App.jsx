@@ -105,7 +105,7 @@ const ProtectedRoute = () => {
     };
   }, [location.pathname, setUser, clearUser]);
 
-  if (checking) return <div className="p-4 text-black">Checking session...</div>;
+  if (checking) return null;
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
   return <Outlet />;
 };
