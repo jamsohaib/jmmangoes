@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
-import DataTable from 'react-data-table-component';
+import DataTable from './common/DataTable';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -36,6 +36,7 @@ const ManageStocks = () => {
   const [holderLots, setHolderLots] = useState([]);
   const [adjustLots, setAdjustLots] = useState([]);
   const [ledgerSearch, setLedgerSearch] = useState('');
+  const [downloadingLedgerAll, setDownloadingLedgerAll] = useState(false);
 
   const loadData = async () => {
     const [productsRes, ledgerRes, holdersRes, stockStatusRes] = await Promise.all([
@@ -128,6 +129,20 @@ const ManageStocks = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const downloadAllLedgerEntries = async () => {
+    setDownloadingLedgerAll(true);
+    try {
+      const res = await api.get('/stocks/ledger', { params: { all: true } });
+      const rows = res.data || [];
+      downloadLedgerCsv(rows, 'all_entries');
+      toast.success(`Downloaded ${rows.length} stock transaction entr${rows.length === 1 ? 'y' : 'ies'}.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to download all stock transaction entries.');
+    } finally {
+      setDownloadingLedgerAll(false);
+    }
   };
 
   const ledgerColumns = useMemo(() => ([
@@ -504,13 +519,26 @@ const ManageStocks = () => {
 
       <div className="overflow-x-auto bg-white rounded shadow mt-6">
         <div className="px-4 py-3 border-b bg-gray-50 font-semibold">Stock Update Transaction History</div>
-        <div className="px-4 py-3 border-b">
+        <div className="px-4 py-3 border-b flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <input
             value={ledgerSearch}
             onChange={(e) => setLedgerSearch(e.target.value)}
             placeholder="Search stock transactions..."
             className="border rounded px-3 py-2 text-sm w-full md:max-w-md"
           />
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button onClick={() => downloadLedgerCsv(filteredLedgerRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">
+              Download Visible CSV
+            </button>
+            <button
+              type="button"
+              onClick={downloadAllLedgerEntries}
+              disabled={downloadingLedgerAll}
+              className="bg-green-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+            >
+              {downloadingLedgerAll ? 'Preparing...' : 'Download All Entries CSV'}
+            </button>
+          </div>
         </div>
         <DataTable
           columns={ledgerColumns}
@@ -519,13 +547,6 @@ const ManageStocks = () => {
           highlightOnHover
           striped
           dense
-          subHeader
-          subHeaderComponent={(
-            <div className="w-full flex justify-end gap-2">
-              <button onClick={() => downloadLedgerCsv(filteredLedgerRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
-              <button onClick={() => downloadLedgerCsv(ledgerRows, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
-            </div>
-          )}
           noDataComponent="No stock update transactions found."
         />
       </div>

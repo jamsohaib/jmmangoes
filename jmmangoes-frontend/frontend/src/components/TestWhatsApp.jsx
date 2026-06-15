@@ -10,6 +10,8 @@ const TestWhatsApp = () => {
   const [to, setTo] = useState('923006721290');
   const [messageType, setMessageType] = useState('text');
   const [message, setMessage] = useState('Hello this is the test message');
+  const [contentSid, setContentSid] = useState('');
+  const [contentVariables, setContentVariables] = useState('{"1":"12/1","2":"3pm"}');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -27,6 +29,8 @@ const TestWhatsApp = () => {
         to: cleaned,
         messageType,
         message: messageType === 'text' ? message : undefined,
+        contentSid: messageType === 'template' ? contentSid : undefined,
+        contentVariables: messageType === 'template' ? contentVariables : undefined,
       });
       setResult(res.data);
       toast.success(res.data?.message || 'WhatsApp test sent.');
@@ -46,7 +50,7 @@ const TestWhatsApp = () => {
       <div className="bg-white rounded shadow p-4">
         <h2 className="text-2xl font-bold mb-2">Test WhatsApp</h2>
         <p className="text-sm text-gray-600 mb-4">
-          Send Meta WhatsApp test messages through the backend configuration.
+          Send WhatsApp test messages through the backend provider configured on the server.
         </p>
 
         <form onSubmit={sendTest} className="space-y-4">
@@ -62,6 +66,7 @@ const TestWhatsApp = () => {
           </label>
 
           <div className="border rounded p-3 bg-gray-50 text-sm">
+            <div><strong>Provider:</strong> configured on server via <code>WHATSAPP_PROVIDER</code> (defaults to Meta)</div>
             <div><strong>Template:</strong> configured on server via <code>WHATSAPP_TEST_TEMPLATE_NAME</code></div>
             <div><strong>Language:</strong> configured on server via <code>WHATSAPP_TEST_TEMPLATE_LANGUAGE</code></div>
           </div>
@@ -87,6 +92,31 @@ const TestWhatsApp = () => {
                 onChange={(e) => setMessage(e.target.value)}
               />
             </label>
+          )}
+
+          {messageType === 'template' && (
+            <div className="space-y-3">
+              <label className="block">
+                <span className="text-sm font-semibold">Twilio Content SID</span>
+                <input
+                  className="border rounded p-2 w-full mt-1"
+                  value={contentSid}
+                  onChange={(e) => setContentSid(e.target.value)}
+                  placeholder="HXb5b62575e6e4ff6129ad7c8efe1f983e"
+                />
+                <span className="text-xs text-gray-500">Optional if <code>TWILIO_CONTENT_SID</code> is already set in server .env.</span>
+              </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold">Twilio Content Variables JSON</span>
+                <textarea
+                  className="border rounded p-2 w-full mt-1 min-h-24 font-mono text-sm"
+                  value={contentVariables}
+                  onChange={(e) => setContentVariables(e.target.value)}
+                  placeholder='{"1":"12/1","2":"3pm"}'
+                />
+              </label>
+            </div>
           )}
 
           <button

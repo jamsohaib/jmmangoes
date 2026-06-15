@@ -53,6 +53,7 @@ const WhatsAppEvent = require('../model/WhatsAppEventSchema');
 const GiftSource = require('../model/GiftSourceSchema');
 const Owner = require('../model/OwnerSchema');
 const { sendMail } = require('../services/mailer');
+const { sendWhatsAppMessage } = require('../services/whatsappService');
 const logger = require('../utils/logger');
 
 
@@ -4481,7 +4482,7 @@ async function handleStockAdjustments(req, res) {
 async function handleStockLedger(req, res) {
   try {
     let query = {};
-    const { holderType, holderId, movementType, productId, dateFrom, dateTo, limit = 1500 } = req.query;
+    const { holderType, holderId, movementType, productId, dateFrom, dateTo, limit = 1500, all } = req.query;
     const normalizedHolderType = normalizeEntityType(holderType);
     if (normalizedHolderType) query.holderType = normalizedHolderType;
     if (holderId) query.holderId = holderId;
@@ -4513,7 +4514,11 @@ async function handleStockLedger(req, res) {
       ];
       query = query.$or ? { $and: [query, { $or: accessOr }] } : { ...query, $or: accessOr };
     }
-    const rows = await StockLedger.find(query).sort({ createdAt: -1 }).limit(Math.min(Number(limit || 1500), 5000));
+    const queryBuilder = StockLedger.find(query).sort({ createdAt: -1 });
+    if (String(all) !== 'true') {
+      queryBuilder.limit(Math.min(Number(limit || 1500), 5000));
+    }
+    const rows = await queryBuilder;
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -8740,77 +8745,37 @@ ${safeMessage}`;
 
 async function handleSendWhatsAppTestMessage(req, res) {
   try {
-    const {
-      WHATSAPP_GRAPH_VERSION = 'v25.0',
-      WHATSAPP_PHONE_NUMBER_ID,
-      WHATSAPP_ACCESS_TOKEN,
-      WHATSAPP_TEST_TEMPLATE_NAME = 'jaspers_market_plain_text_v1',
-      WHATSAPP_TEST_TEMPLATE_LANGUAGE = 'en_US',
-    } = process.env;
-
     const to = String(req.body?.to || '').replace(/\D/g, '');
     const messageType = String(req.body?.messageType || 'template');
     const textMessage = String(req.body?.message || '').trim();
+    const contentSid = String(req.body?.contentSid || '').trim();
+    const contentVariables = String(req.body?.contentVariables || '').trim();
     if (!to) {
       return res.status(400).json({ message: 'Recipient WhatsApp number is required.' });
     }
     if (messageType === 'text' && !textMessage) {
       return res.status(400).json({ message: 'Text message is required.' });
     }
-    if (!WHATSAPP_PHONE_NUMBER_ID || !WHATSAPP_ACCESS_TOKEN) {
-      return res.status(500).json({ message: 'WhatsApp API is not configured on the server.' });
-    }
-
-    const graphUrl = `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-    const payload = messageType === 'text'
-      ? {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'text',
-          text: {
-            preview_url: false,
-            body: textMessage,
-          },
-        }
-      : {
-          messaging_product: 'whatsapp',
-          to,
-          type: 'template',
-          template: {
-            name: WHATSAPP_TEST_TEMPLATE_NAME,
-            language: { code: WHATSAPP_TEST_TEMPLATE_LANGUAGE },
-          },
-        };
-
-    const response = await fetch(graphUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
+    const result = await sendWhatsAppMessage({
+      to,
+      messageType,
+      message: messageType === 'text' ? textMessage : '',
+      contentSid,
+      contentVariables,
     });
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      logger.error('WhatsApp test message failed', {
-        status: response.status,
-        error: data?.error?.message || data,
-      });
-      return res.status(response.status).json({
-        message: data?.error?.message || 'WhatsApp test message failed.',
-        meta: data,
-      });
-    }
 
     return res.json({
       success: true,
       message: 'WhatsApp test message sent.',
-      meta: data,
+      provider: result.provider,
+      meta: result.meta,
     });
   } catch (err) {
     logger.error('Error sending WhatsApp test message', { error: err?.message || String(err) });
-    return res.status(500).json({ message: 'Server error while sending WhatsApp test message.' });
+    return res.status(err?.status || 500).json({
+      message: err?.message || 'Server error while sending WhatsApp test message.',
+      meta: err?.meta,
+    });
   }
 }
 
@@ -8974,6 +8939,105 @@ async function handleWhatsAppWebhookEvent(req, res) {
   } catch (err) {
     logger.error('WhatsApp webhook event handling failed', { error: err?.message || String(err) });
     return res.sendStatus(200);
+  }
+}
+
+function normalizeTwilioWhatsappNumber(value = '') {
+  return String(value || '').replace(/^whatsapp:/i, '').replace(/^\+/, '').trim();
+}
+
+async function handleTwilioWhatsAppIncoming(req, res) {
+  try {
+    const body = req.body || {};
+    const from = normalizeTwilioWhatsappNumber(body.From);
+    const to = normalizeTwilioWhatsappNumber(body.To);
+    const text = String(body.Body || '').trim();
+    const messageId = body.MessageSid || body.SmsMessageSid || body.SmsSid || '';
+    const messageType = Number(body.NumMedia || 0) > 0 ? 'media' : 'text';
+
+    const eventRow = await WhatsAppEvent.create({
+      eventType: 'message',
+      direction: 'incoming',
+      phoneNumberId: to,
+      displayPhoneNumber: to,
+      waId: from,
+      from,
+      recipientId: to,
+      messageId,
+      messageType,
+      text,
+      timestamp: new Date(),
+      raw: body,
+    });
+
+    await applyWhatsAppOrderReply(eventRow, { text: { body: text }, type: messageType });
+    logger.info('Twilio WhatsApp incoming message', {
+      from,
+      to,
+      messageId,
+      text,
+    });
+
+    return res.status(200).type('text/xml').send('<Response></Response>');
+  } catch (err) {
+    logger.error('Twilio WhatsApp incoming webhook failed', { error: err?.message || String(err) });
+    return res.status(200).type('text/xml').send('<Response></Response>');
+  }
+}
+
+async function handleTwilioWhatsAppStatus(req, res) {
+  try {
+    const body = req.body || {};
+    const from = normalizeTwilioWhatsappNumber(body.From);
+    const to = normalizeTwilioWhatsappNumber(body.To);
+    const messageId = body.MessageSid || body.SmsMessageSid || body.SmsSid || '';
+    const status = body.MessageStatus || body.SmsStatus || body.MessageStatusCallbackEvent || '';
+
+    await WhatsAppEvent.create({
+      eventType: 'status',
+      direction: 'outgoing',
+      phoneNumberId: from,
+      displayPhoneNumber: from,
+      recipientId: to,
+      messageId,
+      status,
+      timestamp: new Date(),
+      raw: body,
+    });
+
+    logger.info('Twilio WhatsApp message status', {
+      from,
+      to,
+      messageId,
+      status,
+      errorCode: body.ErrorCode,
+      errorMessage: body.ErrorMessage,
+    });
+
+    return res.sendStatus(200);
+  } catch (err) {
+    logger.error('Twilio WhatsApp status webhook failed', { error: err?.message || String(err) });
+    return res.sendStatus(200);
+  }
+}
+
+async function handleTwilioWhatsAppFallback(req, res) {
+  try {
+    await WhatsAppEvent.create({
+      eventType: 'unknown',
+      direction: 'unknown',
+      messageId: req.body?.MessageSid || req.body?.SmsMessageSid || req.body?.SmsSid || '',
+      status: 'fallback',
+      timestamp: new Date(),
+      raw: req.body || {},
+    });
+    logger.warn('Twilio WhatsApp fallback webhook received', {
+      messageId: req.body?.MessageSid || req.body?.SmsMessageSid || req.body?.SmsSid || '',
+    });
+    return res.status(200).type('text/xml').send('<Response></Response>');
+  } catch (err) {
+    logger.error('Twilio WhatsApp fallback webhook failed', { error: err?.message || String(err) });
+    return res.status(200).type('text/xml').send('<Response></Response>');
   }
 }
 
@@ -9356,6 +9420,9 @@ module.exports = {
     handleGetWhatsAppEvents,
     handleWhatsAppWebhookVerify,
     handleWhatsAppWebhookEvent,
+    handleTwilioWhatsAppIncoming,
+    handleTwilioWhatsAppStatus,
+    handleTwilioWhatsAppFallback,
     handleCheckout,
     
 }

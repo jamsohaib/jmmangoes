@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import jsQR from 'jsqr';
-import DataTable from 'react-data-table-component';
+import DataTable from './common/DataTable';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
@@ -48,6 +48,7 @@ const FarmTreeLogs = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState('');
   const [tableSearch, setTableSearch] = useState('');
+  const [varietyFilter, setVarietyFilter] = useState('');
   const videoRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const scanRafRef = useRef(null);
@@ -127,12 +128,75 @@ const FarmTreeLogs = () => {
     }
     return selectedTree.ageYears || selectedTree.ageYears === 0 ? `${selectedTree.ageYears} years` : '-';
   }, [selectedTree]);
+  const getTreeAgeText = (tree) => {
+    if (!tree) return '-';
+    if (tree.plantingDate) {
+      const planted = new Date(tree.plantingDate);
+      if (!Number.isNaN(planted.getTime())) {
+        const now = new Date();
+        let years = now.getFullYear() - planted.getFullYear();
+        const hasNotReachedAnniversary =
+          now.getMonth() < planted.getMonth() ||
+          (now.getMonth() === planted.getMonth() && now.getDate() < planted.getDate());
+        if (hasNotReachedAnniversary) years -= 1;
+        return `${Math.max(0, years)} years`;
+      }
+    }
+    return tree.ageYears || tree.ageYears === 0 ? `${tree.ageYears} years` : '-';
+  };
+  const TreeLocationMarker = ({ tree }) => {
+    const row = Number(tree?.rowNumber || 0);
+    const col = Number(tree?.rowTreeNumber || 0);
+    const maxRow = Math.max(3, row || 0);
+    const maxCol = Math.max(4, col || 0);
+    return (
+      <div className="inline-flex flex-col gap-1 align-middle">
+        <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${maxCol}, minmax(0, 10px))` }}>
+          {Array.from({ length: maxRow * maxCol }).map((_, index) => {
+            const r = Math.floor(index / maxCol) + 1;
+            const c = (index % maxCol) + 1;
+            const isTarget = r === row && c === col;
+            return (
+              <span
+                key={`${r}-${c}`}
+                className={`h-2.5 w-2.5 rounded-full border ${isTarget ? 'bg-red-600 border-red-700 animate-pulse' : 'bg-green-100 border-green-300'}`}
+                title={isTarget ? `Tree location Row ${row}, Col ${col}` : undefined}
+              />
+            );
+          })}
+        </div>
+        <span className="text-[10px] text-gray-600">R{row || '-'} / C{col || '-'}</span>
+      </div>
+    );
+  };
   const selectedTreeVarieties = useMemo(() => {
     if (!selectedTree) return '-';
     return Array.isArray(selectedTree.varieties) && selectedTree.varieties.length
       ? selectedTree.varieties.filter(Boolean).join(', ')
       : '-';
   }, [selectedTree]);
+  const varietyOptions = useMemo(() => {
+    const names = new Set();
+    trees.forEach((tree) => {
+      (tree.varieties || []).forEach((name) => {
+        const cleanName = String(name || '').trim();
+        if (cleanName) names.add(cleanName);
+      });
+    });
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [trees]);
+  const treesBySelectedVariety = useMemo(() => {
+    if (!varietyFilter) return [];
+    const needle = varietyFilter.toLowerCase();
+    return trees
+      .filter((tree) => (tree.varieties || []).some((name) => String(name || '').trim().toLowerCase() === needle))
+      .sort((a, b) =>
+        String(a.blockName || '').localeCompare(String(b.blockName || '')) ||
+        Number(a.rowNumber || 0) - Number(b.rowNumber || 0) ||
+        Number(a.rowTreeNumber || 0) - Number(b.rowTreeNumber || 0) ||
+        String(a.treeCode || '').localeCompare(String(b.treeCode || ''))
+      );
+  }, [trees, varietyFilter]);
   const isProductionTask = form.logType === 'production';
   const isFertilizerTask = form.logType === 'fertilizer';
   const isMaintenanceTask = form.logType === 'maintenance';
@@ -418,6 +482,76 @@ const FarmTreeLogs = () => {
             <option value="">Or select tree manually</option>
             {trees.map((t) => <option key={t._id} value={t._id}>{t.blockName} | {t.treeCode} ({t.treeId})</option>)}
           </select>
+        </div>
+        <div className="border rounded p-3 bg-amber-50">
+          <div className="flex flex-col md:flex-row md:items-end gap-3">
+            <label className="block flex-1">
+              <span className="block mb-1 text-sm font-medium text-gray-700">Filter Trees by Variety</span>
+              <select
+                className="border p-2 rounded w-full bg-white"
+                value={varietyFilter}
+                onChange={(e) => setVarietyFilter(e.target.value)}
+              >
+                <option value="">Select variety to show matching trees</option>
+                {varietyOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+            {varietyFilter ? (
+              <button
+                type="button"
+                className="px-3 py-2 rounded border border-gray-400 bg-white text-gray-700"
+                onClick={() => setVarietyFilter('')}
+              >
+                Clear Variety
+              </button>
+            ) : null}
+          </div>
+          {varietyFilter ? (
+            <div className="mt-3 overflow-x-auto bg-white rounded border">
+              <table className="min-w-full text-sm">
+                <thead className="bg-amber-100 text-gray-900">
+                  <tr>
+                    <th className="border px-3 py-2 text-left">Block</th>
+                    <th className="border px-3 py-2 text-left">Tree Code</th>
+                    <th className="border px-3 py-2 text-left">Tree ID</th>
+                    <th className="border px-3 py-2 text-left">Age</th>
+                    <th className="border px-3 py-2 text-left">Map Location</th>
+                    <th className="border px-3 py-2 text-left">Varieties</th>
+                    <th className="border px-3 py-2 text-left">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {treesBySelectedVariety.map((tree) => (
+                    <tr key={tree._id} className={selectedTreeId === tree._id ? 'bg-green-50' : ''}>
+                      <td className="border px-3 py-2">{tree.blockName || '-'}</td>
+                      <td className="border px-3 py-2">{tree.treeCode || '-'}</td>
+                      <td className="border px-3 py-2">{tree.treeId || '-'}</td>
+                      <td className="border px-3 py-2">{getTreeAgeText(tree)}</td>
+                      <td className="border px-3 py-2">Row {tree.rowNumber || '-'} / Col {tree.rowTreeNumber || '-'}</td>
+                      <td className="border px-3 py-2">{(tree.varieties || []).filter(Boolean).join(', ') || '-'}</td>
+                      <td className="border px-3 py-2">
+                        <div className="flex items-center gap-3">
+                          <TreeLocationMarker tree={tree} />
+                          <button type="button" className="text-green-700 font-semibold hover:underline whitespace-nowrap" onClick={() => applyFoundTree(tree)}>
+                            Select for Logs
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!treesBySelectedVariety.length ? (
+                    <tr>
+                      <td colSpan={7} className="border px-3 py-4 text-center text-gray-500">
+                        No trees found for {varietyFilter}.
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-600 mt-2">Select a variety to list all matching trees. Click a tree to load its details and enter logs.</p>
+          )}
         </div>
         {isScannerOpen ? (
           <div className="mt-2 border rounded p-3 bg-gray-50">

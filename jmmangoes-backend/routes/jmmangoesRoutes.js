@@ -347,6 +347,9 @@ jmm_route.get('/shippingCosts/public', jmm_controller.handleFetchingShippingCost
 jmm_route.post('/contact-query', jmm_controller.handleContactQuery);
 jmm_route.get('/webhooks/whatsapp', jmm_controller.handleWhatsAppWebhookVerify);
 jmm_route.post('/webhooks/whatsapp', jmm_controller.handleWhatsAppWebhookEvent);
+jmm_route.post('/webhooks/twilio/whatsapp', jmm_controller.handleTwilioWhatsAppIncoming);
+jmm_route.post('/webhooks/twilio/whatsapp/status', jmm_controller.handleTwilioWhatsAppStatus);
+jmm_route.post('/webhooks/twilio/whatsapp/fallback', jmm_controller.handleTwilioWhatsAppFallback);
 
 jmm_route.post('/checkout', jmm_controller.handleCheckout);
 jmm_route.get('/orders/feedback/:orderNumber', jmm_controller.handleGetOrderFeedbackMeta);

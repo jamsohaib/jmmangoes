@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
-import DataTable from 'react-data-table-component';
+import DataTable from './common/DataTable';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 

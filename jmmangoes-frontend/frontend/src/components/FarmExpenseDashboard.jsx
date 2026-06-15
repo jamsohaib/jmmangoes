@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import DataTable from 'react-data-table-component';
+import DataTable from './common/DataTable';
 import { Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import api from '../lib/api';
