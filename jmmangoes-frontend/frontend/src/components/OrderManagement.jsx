@@ -233,9 +233,13 @@ const OrderManagement = () => {
       paymentMode: f.paymentMode || order?.paymentMode || 'cod',
     };
     if (!window.confirm('Dispatch this order?')) return;
-    await api.put(`/orders/${id}/dispatch`, payload);
-    toast.success('Order dispatched.');
-    await load();
+    try {
+      await api.put(`/orders/${id}/dispatch`, payload);
+      toast.success('Order dispatched.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to dispatch order.');
+    }
   };
 
   const assignCourier = async (id) => {
@@ -243,9 +247,13 @@ const OrderManagement = () => {
     const f = dispatchForm[id] || {};
     if (!f.courierId) return toast.warn('Select courier.');
     const payload = { ...f, paymentMode: f.paymentMode || order?.paymentMode || 'cod' };
-    await api.put(`/orders/${id}/assign-courier`, payload);
-    toast.success('Courier assigned.');
-    await load();
+    try {
+      await api.put(`/orders/${id}/assign-courier`, payload);
+      toast.success('Courier assigned.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to assign courier.');
+    }
   };
 
   const printCourierLabels = (order) => {

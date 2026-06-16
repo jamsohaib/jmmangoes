@@ -120,6 +120,7 @@ const AdminUsers = () => {
   const [form, setForm] = useState(createEmptyForm());
   const [editingId, setEditingId] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [resetPasswordOpen, setResetPasswordOpen] = useState(false);
 
   const loadData = async () => {
     const [usersRes, sitesRes, warehousesRes, wholesellersRes, blocksRes] = await Promise.all([api.get('/users'), api.get('/sites'), api.get('/warehouses'), api.get('/wholesellers'), api.get('/farm/blocks/assignable')]);
@@ -153,6 +154,7 @@ const AdminUsers = () => {
 
   const openEdit = (u) => {
     setEditingId(u._id);
+    setResetPasswordOpen(false);
     setForm({
       ...createEmptyForm(),
       name: u.name || '',
@@ -183,7 +185,10 @@ const AdminUsers = () => {
       if (!String(payload.email || '').trim()) {
         delete payload.email;
       }
-      if (!payload.password && !payload.confirmPassword) {
+      if (!resetPasswordOpen) {
+        delete payload.password;
+        delete payload.confirmPassword;
+      } else if (!payload.password && !payload.confirmPassword) {
         delete payload.password;
         delete payload.confirmPassword;
       }
@@ -191,6 +196,7 @@ const AdminUsers = () => {
       toast.success('User updated.');
       setModalOpen(false);
       setEditingId('');
+      setResetPasswordOpen(false);
       setForm(createEmptyForm());
       await loadData();
     } catch (err) {
@@ -502,14 +508,31 @@ const AdminUsers = () => {
                   <option value="admin">Admin</option>
                 </select>
               </div>
-              <div>
-                <label className="block mb-1 text-sm font-medium text-gray-700">Reset Password</label>
-                <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Enter new password (optional)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-                <p className="text-xs text-gray-500 mt-1">Leave blank to keep current password unchanged.</p>
-              </div>
-              <div>
-                <label className="block mb-1 text-sm font-medium text-gray-700">Confirm Reset Password</label>
-                <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Confirm new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
+              <div className="border rounded p-3 bg-gray-50">
+                <label className="inline-flex items-center gap-2 font-medium text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={resetPasswordOpen}
+                    onChange={(e) => {
+                      setResetPasswordOpen(e.target.checked);
+                      if (!e.target.checked) setForm((prev) => ({ ...prev, password: '', confirmPassword: '' }));
+                    }}
+                  />
+                  Reset user password
+                </label>
+                <p className="text-xs text-gray-500 mt-1">Keep unchecked when only changing access privileges.</p>
+                {resetPasswordOpen ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                    <div>
+                      <label className="block mb-1 text-sm font-medium text-gray-700">New Password</label>
+                      <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Enter new password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-sm font-medium text-gray-700">Confirm New Password</label>
+                      <input type="password" autoComplete="new-password" className="w-full border p-2 rounded" placeholder="Confirm new password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <label className="inline-flex items-center gap-2">

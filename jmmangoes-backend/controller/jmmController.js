@@ -627,18 +627,13 @@ async function handleLogin(req, res) {
     const isMatch = await user.matchPassword(password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
 
-    // Generate JWT with role included
+    // Keep the cookie token small and rehydrate permissions from DB in auth middleware.
     const token = jwt.sign(
       {
-        id: user._id,
+        id: String(user._id),
         role: user.role,
         name: user.name,
         username: user.username,
-        permissions: user.permissions || {},
-        siteAccess: (user.siteAccess || []).map((s) => String(s)),
-        warehouseAccess: (user.warehouseAccess || []).map((w) => String(w)),
-        wholesellerAccess: (user.wholesellerAccess || []).map((w) => String(w)),
-        farmBlockAccess: (user.farmBlockAccess || []).map((b) => String(b)),
         isFarmUser: !!user.isFarmUser,
         isSalesUser: !!user.isSalesUser,
       },
@@ -661,7 +656,7 @@ async function handleLogin(req, res) {
       message: 'Logged in successfully',
       url: req.url,
       user: {
-        id: user._id,
+        id: String(user._id),
         email: user.email,
         username: user.username,
         role: user.role,
@@ -676,7 +671,8 @@ async function handleLogin(req, res) {
       }
     });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    logger.error('Login error after credential check', { error: err?.message || String(err), username });
+    res.status(500).json({ message: 'Login failed. Please contact admin if this continues.' });
   }
 }
 
@@ -4427,11 +4423,16 @@ async function handleUpdateUser(req, res) {
     user.permissions = permissions ?? user.permissions;
     if (typeof isActive === 'boolean') user.isActive = isActive;
 
-    if (password || confirmPassword) {
-      if (!password || !confirmPassword || password !== confirmPassword) {
+    const newPassword = String(password || '').trim();
+    const newConfirmPassword = String(confirmPassword || '').trim();
+    if (newPassword || newConfirmPassword) {
+      if (!newPassword || !newConfirmPassword || newPassword !== newConfirmPassword) {
         return res.status(400).json({ message: 'Password confirmation does not match' });
       }
-      user.password = password;
+      if (newPassword.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      }
+      user.password = newPassword;
     }
 
     await user.save();
@@ -5529,11 +5530,18 @@ async function handleDispatchOrder(req, res) {
       jmmContactNumber: courier.jmmContactNumber || '',
     };
     await order.save();
-    await sendOrderAlertEmails(
-      `Order Dispatched - ${order.orderNumber}`,
-      `Order ${order.orderNumber} dispatched.\nTracking: ${trackingNumber}\nCourier: ${courier.name}\nCourier Contact: ${order.courier.courierHelpline}\nJM Contact: ${order.courier.jmmContactPersonName} ${order.courier.jmmContactNumber}`,
-      order.customer?.email
-    );
+    try {
+      await sendOrderAlertEmails(
+        `Order Dispatched - ${order.orderNumber}`,
+        `Order ${order.orderNumber} dispatched.\nTracking: ${trackingNumber}\nCourier: ${courier.name}\nCourier Contact: ${order.courier.courierHelpline}\nJM Contact: ${order.courier.jmmContactPersonName} ${order.courier.jmmContactNumber}`,
+        order.customer?.email
+      );
+    } catch (mailErr) {
+      logger.warn('Order dispatched but notification email failed', {
+        orderNumber: order.orderNumber,
+        error: mailErr?.message || String(mailErr),
+      });
+    }
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
