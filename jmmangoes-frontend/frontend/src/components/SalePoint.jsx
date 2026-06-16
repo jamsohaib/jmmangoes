@@ -63,6 +63,7 @@ const SalePoint = () => {
   const [customerName, setCustomerName] = useState('');
   const [customerWhatsapp, setCustomerWhatsapp] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
+  const [sendWhatsAppOnSale, setSendWhatsAppOnSale] = useState(true);
 
   const [returnProductId, setReturnProductId] = useState('');
   const [returnQuantity, setReturnQuantity] = useState('');
@@ -210,6 +211,7 @@ const SalePoint = () => {
         customerWhatsapp,
         customerEmail,
         paymentMethodId: hasChargeableSaleItems ? selectedPaymentMethodId : '',
+        sendWhatsApp: sendWhatsAppOnSale,
         items: saleItems.map((i) => ({
           productId: i.productId,
           quantity: i.quantity,
@@ -226,6 +228,7 @@ const SalePoint = () => {
       setCustomerWhatsapp('');
       setCustomerEmail('');
       setSelectedPaymentMethodId(CASH_PAYMENT_METHOD_ID);
+      setSendWhatsAppOnSale(true);
       await loadStock(siteId);
       await loadEntries(siteId, dateFrom, dateTo);
     } catch (err) {
@@ -681,9 +684,19 @@ const SalePoint = () => {
             <button onClick={printReceipt} disabled={saleItems.length === 0} className="bg-slate-700 text-white px-4 py-2 rounded disabled:opacity-60">
               Print Receipt
             </button>
-            <button onClick={proceedPayment} disabled={!canManage || saleItems.length === 0} className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-60">
-              Proceed Payment
-            </button>
+            <div className="flex flex-col gap-1">
+              <button onClick={proceedPayment} disabled={!canManage || saleItems.length === 0} className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-60">
+                Proceed Payment
+              </button>
+              <label className="inline-flex items-center gap-2 text-xs text-green-700">
+                <input
+                  type="checkbox"
+                  checked={sendWhatsAppOnSale}
+                  onChange={(e) => setSendWhatsAppOnSale(e.target.checked)}
+                />
+                Send WhatsApp thank-you
+              </label>
+            </div>
           </div>
         </div>
       </div>

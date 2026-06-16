@@ -114,7 +114,7 @@ const AddExpenses = () => {
   ];
 
   const holderChoices = useMemo(() => {
-    if (holderType === 'site') return holders.sites || [];
+    if (holderType === 'site') return (holders.sites || []).filter((s) => String(s.name || '').trim().toLowerCase() !== 'online');
     if (holderType === 'online') return (holders.sites || []).filter((s) => String(s.name || '').trim().toLowerCase() === 'online');
     if (holderType === 'warehouse') return holders.warehouses || [];
     if (holderType === 'wholeseller') return holders.wholesellers || [];

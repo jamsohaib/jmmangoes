@@ -11,6 +11,7 @@ const OrderManagement = () => {
   const [orders, setOrders] = useState([]);
   const [couriers, setCouriers] = useState([]);
   const [dispatchForm, setDispatchForm] = useState({});
+  const [whatsAppPrefs, setWhatsAppPrefs] = useState({});
 
   const [rejectModal, setRejectModal] = useState({ open: false, orderId: '', reason: 'Order cancelled due to stock unavailability' });
   const [cancelModal, setCancelModal] = useState({ open: false, orderId: '', reason: '' });
@@ -86,6 +87,21 @@ const OrderManagement = () => {
       </div>
     );
   };
+  const whatsAppKey = (action, orderId) => `${action}:${orderId}`;
+  const whatsAppEnabled = (action, orderId) => whatsAppPrefs[whatsAppKey(action, orderId)] !== false;
+  const setWhatsAppEnabled = (action, orderId, checked) => {
+    setWhatsAppPrefs((prev) => ({ ...prev, [whatsAppKey(action, orderId)]: checked }));
+  };
+  const WhatsAppCheckbox = ({ action, orderId, label = 'Send WhatsApp' }) => (
+    <label className="inline-flex items-center gap-1 text-xs text-green-700">
+      <input
+        type="checkbox"
+        checked={whatsAppEnabled(action, orderId)}
+        onChange={(e) => setWhatsAppEnabled(action, orderId, e.target.checked)}
+      />
+      {label}
+    </label>
+  );
 
   const load = async () => {
     const ordersRes = await api.get('/orders');
@@ -168,8 +184,20 @@ const OrderManagement = () => {
 
   const confirmOrder = async (id) => {
     if (!window.confirm('Confirm this order?')) return;
-    await api.put(`/orders/${id}/confirm`, {});
+    await api.put(`/orders/${id}/confirm`, { sendWhatsApp: whatsAppEnabled('confirm', id) });
     toast.success('Order confirmed.');
+    await load();
+  };
+
+  const toggleCustomerConfirmation = async (order) => {
+    const isConfirmed = order?.customerConfirmation?.status === 'confirmed';
+    const nextStatus = isConfirmed ? 'none' : 'confirmed';
+    const message = isConfirmed
+      ? 'Mark this customer confirmation as not confirmed?'
+      : 'Mark this customer as confirmed by admin/phone call?';
+    if (!window.confirm(message)) return;
+    await api.put(`/orders/${order._id}/customer-confirmation`, { status: nextStatus });
+    toast.success(isConfirmed ? 'Customer confirmation removed.' : 'Customer marked confirmed.');
     await load();
   };
 
@@ -231,6 +259,7 @@ const OrderManagement = () => {
       courierId,
       trackingNumber,
       paymentMode: f.paymentMode || order?.paymentMode || 'cod',
+      sendWhatsApp: whatsAppEnabled('dispatch', id),
     };
     if (!window.confirm('Dispatch this order?')) return;
     try {
@@ -314,7 +343,7 @@ const OrderManagement = () => {
 
   const markDelivered = async (id) => {
     if (!window.confirm('Mark as delivered?')) return;
-    await api.put(`/orders/${id}/deliver`, {});
+    await api.put(`/orders/${id}/deliver`, { sendWhatsApp: whatsAppEnabled('deliver', id) });
     toast.success('Order marked delivered.');
     await load();
   };
@@ -700,8 +729,14 @@ const OrderManagement = () => {
           <button onClick={() => openStockOptions(o)} className="text-blue-700 hover:underline">View Stock Options</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
           <CustomerConfirmationBadge order={o} />
+          <button onClick={() => toggleCustomerConfirmation(o)} className="text-teal-700 hover:underline">
+            {o?.customerConfirmation?.status === 'confirmed' ? 'Unmark Customer Confirmed' : 'Mark Customer Confirmed'}
+          </button>
           {o?.stockReservation?.isReserved ? (
-            <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
+            <span className="inline-flex items-center gap-2">
+              <button onClick={() => confirmOrder(o._id)} className="text-green-700 hover:underline">Confirm</button>
+              <WhatsAppCheckbox action="confirm" orderId={o._id} />
+            </span>
           ) : (
             <span className="text-amber-700">Reserve stock first</span>
           )}
@@ -727,7 +762,10 @@ const OrderManagement = () => {
         <div className="space-y-2 w-full">
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
-            <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
+            <span className="inline-flex items-center gap-2">
+              <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
+              <WhatsAppCheckbox action="dispatch" orderId={o._id} />
+            </span>
             <button onClick={() => setCancelModal({ open: true, orderId: o._id, reason: '' })} className="text-red-600 hover:underline">Cancel Order</button>
           </div>
           <div className="grid grid-cols-1 gap-1.5">
@@ -760,7 +798,10 @@ const OrderManagement = () => {
         <div className="flex gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
-          <button onClick={() => markDelivered(o._id)} className="text-green-700 hover:underline">Mark Delivered</button>
+          <span className="inline-flex items-center gap-2">
+            <button onClick={() => markDelivered(o._id)} className="text-green-700 hover:underline">Mark Delivered</button>
+            <WhatsAppCheckbox action="deliver" orderId={o._id} />
+          </span>
           <button onClick={() => setReturnModal({ open: true, orderId: o._id, reason: 'Customer return request' })} className="text-red-600 hover:underline">Mark Returned</button>
         </div>
       ))}

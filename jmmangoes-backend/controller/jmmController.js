@@ -506,6 +506,52 @@ async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
   await sendMail({ to: unique.join(','), subject, text, html });
 }
 
+function cleanWhatsAppNumber(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function getOrderCustomerWhatsApp(order) {
+  return cleanWhatsAppNumber(order?.customer?.mobile || order?.customer?.phone || order?.customer?.contactNumber || '');
+}
+
+function orderItemsSummary(orderOrItems) {
+  const items = Array.isArray(orderOrItems) ? orderOrItems : (orderOrItems?.items || []);
+  return items
+    .map((item) => `${item?.name || item?.productName || 'Product'} x ${Number(item?.quantity || 0)}`)
+    .join(', ');
+}
+
+function getEnvFirst(...keys) {
+  for (const key of keys) {
+    const value = String(process.env[key] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+async function sendWhatsAppTemplateIfEnabled({ enabled = true, to, contentSid, variables = {}, label = 'WhatsApp notification' }) {
+  if (!enabled) return { skipped: true, reason: 'disabled' };
+  const recipient = cleanWhatsAppNumber(to);
+  if (!recipient) return { skipped: true, reason: 'missing-recipient' };
+  if (!contentSid) {
+    logger.info(`${label} skipped because template SID is not configured`);
+    return { skipped: true, reason: 'missing-template-sid' };
+  }
+  try {
+    const result = await sendWhatsAppMessage({
+      to: recipient,
+      messageType: 'template',
+      contentSid,
+      contentVariables: JSON.stringify(variables || {}),
+    });
+    logger.info(`${label} sent`, { to: recipient, sid: result?.meta?.sid || result?.meta?.messages?.[0]?.id || '' });
+    return result;
+  } catch (err) {
+    logger.warn(`${label} failed`, { error: err?.message || String(err), meta: err?.meta });
+    return { skipped: true, reason: 'send-failed', error: err?.message || String(err) };
+  }
+}
+
 async function sendOrderStockRequestEmailsForSite(siteId, subject, text, html = '') {
   const fallbackEmail = 'engr.dr.ahmed.sohaib@gmail.com';
   const users = await userDetails.find({
@@ -1534,7 +1580,7 @@ async function handleCreateSalePointEntry(req, res) {
 
 async function handleCreateSaleCheckout(req, res) {
   try {
-    const { siteId, holderType = 'site', holderId = '', date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '', paymentMethodId = '' } = req.body;
+    const { siteId, holderType = 'site', holderId = '', date, items = [], customerName = '', customerWhatsapp = '', customerEmail = '', paymentMethodId = '', sendWhatsApp = true } = req.body;
     const holder = await resolveEntity(holderType || 'site', holderId || siteId, { allowOnlineName: true });
     if (!holder || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Invalid sale checkout data' });
@@ -1647,6 +1693,18 @@ async function handleCreateSaleCheckout(req, res) {
       discountTotal += lineDiscount;
       netTotal += netAmount;
     }
+
+    await sendWhatsAppTemplateIfEnabled({
+      enabled: sendWhatsApp !== false,
+      to: customerWhatsapp,
+      contentSid: getEnvFirst('TWILIO_TEMPLATE_STALL_PURCHASE_THANK_YOU_SID', 'TWILIO_STALL_PURCHASE_THANK_YOU_CONTENT_SID'),
+      variables: {
+        1: String(customerName || 'Customer').trim() || 'Customer',
+        2: orderItemsSummary(createdEntries),
+        3: holder.name || 'JM Mangoes',
+      },
+      label: 'Stall purchase WhatsApp thank-you',
+    });
 
     return res.status(201).json({ success: true, entries: createdEntries, grossTotal, priceIncreaseTotal, discountTotal, netTotal });
   } catch (err) {
@@ -3869,6 +3927,7 @@ function buildCompanyDepositAccessMatch(req) {
 async function calculateCashPositionForHolder(holder) {
   const holderId = new mongoose.Types.ObjectId(String(holder.id));
   const holderMatch = { holderType: holder.type, holderId };
+  const isOnlineHolder = holder.type === 'online' || (holder.type === 'site' && String(holder.name || '').trim().toLowerCase() === 'online');
   const saleMatch = {
     $and: [
       {
@@ -3927,11 +3986,33 @@ async function calculateCashPositionForHolder(holder) {
     ]),
   ]);
 
+  const onlineOrderAgg = isOnlineHolder
+    ? await Order.aggregate([
+        { $match: { status: { $nin: ['rejected', 'cancelled', 'returned'] } } },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: { $ifNull: ['$paymentDetails.payableAmount', '$totalCost'] } },
+            quantity: {
+              $sum: {
+                $reduce: {
+                  input: { $ifNull: ['$items', []] },
+                  initialValue: 0,
+                  in: { $add: ['$$value', { $ifNull: ['$$this.quantity', 0] }] },
+                },
+              },
+            },
+          },
+        },
+      ])
+    : [];
+
   const depositMap = depositsAgg.reduce((acc, row) => {
     acc[row._id] = { amount: Number(row.amount || 0), count: Number(row.count || 0) };
     return acc;
   }, {});
-  const salesAmount = Number(salesAgg?.[0]?.amount || 0);
+  const salesAmount = Number(salesAgg?.[0]?.amount || 0) + Number(onlineOrderAgg?.[0]?.amount || 0);
+  const salesQuantity = Number(salesAgg?.[0]?.quantity || 0) + Number(onlineOrderAgg?.[0]?.quantity || 0);
   const expenseAmount = Number(expensesAgg?.[0]?.amount || 0);
   const acceptedDepositAmount = Number(depositMap.accepted?.amount || 0);
   const pendingDepositAmount = Number(depositMap.pending?.amount || 0);
@@ -3942,7 +4023,7 @@ async function calculateCashPositionForHolder(holder) {
     holderId: String(holder.id),
     holderName: holder.name,
     salesAmount,
-    salesQuantity: Number(salesAgg?.[0]?.quantity || 0),
+    salesQuantity,
     expenseAmount,
     acceptedDepositAmount,
     pendingDepositAmount,
@@ -5242,6 +5323,7 @@ async function handleReserveOrderStock(req, res) {
 async function handleConfirmOrder(req, res) {
   try {
     const { id } = req.params;
+    const { sendWhatsApp = true } = req.body || {};
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!order?.stockReservation?.isReserved) {
@@ -5255,6 +5337,42 @@ async function handleConfirmOrder(req, res) {
     };
     await order.save();
     await sendOrderAlertEmails(`Order Confirmed - ${order.orderNumber}`, `Your order ${order.orderNumber} has been confirmed.`, order.customer?.email);
+    await sendWhatsAppTemplateIfEnabled({
+      enabled: sendWhatsApp !== false,
+      to: getOrderCustomerWhatsApp(order),
+      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_CONFIRMED_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMATION_SID'),
+      variables: {
+        1: order.customer?.name || 'Customer',
+        2: order.orderNumber || '',
+        3: orderItemsSummary(order),
+        4: String(Number(order.finalAmount || order.totalCost || 0).toFixed(0)),
+      },
+      label: 'Order confirmed WhatsApp notification',
+    });
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleSetOrderCustomerConfirmation(req, res) {
+  try {
+    const { id } = req.params;
+    const { status = 'confirmed' } = req.body || {};
+    const normalizedStatus = status === 'confirmed' ? 'confirmed' : 'none';
+    const order = await Order.findById(id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    order.customerConfirmation = {
+      status: normalizedStatus,
+      respondedAt: normalizedStatus === 'confirmed' ? new Date() : null,
+      responseSource: normalizedStatus === 'confirmed' ? 'admin' : '',
+      responseMessageId: '',
+      responseText: normalizedStatus === 'confirmed'
+        ? `Marked customer confirmed by ${req.user?.name || req.user?.username || 'admin'}`
+        : '',
+    };
+    await order.save();
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -5466,7 +5584,7 @@ async function handleGetFulfilmentSiteProducts(req, res) {
 async function handleDispatchOrder(req, res) {
   try {
     const { id } = req.params;
-    const { courierId, trackingNumber = '', paymentMode = 'cod' } = req.body;
+    const { courierId, trackingNumber = '', paymentMode = 'cod', sendWhatsApp = true } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const courier = await Courier.findById(courierId);
@@ -5547,6 +5665,19 @@ async function handleDispatchOrder(req, res) {
         error: mailErr?.message || String(mailErr),
       });
     }
+    await sendWhatsAppTemplateIfEnabled({
+      enabled: sendWhatsApp !== false,
+      to: getOrderCustomerWhatsApp(order),
+      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_DISPATCHED_SID', 'TWILIO_ORDER_DISPATCHED_CONTENT_SID'),
+      variables: {
+        1: order.customer?.name || 'Customer',
+        2: order.orderNumber || '',
+        3: orderItemsSummary(order),
+        4: courier.name || order.courier?.courierName || '',
+        5: trackingNumber || order.courier?.trackingNumber || '',
+      },
+      label: 'Order dispatched WhatsApp notification',
+    });
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -5615,6 +5746,7 @@ async function handleCancelOrder(req, res) {
 async function handleDeliverOrder(req, res) {
   try {
     const { id } = req.params;
+    const { sendWhatsApp = true } = req.body || {};
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     order.status = 'delivered';
@@ -5640,6 +5772,18 @@ async function handleDeliverOrder(req, res) {
       order.customer?.email,
       htmlBody
     );
+    await sendWhatsAppTemplateIfEnabled({
+      enabled: sendWhatsApp !== false,
+      to: getOrderCustomerWhatsApp(order),
+      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_DELIVERED_FEEDBACK_SID', 'TWILIO_ORDER_DELIVERED_FEEDBACK_CONTENT_SID'),
+      variables: {
+        1: order.customer?.name || 'Customer',
+        2: order.orderNumber || '',
+        3: orderItemsSummary(order),
+        4: feedbackUrl,
+      },
+      label: 'Order delivered WhatsApp feedback notification',
+    });
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -8832,21 +8976,42 @@ function extractOrderNumberFromWhatsAppText(...parts) {
 }
 
 function getWhatsAppOrderAction(...parts) {
-  const combined = parts.filter(Boolean).join(' ').toLowerCase();
+  const combined = parts.filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g, ' ');
   if (/\b(confirm|confirmed|yes|approve|approved)\b/.test(combined)) return 'confirmed';
   if (/\b(cancel|cancelled|canceled|no|reject|rejected)\b/.test(combined)) return 'cancelled';
   return '';
+}
+
+async function findRecentOpenOrderByWhatsAppSender(eventRow) {
+  const sender = cleanWhatsAppNumber(eventRow?.from || eventRow?.waId || '');
+  if (!sender) return null;
+  const senderLast10 = sender.slice(-10);
+  const recentOrders = await Order.find({
+    status: { $in: ['pending_confirmation', 'confirmed'] },
+  }).sort({ createdAt: -1 }).limit(50);
+
+  return recentOrders.find((order) => {
+    const customerNumber = getOrderCustomerWhatsApp(order);
+    if (!customerNumber) return false;
+    return (
+      customerNumber === sender
+      || sender.endsWith(customerNumber)
+      || customerNumber.endsWith(senderLast10)
+    );
+  }) || null;
 }
 
 async function applyWhatsAppOrderReply(eventRow, message) {
   const text = message.text?.body || eventRow.text || '';
   const action = getWhatsAppOrderAction(eventRow.buttonText, eventRow.buttonPayload, text);
   const orderNumber = extractOrderNumberFromWhatsAppText(eventRow.buttonPayload, text, eventRow.buttonText);
-  if (!action || !orderNumber) return eventRow;
+  if (!action) return eventRow;
 
-  const order = await Order.findOne({ orderNumber });
+  const order = orderNumber
+    ? await Order.findOne({ orderNumber })
+    : await findRecentOpenOrderByWhatsAppSender(eventRow);
   if (!order) {
-    eventRow.orderNumber = orderNumber;
+    eventRow.orderNumber = orderNumber || '';
     eventRow.actionTaken = 'order_not_found';
     await eventRow.save();
     return eventRow;
@@ -8965,8 +9130,10 @@ async function handleTwilioWhatsAppIncoming(req, res) {
     const from = normalizeTwilioWhatsappNumber(body.From);
     const to = normalizeTwilioWhatsappNumber(body.To);
     const text = String(body.Body || '').trim();
+    const buttonText = String(body.ButtonText || body.ButtonTitle || body.Button || '').trim();
+    const buttonPayload = String(body.ButtonPayload || body.ButtonId || body.PostbackData || body.Payload || '').trim();
     const messageId = body.MessageSid || body.SmsMessageSid || body.SmsSid || '';
-    const messageType = Number(body.NumMedia || 0) > 0 ? 'media' : 'text';
+    const messageType = buttonText || buttonPayload ? 'button' : (Number(body.NumMedia || 0) > 0 ? 'media' : 'text');
 
     const eventRow = await WhatsAppEvent.create({
       eventType: 'message',
@@ -8979,16 +9146,24 @@ async function handleTwilioWhatsAppIncoming(req, res) {
       messageId,
       messageType,
       text,
+      buttonText,
+      buttonPayload,
       timestamp: new Date(),
       raw: body,
     });
 
-    await applyWhatsAppOrderReply(eventRow, { text: { body: text }, type: messageType });
+    await applyWhatsAppOrderReply(eventRow, {
+      text: { body: text },
+      type: messageType,
+      button: { text: buttonText, payload: buttonPayload },
+    });
     logger.info('Twilio WhatsApp incoming message', {
       from,
       to,
       messageId,
       text,
+      buttonText,
+      buttonPayload,
     });
 
     return res.status(200).type('text/xml').send('<Response></Response>');
@@ -9202,6 +9377,23 @@ ${lines}`;
       .catch((mailErr) => {
         logger.warn('Order placed but email sending failed', { error: mailErr?.message || String(mailErr) });
       });
+    sendWhatsAppTemplateIfEnabled({
+      enabled: true,
+      to: customerPhone,
+      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_CONFIRM_REQUEST_SID', 'TWILIO_ORDER_CONFIRM_REQUEST_CONTENT_SID'),
+      variables: {
+        1: customerName,
+        2: orderNumber,
+        3: orderItemsSummary(items),
+        4: String(Number(payableAmount || 0).toFixed(0)),
+      },
+      label: 'Order confirmation request WhatsApp notification',
+    }).catch((waErr) => {
+      logger.warn('Order placed but WhatsApp confirmation request failed', {
+        orderNumber,
+        error: waErr?.message || String(waErr),
+      });
+    });
 
     res.status(201).json({ success: true, orderId: order._id, orderNumber, totalCost, payableAmount });
   } catch (err) {
@@ -9323,6 +9515,7 @@ module.exports = {
     handleGetPendingOrderStockRequests,
     handleRespondOrderStockRequest,
     handleConfirmOrder,
+    handleSetOrderCustomerConfirmation,
     handleRejectOrder,
     handleModifyOrder,
     handlePreviewFulfilmentSites,
