@@ -305,12 +305,13 @@ async function getSiteProductAvailableQtyByName(siteId, productName) {
   return rows.reduce((sum, r) => sum + Number(r.quantityAvailable || 0), 0);
 }
 
-async function consumeSiteProductLotsByName(siteId, productName, qty) {
+async function consumeHolderProductLotsByName(holderType, holderId, productName, qty) {
   let remaining = Number(qty || 0);
   const touched = [];
+  const normalizedHolderType = normalizeEntityType(holderType);
   const lots = await StockLot.find({
-    holderType: 'site',
-    holderId: siteId,
+    holderType: normalizedHolderType,
+    holderId,
     productName,
     quantityAvailable: { $gt: 0 },
   }).sort({ receivedAt: 1, createdAt: 1 });
@@ -326,6 +327,10 @@ async function consumeSiteProductLotsByName(siteId, productName, qty) {
     remaining -= take;
   }
   return { ok: true, available, touched };
+}
+
+async function consumeSiteProductLotsByName(siteId, productName, qty) {
+  return consumeHolderProductLotsByName('site', siteId, productName, qty);
 }
 
 function toPositiveInt(value, fallback = null) {
@@ -5477,7 +5482,7 @@ async function handleDispatchOrder(req, res) {
       for (const it of (order.items || [])) {
         const needed = Number(it.quantity || 0);
         if (needed <= 0) continue;
-        const consumed = await consumeSiteProductLotsByName(onlineSite._id, it.name, needed);
+        const consumed = await consumeHolderProductLotsByName('online', onlineSite._id, it.name, needed);
         if (!consumed.ok) {
           for (const c of consumedAll) {
             const lot = await StockLot.findById(c.lotId);
