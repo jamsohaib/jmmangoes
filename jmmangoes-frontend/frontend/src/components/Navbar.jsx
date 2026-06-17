@@ -15,6 +15,7 @@ const Navbar = () => {
   const [farmOpen, setFarmOpen] = useState(false);
   const [charityOpen, setCharityOpen] = useState(false);
   const [ownersOpen, setOwnersOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [communicationsOpen, setCommunicationsOpen] = useState(false);
   const cartCount = useCartStore((state) => state.totalItems());
 
@@ -25,6 +26,7 @@ const Navbar = () => {
     setFarmOpen(false);
     setCharityOpen(false);
     setOwnersOpen(false);
+    setAnalysisOpen(false);
     setCommunicationsOpen(false);
   };
 
@@ -109,6 +111,11 @@ const Navbar = () => {
   ];
   const visibleOwnerLinks = ownerLinks.filter((link) => canView(link.key));
   const showOwnersMenu = visibleOwnerLinks.length > 0;
+  const analysisLinks = [
+    { to: '/analysis/farm-production-map', label: 'Farm Production Map', key: 'analysisFarmProductionMap' },
+  ];
+  const visibleAnalysisLinks = analysisLinks.filter((link) => canView(link.key));
+  const showAnalysisMenu = visibleAnalysisLinks.length > 0;
   const communicationsLinks = [
     { to: '/communications/test-whatsapp', label: 'Test WhatsApp', key: 'communications' },
     { to: '/communications/whatsapp-logs', label: 'WhatsApp Logs', key: 'communications' },
@@ -178,6 +185,7 @@ const Navbar = () => {
               setFarmOpen(false);
               setCharityOpen(false);
               setOwnersOpen(false);
+              setAnalysisOpen(false);
               setCommunicationsOpen(false);
             }}
             className="inline-flex items-center gap-2 text-green-700 font-bold px-3 py-2 border border-green-700 rounded"
@@ -209,6 +217,7 @@ const Navbar = () => {
                     setFarmOpen(false);
                     setCharityOpen(false);
                     setOwnersOpen(false);
+                    setAnalysisOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -241,6 +250,7 @@ const Navbar = () => {
                     setFarmOpen(false);
                     setCharityOpen(false);
                     setOwnersOpen(false);
+                    setAnalysisOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -273,6 +283,7 @@ const Navbar = () => {
                     setSalesOpen(false);
                     setCharityOpen(false);
                     setOwnersOpen(false);
+                    setAnalysisOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -305,6 +316,7 @@ const Navbar = () => {
                     setSalesOpen(false);
                     setFarmOpen(false);
                     setOwnersOpen(false);
+                    setAnalysisOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -337,6 +349,7 @@ const Navbar = () => {
                     setSalesOpen(false);
                     setFarmOpen(false);
                     setCharityOpen(false);
+                    setAnalysisOpen(false);
                     setCommunicationsOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
@@ -359,6 +372,39 @@ const Navbar = () => {
                 </ul>
               </li>
             )}
+            {showAnalysisMenu && (
+              <li className="relative group">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAnalysisOpen((prev) => !prev);
+                    setAdminOpen(false);
+                    setSalesOpen(false);
+                    setFarmOpen(false);
+                    setCharityOpen(false);
+                    setOwnersOpen(false);
+                    setCommunicationsOpen(false);
+                  }}
+                  className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
+                >
+                  Analysis
+                  <span className="inline-flex items-center" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" />
+                    </svg>
+                  </span>
+                </button>
+                <ul className={`mt-1 md:mt-0 md:absolute md:left-0 ${analysisOpen ? 'block' : 'hidden'} bg-white shadow-md z-50 min-w-[220px]`}>
+                  {visibleAnalysisLinks.map((link) => (
+                    <li key={link.to}>
+                      <Link to={link.to} onClick={closeMenus} className="flex items-center px-4 py-2 text-gray-700 hover:bg-gray-100">
+                        <LinkIcon />{link.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            )}
             {showCommunicationsMenu && (
               <li className="relative group">
                 <button
@@ -370,6 +416,7 @@ const Navbar = () => {
                     setFarmOpen(false);
                     setCharityOpen(false);
                     setOwnersOpen(false);
+                    setAnalysisOpen(false);
                   }}
                   className="text-gray-700 hover:text-green-600 cursor-pointer inline-flex items-center gap-1"
                 >

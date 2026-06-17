@@ -7135,6 +7135,148 @@ async function handleGetFarmBlockLogs(req, res) {
   }
 }
 
+async function handleGetFarmProductionHeatMap(req, res) {
+  try {
+    const { financialYearId = '', clusterId = '', blockId = '' } = req.query || {};
+    const financialYear = await resolveFinancialYear(financialYearId);
+    if (!financialYear) return res.status(400).json({ message: 'Financial year is required' });
+    if (!clusterId) return res.status(400).json({ message: 'Cluster is required' });
+
+    const cluster = await FarmCluster.findById(clusterId);
+    if (!cluster) return res.status(404).json({ message: 'Cluster not found' });
+
+    const allowedBlocks = userAllowedFarmBlocks(req);
+    const blockQuery = { clusterId: cluster._id };
+    if (allowedBlocks) blockQuery._id = { $in: Array.from(allowedBlocks) };
+    const blocks = await FarmBlock.find(blockQuery).sort({ clusterRow: 1, clusterCol: 1, code: 1 });
+    const accessibleBlockIds = blocks.map((b) => b._id);
+    const accessibleBlockSet = new Set(accessibleBlockIds.map(String));
+
+    let selectedBlock = null;
+    if (blockId) {
+      if (!accessibleBlockSet.has(String(blockId))) return res.status(403).json({ message: 'Access denied for this block' });
+      selectedBlock = blocks.find((b) => String(b._id) === String(blockId)) || await FarmBlock.findById(blockId);
+    }
+
+    const range = { $gte: new Date(financialYear.startDate), $lte: new Date(financialYear.endDate) };
+    range.$gte.setHours(0, 0, 0, 0);
+    range.$lte.setHours(23, 59, 59, 999);
+
+    const [treeBlockProductionRows, directBlockProductionRows] = accessibleBlockIds.length
+      ? await Promise.all([
+        FarmTreeLog.aggregate([
+          { $match: { blockId: { $in: accessibleBlockIds }, logDate: range, logType: { $in: ['production', 'harvest'] } } },
+          {
+            $group: {
+              _id: '$blockId',
+              quantity: { $sum: { $ifNull: ['$quantity', 0] } },
+              gradeA: { $sum: { $ifNull: ['$gradeA', 0] } },
+              gradeB: { $sum: { $ifNull: ['$gradeB', 0] } },
+              gradeC: { $sum: { $ifNull: ['$gradeC', 0] } },
+              gradeD: { $sum: { $ifNull: ['$gradeD', 0] } },
+            },
+          },
+        ]),
+        FarmBlockLog.aggregate([
+          { $match: { blockId: { $in: accessibleBlockIds }, logDate: range, logType: 'production' } },
+          {
+            $group: {
+              _id: '$blockId',
+              quantity: { $sum: { $ifNull: ['$quantity', 0] } },
+            },
+          },
+        ]),
+      ])
+      : [[], []];
+
+    const blockProductionMap = new Map(treeBlockProductionRows.map((row) => [String(row._id), row]));
+    directBlockProductionRows.forEach((row) => {
+      const key = String(row._id);
+      const existing = blockProductionMap.get(key) || {};
+      blockProductionMap.set(key, {
+        ...existing,
+        quantity: Number(existing.quantity || 0) + Number(row.quantity || 0),
+        blockLogQuantity: Number(row.quantity || 0),
+      });
+    });
+    const blockRows = blocks.map((block) => {
+      const production = blockProductionMap.get(String(block._id)) || {};
+      return {
+        _id: block._id,
+        name: block.name,
+        code: block.code,
+        blockName: block.name,
+        blockCode: block.code,
+        clusterRow: block.clusterRow,
+        clusterCol: block.clusterCol,
+        gridRows: block.gridRows,
+        gridCols: block.gridCols,
+        productionQty: Number(production.quantity || 0),
+        blockLogProductionQty: Number(production.blockLogQuantity || 0),
+        treeProductionQty: Number(production.quantity || 0) - Number(production.blockLogQuantity || 0),
+        gradeA: Number(production.gradeA || 0),
+        gradeB: Number(production.gradeB || 0),
+        gradeC: Number(production.gradeC || 0),
+        gradeD: Number(production.gradeD || 0),
+      };
+    });
+
+    let trees = [];
+    if (selectedBlock) {
+      const treeRows = await FarmTree.find({ blockId: selectedBlock._id }).sort({ rowNumber: 1, rowTreeNumber: 1, treeCode: 1 });
+      const treeIds = treeRows.map((tree) => tree._id);
+      const treeProductionRows = treeIds.length
+        ? await FarmTreeLog.aggregate([
+            { $match: { treeId: { $in: treeIds }, logDate: range, logType: { $in: ['production', 'harvest'] } } },
+            {
+              $group: {
+                _id: '$treeId',
+                quantity: { $sum: { $ifNull: ['$quantity', 0] } },
+                gradeA: { $sum: { $ifNull: ['$gradeA', 0] } },
+                gradeB: { $sum: { $ifNull: ['$gradeB', 0] } },
+                gradeC: { $sum: { $ifNull: ['$gradeC', 0] } },
+                gradeD: { $sum: { $ifNull: ['$gradeD', 0] } },
+              },
+            },
+          ])
+        : [];
+      const treeProductionMap = new Map(treeProductionRows.map((row) => [String(row._id), row]));
+      trees = treeRows.map((tree) => {
+        const production = treeProductionMap.get(String(tree._id)) || {};
+        return {
+          _id: tree._id,
+          treeCode: tree.treeCode,
+          treeId: tree.treeId,
+          rowNumber: tree.rowNumber,
+          rowTreeNumber: tree.rowTreeNumber,
+          varieties: tree.varieties || [],
+          productionQty: Number(production.quantity || 0),
+          gradeA: Number(production.gradeA || 0),
+          gradeB: Number(production.gradeB || 0),
+          gradeC: Number(production.gradeC || 0),
+          gradeD: Number(production.gradeD || 0),
+        };
+      });
+    }
+
+    return res.status(200).json({
+      financialYear,
+      cluster,
+      blocks: blockRows,
+      selectedBlock,
+      trees,
+      totals: {
+        clusterProductionQty: blockRows.reduce((sum, row) => sum + Number(row.productionQty || 0), 0),
+        selectedBlockProductionQty: selectedBlock
+          ? Number(blockRows.find((row) => String(row._id) === String(selectedBlock._id))?.productionQty || 0)
+          : 0,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateFarmBlockLog(req, res) {
   try {
     const { blockId, logType, logDate, quantity = 0, unit = '', details = '' } = req.body || {};
@@ -9568,6 +9710,7 @@ module.exports = {
     handleCompleteMaintenanceTask,
     handleGetFarmBlockDetails,
     handleGetFarmBlockLogs,
+    handleGetFarmProductionHeatMap,
     handleCreateFarmBlockLog,
     handleGetFarmExpenseHeads,
     handleCreateFarmExpenseHead,

@@ -264,7 +264,7 @@ jmm_route.get('/farm/blocks', authenticateUser, authorizeAnyPage(['farmBlocks', 
 jmm_route.post('/farm/blocks', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleCreateFarmBlock);
 jmm_route.put('/farm/blocks/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleUpdateFarmBlock);
 jmm_route.delete('/farm/blocks/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleDeleteFarmBlock);
-jmm_route.get('/farm/clusters', authenticateUser, authorizeAnyPage(['farmBlocks', 'farmTrees', 'farmBlockDetails'], 'view'), jmm_controller.handleGetFarmClusters);
+jmm_route.get('/farm/clusters', authenticateUser, authorizeAnyPage(['farmBlocks', 'farmTrees', 'farmBlockDetails', 'analysisFarmProductionMap'], 'view'), jmm_controller.handleGetFarmClusters);
 jmm_route.post('/farm/clusters', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleCreateFarmCluster);
 jmm_route.put('/farm/clusters/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleUpdateFarmCluster);
 jmm_route.delete('/farm/clusters/:id', authenticateUser, authorizePage('farmBlocks', 'manage'), jmm_controller.handleDeleteFarmCluster);
@@ -295,6 +295,7 @@ jmm_route.get('/farm/dashboard-summary', authenticateUser, authorizePage('farmDa
 jmm_route.get('/farm/block-details', authenticateUser, authorizePage('farmBlockDetails', 'view'), jmm_controller.handleGetFarmBlockDetails);
 jmm_route.get('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'view'), jmm_controller.handleGetFarmBlockLogs);
 jmm_route.post('/farm/block-logs', authenticateUser, authorizePage('farmBlockLogs', 'manage'), jmm_controller.handleCreateFarmBlockLog);
+jmm_route.get('/analysis/farm-production-map', authenticateUser, authorizePage('analysisFarmProductionMap', 'view'), jmm_controller.handleGetFarmProductionHeatMap);
 jmm_route.get('/farm/expense-heads', authenticateUser, authorizeAnyPage(['farmExpenseManage', 'farmExpenseAdd'], 'view'), jmm_controller.handleGetFarmExpenseHeads);
 jmm_route.post('/farm/expense-heads', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleCreateFarmExpenseHead);
 jmm_route.put('/farm/expense-heads/:id', authenticateUser, authorizePage('farmExpenseManage', 'manage'), jmm_controller.handleUpdateFarmExpenseHead);
@@ -307,7 +308,7 @@ jmm_route.post('/farm/expense-entries', authenticateUser, authorizePage('farmExp
 jmm_route.get('/farm/expense-entries', authenticateUser, authorizeAnyPage(['farmExpenseAdd', 'farmExpenseDashboard'], 'view'), jmm_controller.handleGetFarmExpenseEntries);
 jmm_route.put('/farm/expense-entries/:id', authenticateUser, authorizePage('farmExpenseAdd', 'manage'), jmm_controller.handleUpdateFarmExpenseEntry);
 jmm_route.get('/farm/expense-dashboard', authenticateUser, authorizePage('farmExpenseDashboard', 'view'), jmm_controller.handleGetFarmExpenseDashboard);
-jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseAdd', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses', 'farmUsherManage', 'farmUsherEntries', 'farmUsherReport', 'ownerShareReport'], 'view'), jmm_controller.handleGetFinancialYears);
+jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseAdd', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses', 'farmUsherManage', 'farmUsherEntries', 'farmUsherReport', 'ownerShareReport', 'analysisFarmProductionMap'], 'view'), jmm_controller.handleGetFinancialYears);
 jmm_route.post('/financial-years', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleCreateFinancialYear);
 jmm_route.put('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleUpdateFinancialYear);
 jmm_route.delete('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleDeleteFinancialYear);

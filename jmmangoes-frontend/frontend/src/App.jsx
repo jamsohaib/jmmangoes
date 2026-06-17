@@ -57,6 +57,7 @@ import FarmVarieties from './components/FarmVarieties';
 import FarmTrees from './components/FarmTrees';
 import FarmTreeLogs from './components/FarmTreeLogs';
 import FarmDashboard from './components/FarmDashboard';
+import FarmProductionMapAnalysis from './components/FarmProductionMapAnalysis';
 import FarmMaintenanceTasks from './components/FarmMaintenanceTasks';
 import FarmBlockDetails from './components/FarmBlockDetails';
 import FarmBlockLogs from './components/FarmBlockLogs';
@@ -196,6 +197,7 @@ function App() {
              <Route path="/farm-logs" element={<FarmTreeLogs />} />
              <Route path="/farm-maintenance-tasks" element={<FarmMaintenanceTasks />} />
              <Route path="/farm-dashboard" element={<FarmDashboard />} />
+             <Route path="/analysis/farm-production-map" element={<FarmProductionMapAnalysis />} />
              <Route path="/farm-manage-expenses" element={<FarmManageExpenses />} />
              <Route path="/farm-add-expenses" element={<FarmAddExpenses />} />
              <Route path="/farm-expense-dashboard" element={<FarmExpenseDashboard />} />

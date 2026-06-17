@@ -79,6 +79,12 @@ const permissionGroups = [
       { key: 'ownerShareReport', label: 'Owner Share Report' },
     ],
   },
+  {
+    title: 'Analysis Tab',
+    items: [
+      { key: 'analysisFarmProductionMap', label: 'Farm Production Map' },
+    ],
+  },
 ];
 
 const permissionKeys = permissionGroups.flatMap((group) => group.items);
