@@ -8024,24 +8024,46 @@ async function handleGetOwnerShareReport(req, res) {
   try {
     const fy = await resolveFinancialYear(req.query?.financialYearId || '');
     if (!fy) return res.status(200).json({ financialYear: null, summary: null, rows: [] });
-    const [financialSummary, usherSummary, owners] = await Promise.all([
+    const hrRange = { $gte: new Date(fy.startDate), $lte: new Date(fy.endDate) };
+    hrRange.$gte.setHours(0, 0, 0, 0);
+    hrRange.$lte.setHours(23, 59, 59, 999);
+    const [financialSummary, usherSummary, owners, hrRows] = await Promise.all([
       calculateFinancialSummaryByRange(fy.startDate, fy.endDate, fy._id),
       calculateFarmUsherSummary(fy._id),
       Owner.find({ isActive: true }).sort({ name: 1 }),
+      FarmHRPayment.aggregate([
+        {
+          $match: {
+            $or: [
+              { financialYearId: fy._id },
+              { paymentDate: hrRange },
+            ],
+          },
+        },
+        { $group: { _id: null, amount: { $sum: '$amount' } } },
+      ]),
     ]);
     const usherTotals = usherSummary?.totals || {};
     const farmYieldRevenue = Number(usherTotals.totalYieldValue || 0);
     const usherPaid = Number(usherTotals.usherPaid || 0);
     const salesExpenses = Number(financialSummary?.expenses?.sales || 0);
-    const farmExpenses = Number(financialSummary?.expenses?.farm || 0);
-    const totalExpenses = salesExpenses + farmExpenses + usherPaid;
-    const net = farmYieldRevenue - totalExpenses;
+    const directFarmHrExpenses = Number(hrRows?.[0]?.amount || 0);
+    const farmExpenseIncludingHr = Number(financialSummary?.expenses?.farm || financialSummary?.farmExpenses || 0);
+    const farmHrAlreadyInSummary = Number(financialSummary?.farmHrExpenses || 0);
+    const farmOperatingExpenses = Math.max(farmExpenseIncludingHr - farmHrAlreadyInSummary, 0);
+    const farmExpenses = farmOperatingExpenses + directFarmHrExpenses;
+    const totalExpenses = salesExpenses + farmExpenses;
+    const net = farmYieldRevenue - totalExpenses - usherPaid;
     const usherRemaining = Number(usherTotals.usherRemaining || 0);
     const summary = {
       ...(financialSummary || {}),
       revenue: farmYieldRevenue,
       expenses: {
         ...(financialSummary?.expenses || {}),
+        sales: salesExpenses,
+        farm: farmExpenses,
+        farmOperating: farmOperatingExpenses,
+        farmHr: directFarmHrExpenses,
         total: totalExpenses,
       },
       totalExpenses,
