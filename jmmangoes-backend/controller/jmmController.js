@@ -8024,12 +8024,37 @@ async function handleGetOwnerShareReport(req, res) {
   try {
     const fy = await resolveFinancialYear(req.query?.financialYearId || '');
     if (!fy) return res.status(200).json({ financialYear: null, summary: null, rows: [] });
-    const [summary, owners] = await Promise.all([
+    const [financialSummary, usherSummary, owners] = await Promise.all([
       calculateFinancialSummaryByRange(fy.startDate, fy.endDate, fy._id),
+      calculateFarmUsherSummary(fy._id),
       Owner.find({ isActive: true }).sort({ name: 1 }),
     ]);
-    const net = Number(summary?.net || 0);
-    const usherRemaining = Number(summary?.usher?.remaining || 0);
+    const usherTotals = usherSummary?.totals || {};
+    const farmYieldRevenue = Number(usherTotals.totalYieldValue || 0);
+    const usherPaid = Number(usherTotals.usherPaid || 0);
+    const salesExpenses = Number(financialSummary?.expenses?.sales || 0);
+    const farmExpenses = Number(financialSummary?.expenses?.farm || 0);
+    const totalExpenses = salesExpenses + farmExpenses + usherPaid;
+    const net = farmYieldRevenue - totalExpenses;
+    const usherRemaining = Number(usherTotals.usherRemaining || 0);
+    const summary = {
+      ...(financialSummary || {}),
+      revenue: farmYieldRevenue,
+      expenses: {
+        ...(financialSummary?.expenses || {}),
+        total: totalExpenses,
+      },
+      totalExpenses,
+      net,
+      usher: {
+        ...(financialSummary?.usher || {}),
+        totalYieldValue: farmYieldRevenue,
+        totalPayable: Number(usherTotals.totalPayableUsher || 0),
+        paid: usherPaid,
+        remaining: usherRemaining,
+        percentage: Number(usherTotals.usherPercentage || 5),
+      },
+    };
     const rows = owners.map((owner) => ({
       ownerId: owner._id,
       name: owner.name,
