@@ -198,6 +198,9 @@ const SalePoint = () => {
   const proceedPayment = async () => {
     if (!canManage) return toast.warn('No manage permission.');
     if (!siteId || saleItems.length === 0) return toast.warn('Add at least one sale item.');
+    if (sendWhatsAppOnSale && !String(customerWhatsapp || '').replace(/\D/g, '')) {
+      return toast.warn('Enter customer WhatsApp number or uncheck WhatsApp thank-you.');
+    }
     const paymentLine = hasChargeableSaleItems ? `\nPayment Mode: ${selectedPaymentMethodName}` : '';
     const ok = window.confirm(`Confirm payment and save sale?\nNet Amount: PKR ${saleTotals.net.toFixed(2)}${paymentLine}`);
     if (!ok) return;

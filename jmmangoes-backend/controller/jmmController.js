@@ -507,7 +507,9 @@ async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
 }
 
 function cleanWhatsAppNumber(value) {
-  return String(value || '').replace(/\D/g, '');
+  const digits = String(value || '').replace(/\D/g, '');
+  if (/^03\d{9}$/.test(digits)) return `92${digits.slice(1)}`;
+  return digits;
 }
 
 function getOrderCustomerWhatsApp(order) {
@@ -1701,7 +1703,6 @@ async function handleCreateSaleCheckout(req, res) {
       variables: {
         1: String(customerName || 'Customer').trim() || 'Customer',
         2: orderItemsSummary(createdEntries),
-        3: holder.name || 'JM Mangoes',
       },
       label: 'Stall purchase WhatsApp thank-you',
     });
@@ -3263,7 +3264,11 @@ async function handleGetSalesDashboardSummary(req, res) {
     const onlineDaily = onlineDailyAgg[0] || { salesAmount: 0, salesQty: 0 };
     const onlineRange = onlineRangeAgg[0] || { salesAmount: 0, salesQty: 0 };
 
-    const allHolderKeys = new Set(activeSites.map((s) => `site:${String(s._id)}`));
+    const allHolderKeys = new Set(
+      activeSites
+        .filter((s) => String(s.name || '').trim().toLowerCase() !== 'online')
+        .map((s) => `site:${String(s._id)}`)
+    );
     const holderNameMap = new Map();
     activeSites.forEach((s) => {
       holderNameMap.set(`site:${String(s._id)}`, s.name);
@@ -3333,7 +3338,7 @@ async function handleGetSalesDashboardSummary(req, res) {
 
     if (allowOnline && onlineSite?._id) {
       const onlineSiteId = String(onlineSite._id);
-      const onlineKey = `site:${onlineSiteId}`;
+      const onlineKey = `online:${onlineSiteId}`;
       const existingOverall = salesOverallMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
       const existingDaily = salesDailyMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
       const existingRange = salesRangeMap.get(onlineKey) || { salesAmount: 0, salesQty: 0 };
@@ -3351,7 +3356,7 @@ async function handleGetSalesDashboardSummary(req, res) {
           salesQty: Number(existingRange.salesQty || 0) + Number(onlineRange.salesQty || 0),
         });
       }
-      allHolderKeys.add(`site:${onlineSiteId}`);
+      allHolderKeys.add(onlineKey);
     }
 
     const siteCards = Array.from(allHolderKeys)
