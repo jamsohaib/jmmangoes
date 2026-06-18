@@ -83,6 +83,7 @@ const userSchema = new mongoose.Schema({
       courierManagement: { view: false, manage: false },
       feedbackReport: { view: false, manage: false },
       salesDashboard: { view: false, manage: false },
+      productWiseSalesReport: { view: false, manage: false },
       salesCashTransactions: { view: false, manage: false },
       warehouseManagement: { view: false, manage: false },
       wholesellerManagement: { view: false, manage: false },
@@ -110,6 +111,8 @@ const userSchema = new mongoose.Schema({
       ownerManagement: { view: false, manage: false },
       ownerShareReport: { view: false, manage: false },
       analysisFarmProductionMap: { view: false, manage: false },
+      analysisNoProductionTrees: { view: false, manage: false },
+      analysisUnspecifiedTrees: { view: false, manage: false },
       actionLogs: { view: false, manage: false },
     }
   },

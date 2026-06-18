@@ -27,6 +27,7 @@ const permissionGroups = [
     title: 'Sales Tab',
     items: [
       { key: 'salesDashboard', label: 'Sales Dashboard' },
+      { key: 'productWiseSalesReport', label: 'Product Wise Sale Report' },
       { key: 'salesCashTransactions', label: 'Cash Transactions' },
       { key: 'companyCashDeposits', label: 'Company Cash Deposit Register' },
       { key: 'salePoint', label: 'Sale Point' },
@@ -79,12 +80,14 @@ const permissionGroups = [
       { key: 'ownerShareReport', label: 'Owner Share Report' },
     ],
   },
-  {
-    title: 'Analysis Tab',
-    items: [
-      { key: 'analysisFarmProductionMap', label: 'Farm Production Map' },
-    ],
-  },
+    {
+      title: 'Analysis Tab',
+      items: [
+        { key: 'analysisFarmProductionMap', label: 'Farm Production Map' },
+        { key: 'analysisNoProductionTrees', label: 'Trees With No Production' },
+        { key: 'analysisUnspecifiedTrees', label: 'Unspecified Trees' },
+      ],
+    },
 ];
 
 const permissionKeys = permissionGroups.flatMap((group) => group.items);

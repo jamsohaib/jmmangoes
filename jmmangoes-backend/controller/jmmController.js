@@ -3641,6 +3641,176 @@ async function handleGetExpenseHeads(req, res) {
   }
 }
 
+function salesReportDateRange(dateFrom = '', dateTo = '') {
+  if (!dateFrom && !dateTo) return null;
+  const range = {};
+  if (dateFrom) {
+    range.$gte = new Date(dateFrom);
+    range.$gte.setHours(0, 0, 0, 0);
+  }
+  if (dateTo) {
+    range.$lte = new Date(dateTo);
+    range.$lte.setHours(23, 59, 59, 999);
+  }
+  return Object.keys(range).length ? range : null;
+}
+
+async function getAccessibleSalesHolders(req) {
+  let sites = await Site.find({ isActive: true }).select('_id name').sort({ name: 1 });
+  let warehouses = await Warehouse.find({ isActive: true }).select('_id name').sort({ name: 1 });
+  let wholesellers = await Wholeseller.find({ isActive: true }).select('_id name').sort({ name: 1 });
+  if (req.user.role !== 'admin') {
+    const siteSet = new Set((req.user.siteAccess || []).map(String));
+    const warehouseSet = new Set((req.user.warehouseAccess || []).map(String));
+    const wholesellerSet = new Set((req.user.wholesellerAccess || []).map(String));
+    sites = sites.filter((s) => siteSet.has(String(s._id)));
+    warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
+    wholesellers = wholesellers.filter((w) => wholesellerSet.has(String(w._id)));
+  }
+  const siteIds = sites.map((s) => new mongoose.Types.ObjectId(String(s._id)));
+  const warehouseIds = warehouses.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+  const wholesellerIds = wholesellers.map((w) => new mongoose.Types.ObjectId(String(w._id)));
+  const holderNameMap = new Map();
+  sites.forEach((s) => {
+    holderNameMap.set(`site:${String(s._id)}`, s.name);
+    holderNameMap.set(`online:${String(s._id)}`, s.name);
+  });
+  warehouses.forEach((w) => holderNameMap.set(`warehouse:${String(w._id)}`, w.name));
+  wholesellers.forEach((w) => holderNameMap.set(`wholeseller:${String(w._id)}`, w.name));
+  return { sites, warehouses, wholesellers, siteIds, warehouseIds, wholesellerIds, holderNameMap };
+}
+
+async function handleGetProductWiseSalesReport(req, res) {
+  try {
+    const { dateFrom = '', dateTo = '' } = req.query || {};
+    const range = salesReportDateRange(dateFrom, dateTo);
+    const access = await getAccessibleSalesHolders(req);
+    const accessMatch = {
+      $or: [
+        { holderType: 'site', holderId: { $in: access.siteIds } },
+        { holderType: 'online', holderId: { $in: access.siteIds } },
+        { holderType: 'warehouse', holderId: { $in: access.warehouseIds } },
+        { holderType: 'wholeseller', holderId: { $in: access.wholesellerIds } },
+        { siteId: { $in: access.siteIds }, holderType: { $exists: false } },
+        { siteId: { $in: access.siteIds }, holderType: 'site' },
+      ],
+    };
+    const saleDateRule = (dateField) => (range ? { [dateField]: range } : {});
+    const saleRows = await SalePointEntry.aggregate([
+      {
+        $match: {
+          $and: [
+            accessMatch,
+            {
+              $or: [
+                { entryType: { $in: ['sale', 'return'] }, ...saleDateRule('date') },
+                { entryType: { $exists: false }, ...saleDateRule('date') },
+                { entryType: 'pay_later', paymentStatus: 'paid', ...saleDateRule('paymentReceivedAt') },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        $addFields: {
+          effectiveHolderType: { $ifNull: ['$holderType', 'site'] },
+          effectiveHolderId: { $ifNull: ['$holderId', '$siteId'] },
+          signedQty: {
+            $cond: [{ $eq: ['$entryType', 'return'] }, { $multiply: ['$quantity', -1] }, '$quantity'],
+          },
+          signedAmount: {
+            $cond: [{ $eq: ['$entryType', 'return'] }, { $multiply: ['$netAmount', -1] }, '$netAmount'],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            productName: '$productName',
+            holderType: '$effectiveHolderType',
+            holderId: '$effectiveHolderId',
+          },
+          quantity: { $sum: '$signedQty' },
+          amount: { $sum: '$signedAmount' },
+        },
+      },
+    ]);
+
+    const onlineSite = access.sites.find((s) => String(s.name || '').trim().toLowerCase() === 'online') || null;
+    const canSeeOnline = req.user.role === 'admin' || !!onlineSite;
+    const orderRows = [];
+    if (canSeeOnline) {
+      const orderMatch = { status: { $nin: ['rejected', 'cancelled', 'returned'] } };
+      if (range) orderMatch.createdAt = range;
+      const orders = await Order.find(orderMatch).select('items totalCost shippingCost discountAmount paymentDetails fulfilmentSiteId fulfilmentSiteName stockReservation createdAt');
+      orders.forEach((order) => {
+        const items = Array.isArray(order.items) ? order.items : [];
+        const itemSubtotal = items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+        const totalDiscount = Number(order.discountAmount || 0) + Number(order.paymentDetails?.paymentDiscount || 0);
+        const holderType = 'online';
+        const holderId = onlineSite?._id || order.fulfilmentSiteId || order.stockReservation?.sourceSiteId || null;
+        if (!holderId) return;
+        items.forEach((item) => {
+          const qty = Number(item.quantity || 0);
+          if (qty <= 0) return;
+          const gross = Number(item.price || 0) * qty;
+          const discountShare = itemSubtotal > 0 ? totalDiscount * (gross / itemSubtotal) : 0;
+          orderRows.push({
+            _id: {
+              productName: item.name || item.productName || 'Product',
+              holderType,
+              holderId,
+            },
+            quantity: qty,
+            amount: Math.max(0, gross - discountShare),
+          });
+        });
+      });
+    }
+
+    const combined = [...saleRows, ...orderRows];
+    const holderRowsMap = new Map();
+    const productRowsMap = new Map();
+    combined.forEach((row) => {
+      const productName = String(row._id?.productName || 'Product').trim() || 'Product';
+      const holderType = String(row._id?.holderType || 'site');
+      const holderId = String(row._id?.holderId || '');
+      const holderKey = `${holderType}:${holderId}`;
+      const holderName = access.holderNameMap.get(holderKey) || (holderType === 'online' ? 'online' : 'Unknown');
+      const quantity = Number(row.quantity || 0);
+      const amount = Number(row.amount || 0);
+      const detailKey = `${productName}::${holderKey}`;
+      if (!holderRowsMap.has(detailKey)) {
+        holderRowsMap.set(detailKey, { productName, holderType, holderId, holderName, quantity: 0, totalSale: 0, averageSalePrice: 0 });
+      }
+      const detail = holderRowsMap.get(detailKey);
+      detail.quantity += quantity;
+      detail.totalSale += amount;
+      if (!productRowsMap.has(productName)) {
+        productRowsMap.set(productName, { productName, quantity: 0, totalSale: 0, averageSalePrice: 0 });
+      }
+      const product = productRowsMap.get(productName);
+      product.quantity += quantity;
+      product.totalSale += amount;
+    });
+
+    const overallProducts = Array.from(productRowsMap.values())
+      .map((row) => ({ ...row, averageSalePrice: row.quantity ? row.totalSale / row.quantity : 0 }))
+      .sort((a, b) => b.totalSale - a.totalSale);
+    const holderBreakdown = Array.from(holderRowsMap.values())
+      .map((row) => ({ ...row, averageSalePrice: row.quantity ? row.totalSale / row.quantity : 0 }))
+      .sort((a, b) => a.productName.localeCompare(b.productName) || a.holderName.localeCompare(b.holderName));
+    const totals = {
+      quantity: overallProducts.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+      totalSale: overallProducts.reduce((sum, row) => sum + Number(row.totalSale || 0), 0),
+    };
+    totals.averageSalePrice = totals.quantity ? totals.totalSale / totals.quantity : 0;
+    return res.status(200).json({ dateFrom, dateTo, totals, overallProducts, holderBreakdown });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateExpenseHead(req, res) {
   try {
     const { name, colorCode = '#6B7280' } = req.body;
@@ -7277,6 +7447,114 @@ async function handleGetFarmProductionHeatMap(req, res) {
   }
 }
 
+function treeHasVariety(tree, varietyName = '') {
+  const safe = String(varietyName || '').trim().toLowerCase();
+  if (!safe) return true;
+  return (tree.varieties || []).some((v) => String(v || '').trim().toLowerCase() === safe);
+}
+
+function treeAnalysisAge(tree) {
+  if (tree.plantingDate) return calculateTreeAgeYearsFromDate(tree.plantingDate);
+  return Number(tree.ageYears || 0);
+}
+
+function buildTreeAnalysisRow(tree, block, productionMap = new Map()) {
+  const ageYears = treeAnalysisAge(tree);
+  const production = productionMap.get(String(tree._id)) || {};
+  return {
+    _id: tree._id,
+    treeCode: tree.treeCode,
+    treeId: tree.treeId,
+    blockId: tree.blockId,
+    blockName: tree.blockName || block?.name || '',
+    blockCode: tree.blockCode || block?.code || '',
+    rowNumber: tree.rowNumber,
+    rowTreeNumber: tree.rowTreeNumber,
+    gridRows: block?.gridRows || 0,
+    gridCols: block?.gridCols || 0,
+    varieties: tree.varieties || [],
+    plantingDate: tree.plantingDate,
+    ageYears,
+    productionQty: Number(production.quantity || 0),
+    missingVariety: !(tree.varieties || []).filter(Boolean).length,
+    missingAge: !tree.plantingDate && !Number(tree.ageYears || 0),
+  };
+}
+
+async function getAnalysisBaseTrees(req, filters = {}) {
+  const allowedBlocks = userAllowedFarmBlocks(req);
+  const blockQuery = {};
+  if (allowedBlocks) blockQuery._id = { $in: Array.from(allowedBlocks) };
+  if (filters.blockId) blockQuery._id = filters.blockId;
+  const blocks = await FarmBlock.find(blockQuery).sort({ code: 1, name: 1 });
+  const blockIds = blocks.map((block) => block._id);
+  const blockMap = new Map(blocks.map((block) => [String(block._id), block]));
+  const treeQuery = { blockId: { $in: blockIds } };
+  const trees = blockIds.length
+    ? await FarmTree.find(treeQuery).sort({ blockCode: 1, rowNumber: 1, rowTreeNumber: 1, treeCode: 1 })
+    : [];
+  return { blocks, blockMap, trees };
+}
+
+async function buildNoProductionTreesReport(req) {
+  const { financialYearId = '', variety = '', blockId = '', minAge = '', maxAge = '' } = req.query || {};
+  const financialYear = await resolveFinancialYear(financialYearId);
+  if (!financialYear) return { financialYear: null, blocks: [], rows: [] };
+  const { blocks, blockMap, trees } = await getAnalysisBaseTrees(req, { blockId });
+  const treeIds = trees.map((tree) => tree._id);
+  const range = { $gte: new Date(financialYear.startDate), $lte: new Date(financialYear.endDate) };
+  range.$gte.setHours(0, 0, 0, 0);
+  range.$lte.setHours(23, 59, 59, 999);
+  const productionRows = treeIds.length
+    ? await FarmTreeLog.aggregate([
+        { $match: { treeId: { $in: treeIds }, logDate: range, logType: { $in: ['production', 'harvest'] } } },
+        { $group: { _id: '$treeId', quantity: { $sum: { $ifNull: ['$quantity', 0] } } } },
+      ])
+    : [];
+  const productionMap = new Map(productionRows.map((row) => [String(row._id), row]));
+  const min = minAge !== '' ? Number(minAge) : null;
+  const max = maxAge !== '' ? Number(maxAge) : null;
+  const rows = trees
+    .map((tree) => buildTreeAnalysisRow(tree, blockMap.get(String(tree.blockId)), productionMap))
+    .filter((row) => Number(row.productionQty || 0) <= 0)
+    .filter((row) => treeHasVariety(row, variety))
+    .filter((row) => (min === null || Number(row.ageYears || 0) >= min))
+    .filter((row) => (max === null || Number(row.ageYears || 0) <= max));
+  return { financialYear, blocks, rows };
+}
+
+async function buildUnspecifiedTreesReport(req) {
+  const { variety = '', blockId = '', minAge = '', maxAge = '' } = req.query || {};
+  const { blocks, blockMap, trees } = await getAnalysisBaseTrees(req, { blockId });
+  const min = minAge !== '' ? Number(minAge) : null;
+  const max = maxAge !== '' ? Number(maxAge) : null;
+  const rows = trees
+    .map((tree) => buildTreeAnalysisRow(tree, blockMap.get(String(tree.blockId))))
+    .filter((row) => row.missingVariety || row.missingAge)
+    .filter((row) => treeHasVariety(row, variety))
+    .filter((row) => (min === null || Number(row.ageYears || 0) >= min))
+    .filter((row) => (max === null || Number(row.ageYears || 0) <= max));
+  return { blocks, rows };
+}
+
+async function handleGetNoProductionTreesReport(req, res) {
+  try {
+    const report = await buildNoProductionTreesReport(req);
+    return res.status(200).json(report);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetUnspecifiedTreesReport(req, res) {
+  try {
+    const report = await buildUnspecifiedTreesReport(req);
+    return res.status(200).json(report);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateFarmBlockLog(req, res) {
   try {
     const { blockId, logType, logDate, quantity = 0, unit = '', details = '' } = req.body || {};
@@ -9649,6 +9927,7 @@ module.exports = {
     handleUpdatePayLaterAmount,
     handleMarkPayLaterPaid,
     handleGetSalesDashboardSummary,
+    handleGetProductWiseSalesReport,
     handleGetGiftSources,
     handleCreateGiftSource,
     handleUpdateGiftSource,
@@ -9758,6 +10037,8 @@ module.exports = {
     handleGetFarmBlockDetails,
     handleGetFarmBlockLogs,
     handleGetFarmProductionHeatMap,
+    handleGetNoProductionTreesReport,
+    handleGetUnspecifiedTreesReport,
     handleCreateFarmBlockLog,
     handleGetFarmExpenseHeads,
     handleCreateFarmExpenseHead,

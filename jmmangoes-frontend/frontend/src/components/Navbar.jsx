@@ -63,6 +63,7 @@ const Navbar = () => {
   const visibleAdminLinks = adminLinks.filter((link) => canView(link.key));
   const salesLinks = [
     { to: '/sales-dashboard', label: 'Sales Dashboard', key: 'salesDashboard' },
+    { to: '/product-wise-sales-report', label: 'Product Wise Sale Report', key: 'productWiseSalesReport' },
     { to: '/sales-cash-transactions', label: 'Cash Transactions', key: 'salesCashTransactions' },
     { to: '/company-cash-deposits', label: 'Company Cash Deposit Register', key: 'companyCashDeposits' },
     { to: '/sale-point', label: 'Sale Point', key: 'salePoint' },
@@ -113,6 +114,8 @@ const Navbar = () => {
   const showOwnersMenu = visibleOwnerLinks.length > 0;
   const analysisLinks = [
     { to: '/analysis/farm-production-map', label: 'Farm Production Map', key: 'analysisFarmProductionMap' },
+    { to: '/analysis/no-production-trees', label: 'Trees With No Production', key: 'analysisNoProductionTrees' },
+    { to: '/analysis/unspecified-trees', label: 'Unspecified Trees', key: 'analysisUnspecifiedTrees' },
   ];
   const visibleAnalysisLinks = analysisLinks.filter((link) => canView(link.key));
   const showAnalysisMenu = visibleAnalysisLinks.length > 0;

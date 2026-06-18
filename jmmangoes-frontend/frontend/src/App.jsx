@@ -35,6 +35,7 @@ import GiftingRecords from './components/GiftingRecords';
 import PayLaterRecords from './components/PayLaterRecords';
 import GiftSources from './components/GiftSources';
 import SalesDashboard from './components/SalesDashboard';
+import ProductWiseSalesReport from './components/ProductWiseSalesReport';
 import WarehouseManagement from './components/WarehouseManagement';
 import WholesellerManagement from './components/WholesellerManagement';
 import StockTransfer from './components/StockTransfer';
@@ -58,6 +59,7 @@ import FarmTrees from './components/FarmTrees';
 import FarmTreeLogs from './components/FarmTreeLogs';
 import FarmDashboard from './components/FarmDashboard';
 import FarmProductionMapAnalysis from './components/FarmProductionMapAnalysis';
+import FarmTreeAnalysisReport from './components/FarmTreeAnalysisReport';
 import FarmMaintenanceTasks from './components/FarmMaintenanceTasks';
 import FarmBlockDetails from './components/FarmBlockDetails';
 import FarmBlockLogs from './components/FarmBlockLogs';
@@ -172,6 +174,7 @@ function App() {
              <Route path="/pay-later-records" element={<PayLaterRecords />} />
              <Route path="/gift-sources" element={<GiftSources />} />
              <Route path="/sales-dashboard" element={<SalesDashboard />} />
+             <Route path="/product-wise-sales-report" element={<ProductWiseSalesReport />} />
              <Route path="/warehouse-management" element={<WarehouseManagement />} />
              <Route path="/wholeseller-management" element={<WholesellerManagement />} />
              <Route path="/stock-transfer" element={<StockTransfer />} />
@@ -198,6 +201,8 @@ function App() {
              <Route path="/farm-maintenance-tasks" element={<FarmMaintenanceTasks />} />
              <Route path="/farm-dashboard" element={<FarmDashboard />} />
              <Route path="/analysis/farm-production-map" element={<FarmProductionMapAnalysis />} />
+             <Route path="/analysis/no-production-trees" element={<FarmTreeAnalysisReport reportType="noProduction" />} />
+             <Route path="/analysis/unspecified-trees" element={<FarmTreeAnalysisReport reportType="unspecified" />} />
              <Route path="/farm-manage-expenses" element={<FarmManageExpenses />} />
              <Route path="/farm-add-expenses" element={<FarmAddExpenses />} />
              <Route path="/farm-expense-dashboard" element={<FarmExpenseDashboard />} />
