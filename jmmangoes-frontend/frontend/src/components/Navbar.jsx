@@ -68,7 +68,6 @@ const Navbar = () => {
     { to: '/company-cash-deposits', label: 'Company Cash Deposit Register', key: 'companyCashDeposits' },
     { to: '/sale-point', label: 'Sale Point', key: 'salePoint' },
     { to: '/order-management', label: 'Order Management', key: 'orderManagement' },
-    { to: '/customer-directory', label: 'Customer Directory', key: 'customerDirectory' },
     { to: '/manage-stocks', label: 'Manage Stocks', key: 'manageStocks' },
     { to: '/stock-movement', label: 'Stock Movement', key: 'stockMovement' },
     { to: '/stock-transfer', label: 'Stock Transfer & Receiving', key: 'stockTransfer' },
@@ -120,6 +119,8 @@ const Navbar = () => {
   const visibleAnalysisLinks = analysisLinks.filter((link) => canView(link.key));
   const showAnalysisMenu = visibleAnalysisLinks.length > 0;
   const communicationsLinks = [
+    { to: '/customer-directory', label: 'Customer Directory', key: 'customerDirectory' },
+    { to: '/communications/broadcast-whatsapp', label: 'Broadcast Message', key: 'communications' },
     { to: '/communications/test-whatsapp', label: 'Test WhatsApp', key: 'communications' },
     { to: '/communications/whatsapp-logs', label: 'WhatsApp Logs', key: 'communications' },
   ];

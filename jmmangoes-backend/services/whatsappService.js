@@ -79,7 +79,9 @@ function formatTwilioWhatsAppAddress(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (raw.startsWith('whatsapp:')) return raw;
-  const numeric = raw.replace(/\D/g, '');
+  let numeric = raw.replace(/\D/g, '');
+  if (/^03\d{9}$/.test(numeric)) numeric = `92${numeric.slice(1)}`;
+  if (/^3\d{9}$/.test(numeric)) numeric = `92${numeric}`;
   return numeric ? `whatsapp:+${numeric}` : '';
 }
 

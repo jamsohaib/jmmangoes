@@ -16,7 +16,7 @@ const OrderManagement = () => {
   const [rejectModal, setRejectModal] = useState({ open: false, orderId: '', reason: 'Order cancelled due to stock unavailability' });
   const [cancelModal, setCancelModal] = useState({ open: false, orderId: '', reason: '' });
   const [returnModal, setReturnModal] = useState({ open: false, orderId: '', reason: 'Customer return request' });
-  const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false });
+  const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true });
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
   const [redirectModal, setRedirectModal] = useState({
@@ -369,6 +369,7 @@ const OrderManagement = () => {
       fulfilmentSiteId: '',
       fulfilmentOptions: [],
       loadingSites: false,
+      sendModificationEmail: true,
     });
     setFulfilmentProducts([]);
     setNewItem({ productId: '', quantity: 1 });
@@ -409,20 +410,22 @@ const OrderManagement = () => {
   };
 
   const saveModify = async () => {
-    const { order, items, discountAmount, paymentMethodId, fulfilmentSiteId } = modifyModal;
+    const { order, items, discountAmount, paymentMethodId, fulfilmentSiteId, sendModificationEmail } = modifyModal;
     if (!order) return;
-    if (!fulfilmentSiteId) return toast.warn('Select a fulfilment site with sufficient stock.');
-    if (!window.confirm('Save modified order and send email?')) return;
+    if (!window.confirm(`Save modified order${sendModificationEmail ? ' and send email?' : ' without customer email?'}`)) return;
     try {
       const modifyRes = await api.put(`/orders/${order._id}/modify`, {
         items,
         discountAmount: Number(discountAmount || 0),
         paymentMethodId: paymentMethodId || undefined,
-        fulfilmentSiteId,
+        fulfilmentSiteId: fulfilmentSiteId || undefined,
+        sendModificationEmail,
       });
-      await api.post(`/orders/${order._id}/stock-request`, { sourceSiteId: fulfilmentSiteId });
+      if (fulfilmentSiteId) {
+        await api.post(`/orders/${order._id}/stock-request`, { sourceSiteId: fulfilmentSiteId });
+      }
       toast.success('Order modified.');
-      setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false });
+      setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true });
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to modify order.');
@@ -492,9 +495,9 @@ const OrderManagement = () => {
   };
 
   const sendFeedbackReminder = async (id) => {
-    if (!window.confirm('Send feedback reminder email to customer?')) return;
+    if (!window.confirm('Send feedback reminder to customer?')) return;
     try {
-      await api.put(`/orders/${id}/feedback-reminder`, {});
+      await api.put(`/orders/${id}/feedback-reminder`, { sendWhatsApp: whatsAppEnabled('feedback', id) });
       toast.success('Feedback reminder sent.');
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to send reminder.');
@@ -812,7 +815,10 @@ const OrderManagement = () => {
           {o.feedback?.rating ? (
             <button onClick={() => setFeedbackModal({ open: true, order: o })} className="text-green-700 hover:underline">View Feedback</button>
           ) : (
-            <button onClick={() => sendFeedbackReminder(o._id)} className="text-blue-700 hover:underline">Send Feedback Reminder</button>
+            <span className="inline-flex items-center gap-2">
+              <button onClick={() => sendFeedbackReminder(o._id)} className="text-blue-700 hover:underline">Send Feedback Reminder</button>
+              <WhatsAppCheckbox action="feedback" orderId={o._id} />
+            </span>
           )}
           {isSuperAdmin ? (
             <button onClick={() => deleteTestOrder(o)} className="text-red-700 hover:underline">Delete Test Order</button>
@@ -879,7 +885,7 @@ const OrderManagement = () => {
               ))}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
                 <label className="flex items-center gap-2">
-                  Fulfilment Site
+                  Fulfilment Site Optional
                   <select
                     className="border p-2 rounded w-full"
                     value={modifyModal.fulfilmentSiteId || ''}
@@ -889,13 +895,21 @@ const OrderManagement = () => {
                       setNewItem({ productId: '', quantity: 1 });
                     }}
                   >
-                    <option value="">{modifyModal.loadingSites ? 'Checking stock...' : 'Select site with sufficient stock'}</option>
+                    <option value="">{modifyModal.loadingSites ? 'Checking stock...' : 'No stock request now'}</option>
                     {(modifyModal.fulfilmentOptions || []).map((s) => (
                       <option key={s.siteId} value={s.siteId}>{s.siteName}</option>
                     ))}
                   </select>
                 </label>
                 <label className="flex items-center gap-2">Discount Amount<input type="number" min={0} value={modifyModal.discountAmount} onChange={(e) => setModifyModal((p) => ({ ...p, discountAmount: e.target.value }))} className="border p-2 rounded w-full" /></label>
+                <label className="flex items-center gap-2 md:col-span-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={modifyModal.sendModificationEmail !== false}
+                    onChange={(e) => setModifyModal((p) => ({ ...p, sendModificationEmail: e.target.checked }))}
+                  />
+                  Send modification email to customer
+                </label>
                 <label className="flex items-center gap-2 md:col-span-2">
                   Payment Method
                   <select
@@ -954,7 +968,7 @@ const OrderManagement = () => {
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-4">
-              <button className="border px-3 py-2 rounded" onClick={() => setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [] })}>Cancel</button>
+              <button className="border px-3 py-2 rounded" onClick={() => setModifyModal({ open: false, order: null, discountAmount: '0', paymentMethodId: '', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true })}>Cancel</button>
               <button className="bg-green-600 text-white px-3 py-2 rounded" onClick={saveModify}>Save</button>
             </div>
           </div>

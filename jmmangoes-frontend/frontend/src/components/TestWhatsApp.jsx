@@ -3,6 +3,44 @@ import { toast } from 'react-toastify';
 import api from '../lib/api';
 import useAuthStore from '../store/authStore';
 
+const approvedTwilioTemplates = [
+  {
+    label: 'Order confirmation request',
+    sid: 'HX84346a3cc400b9f8fd9fa2acc9540e2f',
+    variables: '{"1":"Ahmed Sohaib","2":"JMM-A001","3":"Dosehri (10 Kg) x 1","4":"2850"}',
+  },
+  {
+    label: 'Order dispatched',
+    sid: 'HX34586ad287a5ceaf0fc4607bd72a4af9',
+    variables: '{"1":"Ahmed Sohaib","2":"JMM-A001","3":"Dosehri (10 Kg) x 1","4":"FCS","5":"112233"}',
+  },
+  {
+    label: 'Order delivered feedback',
+    sid: 'HX7321054c56a0c2ff68b4a8144cd92664',
+    variables: '{"1":"Ahmed Sohaib","2":"JMM-A001","3":"Dosehri (10 Kg) x 1","4":"https://jmmangoes.pk/feedback/JMM-A001"}',
+  },
+  {
+    label: 'Stall purchase thank-you',
+    sid: 'HX9eb83e8619d409aad1ce416c5a56cb34',
+    variables: '{"1":"Ahmed Sohaib","2":"Dosehri (10 Kg) x 1"}',
+  },
+  {
+    label: 'Thank you for purchase',
+    sid: 'HXd1021db83578b20d3e7bc3684f1f10d2',
+    variables: '{"1":"Ahmed Sohaib","2":"Dosehri (10 Kg) x 1"}',
+  },
+  {
+    label: 'New stock arrival',
+    sid: 'HX6425d5869c2a01913a0b43be57b4d9ff',
+    variables: '{"1":"Ahmed Sohaib","2":"Dosehri 10 kg and Sindhri 10 kg","3":"Rahim Yar Khan, Gulzaar e Quaid, and online ordering"}',
+  },
+  {
+    label: 'Online ordering open',
+    sid: 'HX6ae43f79f84866969fe76c7726927d7a',
+    variables: '{"1":"Dosehri","2":"https://jmmangoes.pk"}',
+  },
+];
+
 const TestWhatsApp = () => {
   const user = useAuthStore((state) => state.user);
   const canView = user?.role === 'admin' || user?.permissions?.communications?.view;
@@ -96,6 +134,24 @@ const TestWhatsApp = () => {
 
           {messageType === 'template' && (
             <div className="space-y-3">
+              <label className="block">
+                <span className="text-sm font-semibold">Approved Template</span>
+                <select
+                  className="border rounded p-2 w-full mt-1"
+                  value={contentSid}
+                  onChange={(e) => {
+                    const selected = approvedTwilioTemplates.find((template) => template.sid === e.target.value);
+                    setContentSid(e.target.value);
+                    if (selected) setContentVariables(selected.variables);
+                  }}
+                >
+                  <option value="">Manual / server default</option>
+                  {approvedTwilioTemplates.map((template) => (
+                    <option key={template.sid} value={template.sid}>{template.label}</option>
+                  ))}
+                </select>
+              </label>
+
               <label className="block">
                 <span className="text-sm font-semibold">Twilio Content SID</span>
                 <input

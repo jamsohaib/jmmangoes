@@ -6,19 +6,32 @@ import useAuthStore from '../store/authStore';
 const CustomerDirectory = () => {
   const user = useAuthStore((state) => state.user);
   const canView = user?.role === 'admin' || user?.permissions?.customerDirectory?.view;
+  const canUseBroadcast = user?.role === 'admin' || user?.permissions?.communications?.view;
   const [rows, setRows] = useState([]);
   const [selectedRegion, setSelectedRegion] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
+  const [broadcastOptions, setBroadcastOptions] = useState({ products: [], sites: [] });
+  const [selectedProducts, setSelectedProducts] = useState([]);
+  const [selectedSites, setSelectedSites] = useState([]);
 
   const load = async () => {
     const res = await api.get('/customers/directory');
     setRows(res.data || []);
   };
 
+  const loadBroadcastOptions = async () => {
+    const res = await api.get('/communications/whatsapp/broadcast-options');
+    setBroadcastOptions(res.data || { products: [], sites: [] });
+  };
+
   useEffect(() => {
     if (canView) load().catch(console.error);
   }, [canView]);
+
+  useEffect(() => {
+    if (canUseBroadcast) loadBroadcastOptions().catch(console.error);
+  }, [canUseBroadcast]);
 
   const regions = Array.from(new Set(rows.map((r) => r.lastPurchaseSite).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 
@@ -48,6 +61,57 @@ const CustomerDirectory = () => {
     const link = document.createElement('a');
     link.href = url;
     link.setAttribute('download', `customer_directory_${new Date().toISOString().slice(0, 10)}_${suffix}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const cleanBroadcastLabel = (label = '') => {
+    const value = String(label || '').trim();
+    if (value.toLowerCase() === 'online' || value.toLowerCase() === 'online (online)') return 'online store';
+    return value
+      .replace(/\s+\(([^)]*)\)\s+\(\1\)$/i, ' ($1)')
+      .replace(/(\(\s*\d+\s*kg\s*\)|\(\s*\d+\s*kg\))\s+\(\s*\d+\s*\)$/i, '$1')
+      .replace(/(\d+\s*kg)\s+\(\s*\d+\s*\)$/i, '$1');
+  };
+
+  const selectedOptionLabels = (options, selectedIds, mode = 'comma') => {
+    const labels = options
+      .filter((option) => selectedIds.includes(String(option._id)))
+      .map((option) => cleanBroadcastLabel(option.label || option.name))
+      .filter(Boolean);
+    if (mode === 'and' && labels.length > 1) {
+      return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
+    }
+    return labels.join(' , ');
+  };
+
+  const toggleSelection = (setter, value) => {
+    setter((prev) => (prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]));
+  };
+
+  const downloadBroadcastCsv = () => {
+    const productText = selectedOptionLabels(broadcastOptions.products || [], selectedProducts, 'comma');
+    const siteText = selectedOptionLabels(broadcastOptions.sites || [], selectedSites, 'and');
+    if (!productText || !siteText) {
+      window.alert('Please select at least one product and one site for the broadcast CSV.');
+      return;
+    }
+    const sourceRows = filteredRows.filter((row) => String(row.customerWhatsapp || '').trim());
+    const headers = ['whatsapp', 'name', 'product', 'site'];
+    const lines = sourceRows.map((r) => [
+      `"${String(r.customerWhatsapp || '').replace(/"/g, '""')}"`,
+      `"${String(r.customerName || 'Customer').replace(/"/g, '""')}"`,
+      `"${productText.replace(/"/g, '""')}"`,
+      `"${siteText.replace(/"/g, '""')}"`,
+    ].join(','));
+    const csv = [headers.join(','), ...lines].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `whatsapp_broadcast_customers_${new Date().toISOString().slice(0, 10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -106,6 +170,54 @@ const CustomerDirectory = () => {
           </button>
         </div>
       </div>
+      {canUseBroadcast ? (
+        <div className="bg-white rounded shadow p-4 mb-4">
+          <h3 className="font-semibold text-lg mb-2">Broadcast CSV Builder</h3>
+          <p className="text-sm text-gray-700 mb-3">
+            Select products and sites, then download a broadcast-ready CSV for the currently filtered customers.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <div className="font-medium mb-2">Products</div>
+              <div className="max-h-44 overflow-y-auto border rounded p-2 space-y-1">
+                {(broadcastOptions.products || []).map((product) => (
+                  <label key={product._id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedProducts.includes(String(product._id))}
+                      onChange={() => toggleSelection(setSelectedProducts, String(product._id))}
+                    />
+                    {product.label || product.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="font-medium mb-2">Sites / Online Availability</div>
+              <div className="max-h-44 overflow-y-auto border rounded p-2 space-y-1">
+                {(broadcastOptions.sites || []).map((site) => (
+                  <label key={site._id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedSites.includes(String(site._id))}
+                      onChange={() => toggleSelection(setSelectedSites, String(site._id))}
+                    />
+                    {site.label || site.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-col justify-end gap-2">
+              <button onClick={downloadBroadcastCsv} className="bg-emerald-700 text-white px-4 py-2 rounded">
+                Download Broadcast CSV
+              </button>
+              <p className="text-xs text-gray-600">
+                Export includes: WhatsApp number, customer name, selected products, and selected sites.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="overflow-x-auto bg-white rounded shadow">
         <DataTable
           columns={customerColumns}

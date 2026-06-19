@@ -509,6 +509,7 @@ async function sendOrderAlertEmails(subject, text, customerEmail, html = '') {
 function cleanWhatsAppNumber(value) {
   const digits = String(value || '').replace(/\D/g, '');
   if (/^03\d{9}$/.test(digits)) return `92${digits.slice(1)}`;
+  if (/^3\d{9}$/.test(digits)) return `92${digits}`;
   return digits;
 }
 
@@ -530,6 +531,22 @@ function getEnvFirst(...keys) {
   }
   return '';
 }
+
+const APPROVED_TWILIO_TEMPLATE_SIDS = Object.freeze({
+  orderConfirmRequest: 'HX84346a3cc400b9f8fd9fa2acc9540e2f',
+  orderDeliveredFeedback: 'HX7321054c56a0c2ff68b4a8144cd92664',
+  onlineOrderingOpen: 'HX6ae43f79f84866969fe76c7726927d7a',
+  orderDispatched: 'HX34586ad287a5ceaf0fc4607bd72a4af9',
+  newStockArrival: 'HX6425d5869c2a01913a0b43be57b4d9ff',
+  stallPurchaseThankYou: 'HX9eb83e8619d409aad1ce416c5a56cb34',
+  thankYouForPurchase: 'HXd1021db83578b20d3e7bc3684f1f10d2',
+});
+
+function getTwilioTemplateSid(templateKey, ...fallbackEnvKeys) {
+  return APPROVED_TWILIO_TEMPLATE_SIDS[templateKey] || getEnvFirst(...fallbackEnvKeys);
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function sendWhatsAppTemplateIfEnabled({ enabled = true, to, contentSid, variables = {}, label = 'WhatsApp notification' }) {
   if (!enabled) return { skipped: true, reason: 'disabled' };
@@ -1699,7 +1716,7 @@ async function handleCreateSaleCheckout(req, res) {
     await sendWhatsAppTemplateIfEnabled({
       enabled: sendWhatsApp !== false,
       to: customerWhatsapp,
-      contentSid: getEnvFirst('TWILIO_TEMPLATE_STALL_PURCHASE_THANK_YOU_SID', 'TWILIO_STALL_PURCHASE_THANK_YOU_CONTENT_SID'),
+      contentSid: getTwilioTemplateSid('stallPurchaseThankYou', 'TWILIO_TEMPLATE_STALL_PURCHASE_THANK_YOU_SID', 'TWILIO_STALL_PURCHASE_THANK_YOU_CONTENT_SID'),
       variables: {
         1: String(customerName || 'Customer').trim() || 'Customer',
         2: orderItemsSummary(createdEntries),
@@ -5515,12 +5532,10 @@ async function handleConfirmOrder(req, res) {
     await sendWhatsAppTemplateIfEnabled({
       enabled: sendWhatsApp !== false,
       to: getOrderCustomerWhatsApp(order),
-      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_CONFIRMED_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMATION_SID'),
+      contentSid: getTwilioTemplateSid('thankYouForPurchase', 'TWILIO_TEMPLATE_THANK_YOU_FOR_PURCHASE_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMED_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMATION_SID'),
       variables: {
         1: order.customer?.name || 'Customer',
-        2: order.orderNumber || '',
-        3: orderItemsSummary(order),
-        4: String(Number(order.finalAmount || order.totalCost || 0).toFixed(0)),
+        2: orderItemsSummary(order),
       },
       label: 'Order confirmed WhatsApp notification',
     });
@@ -5596,14 +5611,13 @@ async function handleRejectOrder(req, res) {
 async function handleModifyOrder(req, res) {
   try {
     const { id } = req.params;
-    const { items = [], discountAmount = 0, paymentMethodId, fulfilmentSiteId } = req.body;
+    const { items = [], discountAmount = 0, paymentMethodId, fulfilmentSiteId = '', sendModificationEmail = true } = req.body;
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ message: 'Items are required' });
-    if (!fulfilmentSiteId) return res.status(400).json({ message: 'fulfilmentSiteId is required' });
-
-    const fulfilmentSite = await Site.findById(fulfilmentSiteId).select('name');
-    if (!fulfilmentSite) return res.status(404).json({ message: 'Fulfilment site not found' });
+    const onlineSite = await ensureOnlineSite();
+    const fulfilmentSite = fulfilmentSiteId ? await Site.findById(fulfilmentSiteId).select('name') : null;
+    if (fulfilmentSiteId && !fulfilmentSite) return res.status(404).json({ message: 'Fulfilment site not found' });
 
     const normalizedItems = [];
     for (const it of items) {
@@ -5618,21 +5632,23 @@ async function handleModifyOrder(req, res) {
         return res.status(400).json({ message: `Product not found for item: ${it?.name || pid}` });
       }
 
-      if (!productHasSiteAssignment(product, fulfilmentSite._id, fulfilmentSite.name)) {
-        return res.status(400).json({ message: `${product.name} is not assigned to ${fulfilmentSite.name}` });
-      }
+      if (fulfilmentSite) {
+        if (!productHasSiteAssignment(product, fulfilmentSite._id, fulfilmentSite.name)) {
+          return res.status(400).json({ message: `${product.name} is not assigned to ${fulfilmentSite.name}` });
+        }
 
-      const availableQty = await getSiteProductAvailableQtyByName(fulfilmentSite._id, product.name);
-      if (qty > Number(availableQty || 0)) {
-        return res.status(400).json({
-          message: `Insufficient stock for ${product.name} at ${fulfilmentSite.name}. Available: ${Number(availableQty || 0)}`,
-        });
+        const availableQty = await getSiteProductAvailableQtyByName(fulfilmentSite._id, product.name);
+        if (qty > Number(availableQty || 0)) {
+          return res.status(400).json({
+            message: `Insufficient stock for ${product.name} at ${fulfilmentSite.name}. Available: ${Number(availableQty || 0)}`,
+          });
+        }
       }
 
       normalizedItems.push({
         productId: product._id,
         name: product.name,
-        price: Number(getProductSitePrice(product, fulfilmentSite._id, product.price) || 0),
+        price: Number(getProductSitePrice(product, onlineSite._id, product.price) || 0),
         quantity: qty,
       });
     }
@@ -5683,10 +5699,12 @@ async function handleModifyOrder(req, res) {
     }
     await order.save();
 
-    try {
-      await sendOrderAlertEmails(`Order Modified - ${order.orderNumber}`, `Your order ${order.orderNumber} has been modified. Updated amount: ${order.finalAmount}`, order.customer?.email);
-    } catch (mailErr) {
-      logger.warn('Order modified but email failed', { error: mailErr?.message || String(mailErr) });
+    if (sendModificationEmail !== false) {
+      try {
+        await sendOrderAlertEmails(`Order Modified - ${order.orderNumber}`, `Your order ${order.orderNumber} has been modified. Updated amount: ${order.finalAmount}`, order.customer?.email);
+      } catch (mailErr) {
+        logger.warn('Order modified but email failed', { error: mailErr?.message || String(mailErr) });
+      }
     }
 
     return res.status(200).json({ success: true, order });
@@ -5735,6 +5753,7 @@ async function handleGetFulfilmentSiteProducts(req, res) {
     if (!siteId) return res.status(400).json({ message: 'siteId is required' });
     const site = await Site.findById(siteId).select('name');
     if (!site) return res.status(404).json({ message: 'Site not found' });
+    const onlineSite = await ensureOnlineSite();
 
     const products = await Product.find({ isActive: true }).select('name price quantity locationPrices');
     const mapped = await Promise.all(
@@ -5745,7 +5764,7 @@ async function handleGetFulfilmentSiteProducts(req, res) {
           return {
             _id: p._id,
             name: p.name,
-            price: getProductSitePrice(p, site._id, p.price),
+            price: getProductSitePrice(p, onlineSite._id, p.price),
             availableQty,
           };
         })
@@ -5843,7 +5862,7 @@ async function handleDispatchOrder(req, res) {
     await sendWhatsAppTemplateIfEnabled({
       enabled: sendWhatsApp !== false,
       to: getOrderCustomerWhatsApp(order),
-      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_DISPATCHED_SID', 'TWILIO_ORDER_DISPATCHED_CONTENT_SID'),
+      contentSid: getTwilioTemplateSid('orderDispatched', 'TWILIO_TEMPLATE_ORDER_DISPATCHED_SID', 'TWILIO_ORDER_DISPATCHED_CONTENT_SID'),
       variables: {
         1: order.customer?.name || 'Customer',
         2: order.orderNumber || '',
@@ -5950,7 +5969,7 @@ async function handleDeliverOrder(req, res) {
     await sendWhatsAppTemplateIfEnabled({
       enabled: sendWhatsApp !== false,
       to: getOrderCustomerWhatsApp(order),
-      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_DELIVERED_FEEDBACK_SID', 'TWILIO_ORDER_DELIVERED_FEEDBACK_CONTENT_SID'),
+      contentSid: getTwilioTemplateSid('orderDeliveredFeedback', 'TWILIO_TEMPLATE_ORDER_DELIVERED_FEEDBACK_SID', 'TWILIO_ORDER_DELIVERED_FEEDBACK_CONTENT_SID'),
       variables: {
         1: order.customer?.name || 'Customer',
         2: order.orderNumber || '',
@@ -5968,6 +5987,7 @@ async function handleDeliverOrder(req, res) {
 async function handleSendFeedbackReminder(req, res) {
   try {
     const { id } = req.params;
+    const { sendWhatsApp = true } = req.body || {};
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (order.status !== 'delivered') return res.status(400).json({ message: 'Feedback reminder can only be sent for delivered orders' });
@@ -5991,6 +6011,18 @@ async function handleSendFeedbackReminder(req, res) {
       order.customer?.email,
       htmlBody
     );
+    await sendWhatsAppTemplateIfEnabled({
+      enabled: sendWhatsApp !== false,
+      to: getOrderCustomerWhatsApp(order),
+      contentSid: getTwilioTemplateSid('orderDeliveredFeedback', 'TWILIO_TEMPLATE_ORDER_DELIVERED_FEEDBACK_SID', 'TWILIO_ORDER_DELIVERED_FEEDBACK_CONTENT_SID'),
+      variables: {
+        1: order.customer?.name || 'Customer',
+        2: order.orderNumber || '',
+        3: orderItemsSummary(order),
+        4: feedbackUrl,
+      },
+      label: 'Feedback reminder WhatsApp notification',
+    });
     return res.status(200).json({ success: true, message: 'Feedback reminder sent' });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -9408,6 +9440,121 @@ async function handleSendWhatsAppTestMessage(req, res) {
   }
 }
 
+async function handleGetWhatsAppBroadcastOptions(req, res) {
+  try {
+    await ensureOnlineSite();
+    const [products, sites] = await Promise.all([
+      Product.find({ isActive: { $ne: false } }).sort({ name: 1 }).select('name description weight category'),
+      Site.find({ isActive: { $ne: false } }).sort({ name: 1 }).select('name city'),
+    ]);
+
+    return res.status(200).json({
+      products: products.map((product) => ({
+        _id: product._id,
+        name: product.name,
+        label: product.name,
+      })),
+      sites: sites.map((site) => ({
+        _id: site._id,
+        name: site.name,
+        label: String(site.name || '').trim().toLowerCase() === 'online'
+          ? 'online store'
+          : site.name,
+      })),
+    });
+  } catch (err) {
+    logger.error('Error fetching WhatsApp broadcast options', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleSendWhatsAppBroadcast(req, res) {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const delayMinMs = Math.max(3000, Number(req.body?.delayMinMs || 3000));
+    const delayMaxMs = Math.max(delayMinMs, Number(req.body?.delayMaxMs || 5000));
+    const maxRows = Math.min(rows.length, 500);
+
+    if (!rows.length) {
+      return res.status(400).json({ message: 'No broadcast rows found.' });
+    }
+
+    const results = [];
+    for (let index = 0; index < maxRows; index += 1) {
+      const row = rows[index] || {};
+      const to = cleanWhatsAppNumber(row.whatsapp || row.phone || row.number || '');
+      const name = String(row.name || row.customerName || 'Customer').trim() || 'Customer';
+      const product = String(row.product || row.products || '').trim();
+      const site = String(row.site || row.sites || '').trim();
+
+      if (!to || !product || !site) {
+        results.push({
+          row: row.row || index + 1,
+          whatsapp: row.whatsapp || row.phone || row.number || '',
+          name,
+          product,
+          site,
+          status: 'skipped',
+          message: 'WhatsApp number, product, and site are required.',
+        });
+        continue;
+      }
+
+      try {
+        const result = await sendWhatsAppMessage({
+          to,
+          messageType: 'template',
+          contentSid: getTwilioTemplateSid('newStockArrival', 'TWILIO_TEMPLATE_NEW_STOCK_ARRIVAL_SID', 'TWILIO_NEW_STOCK_ARRIVAL_CONTENT_SID'),
+          contentVariables: JSON.stringify({
+            1: name,
+            2: product,
+            3: site,
+          }),
+        });
+
+        results.push({
+          row: row.row || index + 1,
+          whatsapp: to,
+          name,
+          product,
+          site,
+          status: 'sent',
+          sid: result?.meta?.sid || result?.meta?.messages?.[0]?.id || '',
+        });
+      } catch (sendErr) {
+        results.push({
+          row: row.row || index + 1,
+          whatsapp: to,
+          name,
+          product,
+          site,
+          status: 'failed',
+          message: sendErr?.message || 'Failed to send WhatsApp message.',
+          meta: sendErr?.meta,
+        });
+      }
+
+      if (index < maxRows - 1) {
+        const delay = delayMinMs + Math.floor(Math.random() * (delayMaxMs - delayMinMs + 1));
+        await wait(delay);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Broadcast completed for ${maxRows} row(s).`,
+      total: maxRows,
+      sent: results.filter((row) => row.status === 'sent').length,
+      failed: results.filter((row) => row.status === 'failed').length,
+      skipped: results.filter((row) => row.status === 'skipped').length,
+      results,
+    });
+  } catch (err) {
+    logger.error('Error sending WhatsApp broadcast', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error while sending WhatsApp broadcast.', error: err.message });
+  }
+}
+
 async function handleWhatsAppWebhookVerify(req, res) {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -9852,7 +9999,7 @@ ${lines}`;
     sendWhatsAppTemplateIfEnabled({
       enabled: true,
       to: customerPhone,
-      contentSid: getEnvFirst('TWILIO_TEMPLATE_ORDER_CONFIRM_REQUEST_SID', 'TWILIO_ORDER_CONFIRM_REQUEST_CONTENT_SID'),
+      contentSid: getTwilioTemplateSid('orderConfirmRequest', 'TWILIO_TEMPLATE_ORDER_CONFIRM_REQUEST_SID', 'TWILIO_ORDER_CONFIRM_REQUEST_CONTENT_SID'),
       variables: {
         1: customerName,
         2: orderNumber,
@@ -10099,6 +10246,8 @@ module.exports = {
     handleFetchingShippingCosts,
     handleContactQuery,
     handleSendWhatsAppTestMessage,
+    handleGetWhatsAppBroadcastOptions,
+    handleSendWhatsAppBroadcast,
     handleGetWhatsAppEvents,
     handleWhatsAppWebhookVerify,
     handleWhatsAppWebhookEvent,
