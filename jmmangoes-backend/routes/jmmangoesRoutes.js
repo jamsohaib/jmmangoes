@@ -358,6 +358,8 @@ jmm_route.post('/webhooks/whatsapp', jmm_controller.handleWhatsAppWebhookEvent);
 jmm_route.post('/webhooks/twilio/whatsapp', jmm_controller.handleTwilioWhatsAppIncoming);
 jmm_route.post('/webhooks/twilio/whatsapp/status', jmm_controller.handleTwilioWhatsAppStatus);
 jmm_route.post('/webhooks/twilio/whatsapp/fallback', jmm_controller.handleTwilioWhatsAppFallback);
+jmm_route.get('/webhooks/leopards/status', jmm_controller.handleLeopardsCourierStatusWebhook);
+jmm_route.post('/webhooks/leopards/status', jmm_controller.handleLeopardsCourierStatusWebhook);
 
 jmm_route.post('/checkout', jmm_controller.handleCheckout);
 jmm_route.get('/orders/feedback/:orderNumber', jmm_controller.handleGetOrderFeedbackMeta);

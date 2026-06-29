@@ -52,6 +52,12 @@ const orderSchema = new mongoose.Schema({
     courierHelpline: { type: String, default: '' },
     jmmContactPersonName: { type: String, default: '' },
     jmmContactNumber: { type: String, default: '' },
+    provider: { type: String, default: '' },
+    slipLink: { type: String, default: '' },
+    latestStatus: { type: String, default: '' },
+    latestStatusAt: { type: Date, default: null },
+    latestStatusRemarks: { type: String, default: '' },
+    latestStatusRaw: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   adminRemarks: { type: String, default: '' },
   feedback: {

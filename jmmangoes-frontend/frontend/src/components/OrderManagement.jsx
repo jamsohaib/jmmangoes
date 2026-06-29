@@ -87,6 +87,28 @@ const OrderManagement = () => {
       </div>
     );
   };
+  const CourierStatusBadge = ({ order }) => {
+    const status = order?.courier?.latestStatus || '-';
+    const remarks = order?.courier?.latestStatusRemarks || '';
+    const updatedAt = order?.courier?.latestStatusAt;
+    const normalized = String(status || '').toLowerCase();
+    const colorClass = normalized.includes('deliver')
+      ? 'bg-green-100 text-green-800 border-green-300'
+      : normalized.includes('return') || normalized.includes('cancel') || normalized.includes('fail')
+        ? 'bg-red-100 text-red-800 border-red-300'
+        : status && status !== '-'
+          ? 'bg-blue-100 text-blue-800 border-blue-300'
+          : 'bg-gray-100 text-gray-700 border-gray-300';
+    return (
+      <div className="text-xs">
+        <span className={`inline-flex items-center rounded border px-2 py-1 font-semibold ${colorClass}`}>
+          {status}
+        </span>
+        {updatedAt ? <div className="text-[11px] text-gray-600 mt-1">{formatDateTime(updatedAt)}</div> : null}
+        {remarks ? <div className="text-[11px] text-gray-600 mt-1">{remarks}</div> : null}
+      </div>
+    );
+  };
   const whatsAppKey = (action, orderId) => `${action}:${orderId}`;
   const whatsAppEnabled = (action, orderId) => whatsAppPrefs[whatsAppKey(action, orderId)] !== false;
   const setWhatsAppEnabled = (action, orderId, checked) => {
@@ -667,6 +689,14 @@ const OrderManagement = () => {
               </div>
             ),
           }] : []),
+          ...((tableKey === 'courier' || tableKey === 'dispatched' || tableKey === 'delivered' || tableKey === 'returned') ? [{
+            name: 'Courier Status',
+            selector: (o) => o?.courier?.latestStatus || '-',
+            sortable: true,
+            wrap: true,
+            grow: 1,
+            cell: (o) => <CourierStatusBadge order={o} />,
+          }] : []),
           {
             name: 'Amount',
             selector: (o) => Number(o.finalAmount || o.totalCost || 0),
@@ -1000,6 +1030,9 @@ const OrderManagement = () => {
               <div><strong>Payment Method:</strong> {viewOrderModal.order.paymentDetails?.methodName || '-'}</div>
               <div><strong>Courier Company:</strong> {viewOrderModal.order.courier?.courierName || '-'}</div>
               <div><strong>Tracking Number:</strong> {viewOrderModal.order.courier?.trackingNumber || '-'}</div>
+              <div><strong>Courier Status:</strong> {viewOrderModal.order.courier?.latestStatus || '-'}</div>
+              <div><strong>Courier Status Updated:</strong> {formatDateTime(viewOrderModal.order.courier?.latestStatusAt)}</div>
+              <div><strong>Courier Remarks:</strong> {viewOrderModal.order.courier?.latestStatusRemarks || '-'}</div>
               {viewOrderModal.order.paymentDetails?.receiptUrl ? (
                 <div>
                   <strong>Receipt:</strong>{' '}

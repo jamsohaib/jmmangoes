@@ -9923,6 +9923,113 @@ async function handleTwilioWhatsAppFallback(req, res) {
   }
 }
 
+function getNestedCourierValue(input, keyMatchers = []) {
+  const seen = new Set();
+  const stack = [input];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+    for (const [key, value] of Object.entries(current)) {
+      const normalizedKey = String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (keyMatchers.some((matcher) => matcher(normalizedKey)) && value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+      if (value && typeof value === 'object') stack.push(value);
+    }
+  }
+  return '';
+}
+
+function extractLeopardsTrackingNumber(payload) {
+  return String(getNestedCourierValue(payload, [
+    (key) => ['tracknumber', 'trackingnumber', 'trackingno', 'tracking', 'cnnumber', 'cnno', 'cn', 'consignmentnumber', 'consignmentno', 'airwaybill', 'airwaybillno'].includes(key),
+    (key) => key.includes('track') && key.includes('number'),
+  ]) || '').trim();
+}
+
+function extractLeopardsStatus(payload) {
+  return String(getNestedCourierValue(payload, [
+    (key) => ['bookedpacketstatus', 'packetstatus', 'shipmentstatus', 'currentstatus', 'deliverystatus', 'status'].includes(key),
+    (key) => key.includes('status'),
+  ]) || '').trim();
+}
+
+function extractLeopardsRemarks(payload) {
+  return String(getNestedCourierValue(payload, [
+    (key) => ['reason', 'remarks', 'statusremarks', 'stautsremarks', 'detail', 'details', 'description'].includes(key),
+    (key) => key.includes('remark') || key.includes('reason'),
+  ]) || '').trim();
+}
+
+function isAuthorizedLeopardsPush(req) {
+  const expectedToken = String(process.env.LEOPARDS_PUSH_TOKEN || '').trim();
+  if (!expectedToken) return true;
+  const headerValues = [
+    req.headers.authorization,
+    req.headers['x-leopards-token'],
+    req.headers['x-jmmangoes-leopards-token'],
+    req.headers['push-api-header'],
+    req.headers['x-api-key'],
+  ].filter(Boolean).map((value) => String(value));
+  return headerValues.some((value) => {
+    const trimmed = value.trim();
+    return trimmed === expectedToken || trimmed === `Bearer ${expectedToken}` || trimmed.includes(expectedToken);
+  });
+}
+
+async function handleLeopardsCourierStatusWebhook(req, res) {
+  try {
+    if (req.method === 'GET') {
+      return res.status(200).type('text/plain').send('OK');
+    }
+    if (!isAuthorizedLeopardsPush(req)) {
+      logger.warn('Leopards courier webhook rejected because token did not match');
+      return res.status(401).type('text/plain').send('Unauthorized');
+    }
+
+    const payload = req.body || {};
+    const trackingNumber = extractLeopardsTrackingNumber(payload);
+    const courierStatus = extractLeopardsStatus(payload);
+    const remarks = extractLeopardsRemarks(payload);
+
+    logger.info('Leopards courier webhook received', {
+      trackingNumber,
+      courierStatus,
+      hasRemarks: Boolean(remarks),
+    });
+
+    if (!trackingNumber) {
+      return res.status(200).type('text/plain').send('OK');
+    }
+
+    const order = await Order.findOne({ 'courier.trackingNumber': trackingNumber });
+    if (!order) {
+      logger.warn('Leopards courier webhook tracking number not linked to an order', { trackingNumber });
+      return res.status(200).type('text/plain').send('OK');
+    }
+
+    order.courier = {
+      ...(order.courier || {}),
+      provider: order.courier?.provider || 'leopards',
+      latestStatus: courierStatus || order.courier?.latestStatus || '',
+      latestStatusAt: new Date(),
+      latestStatusRemarks: remarks || order.courier?.latestStatusRemarks || '',
+      latestStatusRaw: payload,
+    };
+    await order.save();
+
+    return res.status(200).type('text/plain').send('OK');
+  } catch (err) {
+    logger.error('Leopards courier webhook failed', { error: err?.message || String(err) });
+    return res.status(200).type('text/plain').send('OK');
+  }
+}
+
 async function handleGetWhatsAppEvents(req, res) {
   try {
     const {
@@ -10330,6 +10437,7 @@ module.exports = {
     handleTwilioWhatsAppIncoming,
     handleTwilioWhatsAppStatus,
     handleTwilioWhatsAppFallback,
+    handleLeopardsCourierStatusWebhook,
     handleCheckout,
     
 }
