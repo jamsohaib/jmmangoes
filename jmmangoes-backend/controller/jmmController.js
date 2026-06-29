@@ -5998,11 +5998,13 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
 
     const rows = [];
     const rawPayloads = [];
+    const attemptSummaries = [];
     const batchSize = 25;
     for (let i = 0; i < trackNumbers.length; i += batchSize) {
       const batch = trackNumbers.slice(i, i + batchSize);
       const result = await fetchLeopardsLastStatuses(batch);
       rawPayloads.push(result.payload);
+      attemptSummaries.push(...(result.attempts || []));
       rows.push(...result.rows);
     }
 
@@ -6047,6 +6049,7 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
       updated,
       unmatchedCount: unmatched.length,
       sampleTrackNumbers: trackNumbers.slice(0, 5),
+      attemptSummaries: rows.length ? undefined : attemptSummaries.slice(0, 8),
     });
 
     return res.status(200).json({
@@ -6057,6 +6060,7 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
       updated,
       unmatched,
       rawSample: rawPayloads[0] || null,
+      attemptSummaries: attemptSummaries.slice(0, 8),
     });
   } catch (err) {
     logger.error('Leopards courier status refresh failed', { error: err?.message || String(err) });
@@ -10067,7 +10071,8 @@ function extractLeopardsStatusDate(payload) {
 }
 
 function collectLeopardsStatusRows(payload, requestedTrackingNumbers = []) {
-  const requested = new Set(requestedTrackingNumbers.map((value) => String(value || '').trim()).filter(Boolean));
+  const requested = new Set(requestedTrackingNumbers.map((value) => normalizeLeopardsTrackingKey(value)).filter(Boolean));
+  const requestedWithoutPrefix = new Set(requestedTrackingNumbers.map((value) => stripLeopardsTrackingPrefix(value)).filter(Boolean));
   const rows = [];
   const seen = new Set();
   const stack = [payload];
@@ -10082,7 +10087,14 @@ function collectLeopardsStatusRows(payload, requestedTrackingNumbers = []) {
     const trackingNumber = extractLeopardsTrackingNumber(current);
     const courierStatus = extractLeopardsStatus(current);
     if (trackingNumber || courierStatus) {
-      if (!requested.size || requested.has(String(trackingNumber || '').trim()) || courierStatus) {
+      const trackingKey = normalizeLeopardsTrackingKey(trackingNumber);
+      const trackingKeyWithoutPrefix = stripLeopardsTrackingPrefix(trackingNumber);
+      if (
+        !requested.size
+        || requested.has(trackingKey)
+        || requestedWithoutPrefix.has(trackingKeyWithoutPrefix)
+        || courierStatus
+      ) {
         rows.push(current);
       }
     }
@@ -10131,6 +10143,59 @@ function getLeopardsApiUrl(pathname) {
   return `${base}/${cleanPath}`;
 }
 
+function summarizeLeopardsPayload(payload) {
+  if (!payload || typeof payload !== 'object') return { type: typeof payload, value: String(payload || '').slice(0, 250) };
+  const keys = Object.keys(payload).slice(0, 12);
+  const summary = { keys };
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) summary[key] = `array(${value.length})`;
+    else if (value && typeof value === 'object') summary[key] = `object(${Object.keys(value).slice(0, 8).join(',')})`;
+    else summary[key] = String(value ?? '').slice(0, 180);
+  }
+  return summary;
+}
+
+async function runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbers) {
+  const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
+  const params = new URLSearchParams();
+  params.set('api_key', apiKey);
+  params.set('api_password', apiPassword);
+  params.set(attempt.key, attempt.value);
+
+  const requestOptions = { method: attempt.method };
+  if (attempt.method === 'GET') {
+    for (const [key, value] of params.entries()) url.searchParams.set(key, value);
+  } else if (attempt.contentType === 'json') {
+    requestOptions.headers = { 'Content-Type': 'application/json' };
+    requestOptions.body = JSON.stringify({
+      api_key: apiKey,
+      api_password: apiPassword,
+      [attempt.key]: attempt.value,
+    });
+  } else {
+    requestOptions.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    requestOptions.body = params.toString();
+  }
+
+  const response = await fetch(url.toString(), requestOptions);
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch (_) {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Leopards API returned ${response.status}: ${text.slice(0, 250)}`);
+  }
+  return {
+    attempt: `${attempt.method}:${attempt.key}:${attempt.label}`,
+    payload,
+    rows: collectLeopardsStatusRows(payload, trackNumbers),
+  };
+}
+
 async function fetchLeopardsLastStatuses(trackNumbers = []) {
   const apiKey = String(process.env.LEOPARDS_API_KEY || '').trim();
   const apiPassword = String(process.env.LEOPARDS_API_PASSWORD || '').trim();
@@ -10138,32 +10203,22 @@ async function fetchLeopardsLastStatuses(trackNumbers = []) {
     throw new Error('LEOPARDS_API_KEY and LEOPARDS_API_PASSWORD are required');
   }
   const attempts = [
-    { key: 'track_numbers', value: trackNumbers.join(',') },
-    { key: 'track_numbers', value: JSON.stringify(trackNumbers) },
-    { key: 'cn_numbers', value: trackNumbers.join(',') },
+    { method: 'GET', key: 'track_numbers', value: trackNumbers.join(','), label: 'comma' },
+    { method: 'GET', key: 'track_numbers', value: JSON.stringify(trackNumbers), label: 'json-array' },
+    { method: 'GET', key: 'cn_numbers', value: trackNumbers.join(','), label: 'comma' },
+    { method: 'POST', key: 'track_numbers', value: trackNumbers.join(','), label: 'form-comma' },
+    { method: 'POST', key: 'track_numbers', value: JSON.stringify(trackNumbers), label: 'form-json-array' },
+    { method: 'POST', key: 'cn_numbers', value: trackNumbers.join(','), label: 'form-comma' },
+    { method: 'POST', key: 'track_numbers', value: trackNumbers, label: 'json-array', contentType: 'json' },
   ];
   const payloads = [];
   for (const attempt of attempts) {
-    const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
-    url.searchParams.set('api_key', apiKey);
-    url.searchParams.set('api_password', apiPassword);
-    url.searchParams.set(attempt.key, attempt.value);
-    const response = await fetch(url.toString(), { method: 'GET' });
-    const text = await response.text();
-    let payload = {};
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch (_) {
-      payload = { raw: text };
-    }
-    payloads.push({ attempt: attempt.key, payload });
-    if (!response.ok) {
-      throw new Error(`Leopards API returned ${response.status}: ${text.slice(0, 250)}`);
-    }
-    const rows = collectLeopardsStatusRows(payload, trackNumbers);
-    if (rows.length) return { payload, rows, attempts: payloads };
+    const result = await runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbers);
+    payloads.push({ attempt: result.attempt, summary: summarizeLeopardsPayload(result.payload) });
+    const rows = result.rows;
+    if (rows.length) return { payload: result.payload, rows, attempts: payloads };
   }
-  return { payload: payloads[payloads.length - 1]?.payload || {}, rows: [], attempts: payloads };
+  return { payload: payloads[payloads.length - 1]?.summary || {}, rows: [], attempts: payloads };
 }
 
 function isAuthorizedLeopardsPush(req) {
