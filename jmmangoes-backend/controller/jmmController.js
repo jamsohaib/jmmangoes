@@ -10213,10 +10213,17 @@ async function fetchLeopardsLastStatuses(trackNumbers = []) {
   ];
   const payloads = [];
   for (const attempt of attempts) {
-    const result = await runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbers);
-    payloads.push({ attempt: result.attempt, summary: summarizeLeopardsPayload(result.payload) });
-    const rows = result.rows;
-    if (rows.length) return { payload: result.payload, rows, attempts: payloads };
+    try {
+      const result = await runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbers);
+      payloads.push({ attempt: result.attempt, summary: summarizeLeopardsPayload(result.payload) });
+      const rows = result.rows;
+      if (rows.length) return { payload: result.payload, rows, attempts: payloads };
+    } catch (err) {
+      payloads.push({
+        attempt: `${attempt.method}:${attempt.key}:${attempt.label}`,
+        error: String(err?.message || err).slice(0, 300),
+      });
+    }
   }
   return { payload: payloads[payloads.length - 1]?.summary || {}, rows: [], attempts: payloads };
 }
