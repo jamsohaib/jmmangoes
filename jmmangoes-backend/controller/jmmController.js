@@ -5990,9 +5990,7 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
     }).select('orderNumber courier');
 
     const trackNumbers = [...new Set(
-      orders
-        .map((order) => String(order?.courier?.trackingNumber || '').trim())
-        .filter(Boolean)
+      orders.flatMap((order) => getLeopardsTrackingCandidates(order))
     )];
     if (!trackNumbers.length) {
       return res.status(200).json({ success: true, message: 'No dispatched Leopards tracking numbers found.', checked: 0, updated: 0 });
@@ -6011,21 +6009,28 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
     const rowByTracking = new Map();
     for (const row of rows) {
       const trackingNumber = extractLeopardsTrackingNumber(row);
-      if (trackingNumber) rowByTracking.set(String(trackingNumber).trim(), row);
+      if (trackingNumber) {
+        rowByTracking.set(normalizeLeopardsTrackingKey(trackingNumber), row);
+        rowByTracking.set(stripLeopardsTrackingPrefix(trackingNumber), row);
+      }
     }
 
     let updated = 0;
     const unmatched = [];
     for (const order of orders) {
-      const trackingNumber = String(order?.courier?.trackingNumber || '').trim();
-      const row = rowByTracking.get(trackingNumber);
+      const candidates = getLeopardsTrackingCandidates(order);
+      const row = candidates
+        .map((candidate) => rowByTracking.get(normalizeLeopardsTrackingKey(candidate)) || rowByTracking.get(stripLeopardsTrackingPrefix(candidate)))
+        .find(Boolean);
       if (!row) {
-        unmatched.push(trackingNumber);
+        unmatched.push(String(order?.courier?.trackingNumber || '').trim());
         continue;
       }
+      const returnedTrackingNumber = extractLeopardsTrackingNumber(row);
       order.courier = {
         ...(order.courier || {}),
         provider: order.courier?.provider || 'leopards',
+        trackingNumber: returnedTrackingNumber || order.courier?.trackingNumber || '',
         latestStatus: extractLeopardsStatus(row) || order.courier?.latestStatus || '',
         latestStatusAt: extractLeopardsStatusDate(row),
         latestStatusRemarks: extractLeopardsRemarks(row) || order.courier?.latestStatusRemarks || '',
@@ -6036,15 +6041,18 @@ async function handleRefreshLeopardsCourierStatuses(req, res) {
     }
 
     logger.info('Leopards courier statuses refreshed', {
-      checked: trackNumbers.length,
+      checked: orders.length,
+      requestedTrackingNumbers: trackNumbers.length,
       returnedRows: rows.length,
       updated,
       unmatchedCount: unmatched.length,
+      sampleTrackNumbers: trackNumbers.slice(0, 5),
     });
 
     return res.status(200).json({
       success: true,
-      checked: trackNumbers.length,
+      checked: orders.length,
+      requestedTrackingNumbers: trackNumbers.length,
       returnedRows: rows.length,
       updated,
       unmatched,
@@ -10085,6 +10093,38 @@ function collectLeopardsStatusRows(payload, requestedTrackingNumbers = []) {
   return rows;
 }
 
+function normalizeLeopardsTrackingKey(value = '') {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function stripLeopardsTrackingPrefix(value = '') {
+  return normalizeLeopardsTrackingKey(value).replace(/^[A-Z]{2}/, '');
+}
+
+function inferLeopardsTrackingPrefix(order) {
+  const source = [
+    order?.stockReservation?.reservedSiteName,
+    order?.stockRequest?.sourceSiteName,
+    order?.courier?.courierName,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (source.includes('rahim') || source.includes('ryk')) return 'RY';
+  if (source.includes('islamabad') || source.includes('gulzaar') || source.includes('rawalpindi')) return 'ID';
+  return '';
+}
+
+function getLeopardsTrackingCandidates(order) {
+  const raw = String(order?.courier?.trackingNumber || '').trim();
+  const clean = normalizeLeopardsTrackingKey(raw);
+  if (!clean) return [];
+  const candidates = new Set([clean]);
+  const digitsOnly = stripLeopardsTrackingPrefix(clean);
+  const inferredPrefix = inferLeopardsTrackingPrefix(order);
+  if (/^\d+$/.test(clean) && inferredPrefix) candidates.add(`${inferredPrefix}${clean}`);
+  if (digitsOnly && digitsOnly !== clean) candidates.add(digitsOnly);
+  if (digitsOnly && inferredPrefix) candidates.add(`${inferredPrefix}${digitsOnly}`);
+  return [...candidates].filter(Boolean);
+}
+
 function getLeopardsApiUrl(pathname) {
   const base = String(process.env.LEOPARDS_API_BASE_URL || 'https://merchantapi.leopardscourier.com/api').replace(/\/+$/, '');
   const cleanPath = String(pathname || '').replace(/^\/+/, '');
@@ -10097,22 +10137,33 @@ async function fetchLeopardsLastStatuses(trackNumbers = []) {
   if (!apiKey || !apiPassword) {
     throw new Error('LEOPARDS_API_KEY and LEOPARDS_API_PASSWORD are required');
   }
-  const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
-  url.searchParams.set('api_key', apiKey);
-  url.searchParams.set('api_password', apiPassword);
-  url.searchParams.set('track_numbers', trackNumbers.join(','));
-  const response = await fetch(url.toString(), { method: 'GET' });
-  const text = await response.text();
-  let payload = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch (_) {
-    payload = { raw: text };
+  const attempts = [
+    { key: 'track_numbers', value: trackNumbers.join(',') },
+    { key: 'track_numbers', value: JSON.stringify(trackNumbers) },
+    { key: 'cn_numbers', value: trackNumbers.join(',') },
+  ];
+  const payloads = [];
+  for (const attempt of attempts) {
+    const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
+    url.searchParams.set('api_key', apiKey);
+    url.searchParams.set('api_password', apiPassword);
+    url.searchParams.set(attempt.key, attempt.value);
+    const response = await fetch(url.toString(), { method: 'GET' });
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch (_) {
+      payload = { raw: text };
+    }
+    payloads.push({ attempt: attempt.key, payload });
+    if (!response.ok) {
+      throw new Error(`Leopards API returned ${response.status}: ${text.slice(0, 250)}`);
+    }
+    const rows = collectLeopardsStatusRows(payload, trackNumbers);
+    if (rows.length) return { payload, rows, attempts: payloads };
   }
-  if (!response.ok) {
-    throw new Error(`Leopards API returned ${response.status}: ${text.slice(0, 250)}`);
-  }
-  return { payload, rows: collectLeopardsStatusRows(payload, trackNumbers) };
+  return { payload: payloads[payloads.length - 1]?.payload || {}, rows: [], attempts: payloads };
 }
 
 function isAuthorizedLeopardsPush(req) {
