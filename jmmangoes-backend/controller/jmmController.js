@@ -10156,12 +10156,35 @@ function summarizeLeopardsPayload(payload) {
   return summary;
 }
 
+function formatLeopardsDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getLeopardsStatusDateRange() {
+  const lookbackDays = Math.max(1, Number(process.env.LEOPARDS_STATUS_LOOKBACK_DAYS || 45));
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - lookbackDays);
+  return {
+    fromDate: formatLeopardsDate(from),
+    toDate: formatLeopardsDate(to),
+  };
+}
+
 async function runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbers) {
   const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
   const params = new URLSearchParams();
+  const { fromDate, toDate } = getLeopardsStatusDateRange();
   params.set('api_key', apiKey);
   params.set('api_password', apiPassword);
   params.set(attempt.key, attempt.value);
+  params.set('from_date', fromDate);
+  params.set('to_date', toDate);
 
   const requestOptions = { method: attempt.method };
   if (attempt.method === 'GET') {
@@ -10172,6 +10195,8 @@ async function runLeopardsStatusAttempt(attempt, apiKey, apiPassword, trackNumbe
       api_key: apiKey,
       api_password: apiPassword,
       [attempt.key]: attempt.value,
+      from_date: fromDate,
+      to_date: toDate,
     });
   } else {
     requestOptions.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
