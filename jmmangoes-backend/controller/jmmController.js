@@ -5850,6 +5850,62 @@ async function handleGetFulfilmentSiteProducts(req, res) {
   }
 }
 
+async function deductOnlineStockForDispatchedOrder(order, user = {}) {
+  const onlineSite = await ensureOnlineSite();
+  if (order?.stockReservation?.onlineDispatchDeductedAt) {
+    return { ok: true, skipped: true, reason: 'already-deducted' };
+  }
+  const consumedAll = [];
+  for (const it of (order.items || [])) {
+    const needed = Number(it.quantity || 0);
+    if (needed <= 0) continue;
+    const consumed = await consumeHolderProductLotsByName('online', onlineSite._id, it.name, needed);
+    if (!consumed.ok) {
+      for (const c of consumedAll) {
+        const lot = await StockLot.findById(c.lotId);
+        if (lot) {
+          lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
+          await lot.save();
+        }
+      }
+      return {
+        ok: false,
+        message: `Insufficient online stock for ${it.name}. Dispatch stock cannot be deducted.`,
+        productName: it.name,
+        available: consumed.available,
+        needed,
+      };
+    }
+    consumedAll.push(...consumed.touched);
+  }
+
+  for (const c of consumedAll) {
+    await createStockLedgerRow({
+      movementType: 'out',
+      holderType: 'online',
+      holderId: onlineSite._id,
+      holderName: 'online',
+      productId: c.productId || null,
+      productName: c.productName,
+      lotId: c.lotId,
+      lotCode: c.lotCode,
+      quantity: -Number(c.qty || 0),
+      unitCost: Number(c.unitCost || 0),
+      referenceType: 'online_order_dispatch',
+      referenceId: order._id,
+      remarks: `Dispatched online order ${order.orderNumber}`,
+      createdBy: user.id === 'super-admin' ? null : user.id,
+      createdByName: user.name || user.username || '',
+    });
+  }
+  order.stockReservation = {
+    ...(order.stockReservation || {}),
+    onlineDispatchDeductedAt: new Date(),
+    onlineDispatchDeductedByName: user.name || user.username || '',
+  };
+  return { ok: true, deductedQty: consumedAll.reduce((sum, row) => sum + Number(row.qty || 0), 0) };
+}
+
 async function handleDispatchOrder(req, res) {
   try {
     const { id } = req.params;
@@ -5858,52 +5914,19 @@ async function handleDispatchOrder(req, res) {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const courier = await Courier.findById(courierId);
     if (!courier) return res.status(404).json({ message: 'Courier not found' });
+    const onlineSite = await ensureOnlineSite();
+    const reservedFromOnline =
+      String(order?.stockReservation?.reservedSiteId || '') === String(onlineSite._id)
+      || String(order?.stockReservation?.reservedSiteName || '').trim().toLowerCase() === 'online';
+    const acceptedIntoOnline = String(order?.stockRequest?.status || '').toLowerCase() === 'accepted';
     const shouldDeductOnlineStock =
       order?.stockReservation?.isReserved &&
       !order?.stockReservation?.onlineDispatchDeductedAt &&
-      String(order?.stockRequest?.status || '').toLowerCase() === 'accepted';
+      (reservedFromOnline || acceptedIntoOnline);
 
     if (shouldDeductOnlineStock) {
-      const onlineSite = await ensureOnlineSite();
-      const consumedAll = [];
-      for (const it of (order.items || [])) {
-        const needed = Number(it.quantity || 0);
-        if (needed <= 0) continue;
-        const consumed = await consumeHolderProductLotsByName('online', onlineSite._id, it.name, needed);
-        if (!consumed.ok) {
-          for (const c of consumedAll) {
-            const lot = await StockLot.findById(c.lotId);
-            if (lot) {
-              lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
-              await lot.save();
-            }
-          }
-          return res.status(400).json({ message: `Insufficient online stock for ${it.name}. Dispatch cannot be completed.` });
-        }
-        consumedAll.push(...consumed.touched);
-      }
-
-      for (const c of consumedAll) {
-        await createStockLedgerRow({
-          movementType: 'out',
-          holderType: 'online',
-          holderId: onlineSite._id,
-          holderName: 'online',
-          productId: c.productId || null,
-          productName: c.productName,
-          lotId: c.lotId,
-          lotCode: c.lotCode,
-          quantity: -Number(c.qty || 0),
-          unitCost: Number(c.unitCost || 0),
-          referenceType: 'online_order_dispatch',
-          referenceId: order._id,
-          remarks: `Dispatched online order ${order.orderNumber}`,
-          createdBy: req.user.id === 'super-admin' ? null : req.user.id,
-          createdByName: req.user.name || req.user.username || '',
-        });
-      }
-      order.stockReservation.onlineDispatchDeductedAt = new Date();
-      order.stockReservation.onlineDispatchDeductedByName = req.user.name || req.user.username || '';
+      const deduction = await deductOnlineStockForDispatchedOrder(order, req.user);
+      if (!deduction.ok) return res.status(400).json({ message: deduction.message || 'Unable to deduct online stock for dispatch.' });
     }
     order.status = 'dispatched';
     order.paymentMode = paymentMode;
@@ -5975,6 +5998,53 @@ async function handleAssignCourier(req, res) {
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleRepairOnlineDispatchStock(req, res) {
+  try {
+    const onlineSite = await ensureOnlineSite();
+    const rows = await Order.find({
+      status: { $in: ['dispatched', 'delivered'] },
+      'stockReservation.isReserved': true,
+      $or: [
+        { 'stockReservation.onlineDispatchDeductedAt': { $exists: false } },
+        { 'stockReservation.onlineDispatchDeductedAt': null },
+      ],
+    }).sort({ createdAt: 1 });
+
+    let repaired = 0;
+    const skipped = [];
+    const failed = [];
+    for (const order of rows) {
+      const reservedFromOnline =
+        String(order?.stockReservation?.reservedSiteId || '') === String(onlineSite._id)
+        || String(order?.stockReservation?.reservedSiteName || '').trim().toLowerCase() === 'online';
+      const acceptedIntoOnline = String(order?.stockRequest?.status || '').toLowerCase() === 'accepted';
+      if (!reservedFromOnline && !acceptedIntoOnline) {
+        skipped.push({ orderNumber: order.orderNumber, reason: 'not-online-fulfilled' });
+        continue;
+      }
+      const deduction = await deductOnlineStockForDispatchedOrder(order, req.user);
+      if (!deduction.ok) {
+        failed.push({ orderNumber: order.orderNumber, reason: deduction.message || 'deduction-failed' });
+        continue;
+      }
+      await order.save();
+      repaired += 1;
+    }
+
+    logger.info('Online dispatch stock repair completed', {
+      checked: rows.length,
+      repaired,
+      skipped: skipped.length,
+      failed: failed.length,
+    });
+
+    return res.status(200).json({ success: true, checked: rows.length, repaired, skipped, failed });
+  } catch (err) {
+    logger.error('Online dispatch stock repair failed', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Failed to repair online dispatch stock', error: err.message });
   }
 }
 
@@ -10637,6 +10707,7 @@ module.exports = {
     handlePreviewFulfilmentSites,
     handleGetFulfilmentSiteProducts,
     handleAssignCourier,
+    handleRepairOnlineDispatchStock,
     handleRefreshLeopardsCourierStatuses,
     handleDispatchOrder,
     handleCancelOrder,

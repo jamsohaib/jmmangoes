@@ -38,6 +38,7 @@ const OrderManagement = () => {
   const [loadingFulfilmentProducts, setLoadingFulfilmentProducts] = useState(false);
   const [tableSearch, setTableSearch] = useState({});
   const [refreshingLeopardsStatuses, setRefreshingLeopardsStatuses] = useState(false);
+  const [repairingOnlineDispatchStock, setRepairingOnlineDispatchStock] = useState(false);
   const formatDateTime = (v) => (v ? new Date(v).toLocaleString() : '-');
   const getConfirmedAtForView = (order) => {
     const explicit = order?.statusTimeline?.confirmedAt;
@@ -323,6 +324,24 @@ const OrderManagement = () => {
       toast.error(err?.response?.data?.message || 'Failed to refresh Leopards statuses.');
     } finally {
       setRefreshingLeopardsStatuses(false);
+    }
+  };
+
+  const repairOnlineDispatchStock = async () => {
+    if (!window.confirm('Repair online stock deduction for already dispatched or delivered online orders? This will deduct only orders not already marked as deducted.')) return;
+    setRepairingOnlineDispatchStock(true);
+    try {
+      const res = await api.post('/orders/online-dispatch-stock/repair', {});
+      const data = res.data || {};
+      toast.success(`Online dispatch stock repaired for ${data.repaired || 0} order(s).`);
+      if (Array.isArray(data.failed) && data.failed.length) {
+        toast.warn(`${data.failed.length} order(s) could not be repaired due to insufficient stock.`);
+      }
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to repair online dispatch stock.');
+    } finally {
+      setRepairingOnlineDispatchStock(false);
     }
   };
 
@@ -660,13 +679,22 @@ const OrderManagement = () => {
         />
         <div className="flex flex-wrap gap-2">
           {tableKey === 'dispatched' ? (
-            <button
-              onClick={refreshAllLeopardsStatuses}
-              disabled={refreshingLeopardsStatuses}
-              className="bg-amber-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
-            >
-              {refreshingLeopardsStatuses ? 'Refreshing Leopards...' : 'Refresh All Leopards Statuses'}
-            </button>
+            <>
+              <button
+                onClick={refreshAllLeopardsStatuses}
+                disabled={refreshingLeopardsStatuses}
+                className="bg-amber-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+              >
+                {refreshingLeopardsStatuses ? 'Refreshing Leopards...' : 'Refresh All Leopards Statuses'}
+              </button>
+              <button
+                onClick={repairOnlineDispatchStock}
+                disabled={repairingOnlineDispatchStock}
+                className="bg-rose-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+              >
+                {repairingOnlineDispatchStock ? 'Repairing Stock...' : 'Repair Online Dispatch Stock'}
+              </button>
+            </>
           ) : null}
           <button onClick={() => downloadOrdersCsv(title, filteredRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
           <button onClick={() => downloadOrdersCsv(title, rows, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>

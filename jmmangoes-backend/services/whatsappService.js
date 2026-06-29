@@ -4,6 +4,10 @@ function normalizeProvider() {
   return String(process.env.WHATSAPP_PROVIDER || 'meta').trim().toLowerCase();
 }
 
+function isWhatsAppSendingEnabled() {
+  return String(process.env.WHATSAPP_SENDING_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+}
+
 function buildMetaPayload({ to, messageType = 'template', message }) {
   const {
     WHATSAPP_TEST_TEMPLATE_NAME = 'jaspers_market_plain_text_v1',
@@ -155,6 +159,16 @@ async function sendViaTwilio({ to, messageType, message, contentSid, contentVari
 }
 
 async function sendWhatsAppMessage({ to, messageType = 'template', message = '', contentSid = '', contentVariables = '' }) {
+  if (!isWhatsAppSendingEnabled()) {
+    logger.info('WhatsApp sending skipped because WHATSAPP_SENDING_ENABLED=false', { to });
+    return {
+      provider: normalizeProvider(),
+      skipped: true,
+      reason: 'whatsapp-sending-disabled',
+      meta: {},
+    };
+  }
+
   const provider = normalizeProvider();
 
   if (provider === 'meta') {

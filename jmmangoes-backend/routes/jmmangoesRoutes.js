@@ -214,6 +214,7 @@ jmm_route.get('/communications/whatsapp/broadcast-options', authenticateUser, au
 jmm_route.post('/communications/whatsapp/broadcast', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppBroadcast);
 jmm_route.get('/orders', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrders);
 jmm_route.post('/orders/leopards/refresh-statuses', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRefreshLeopardsCourierStatuses);
+jmm_route.post('/orders/online-dispatch-stock/repair', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRepairOnlineDispatchStock);
 jmm_route.get('/orders/:id/stock-options', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrderStockOptions);
 jmm_route.put('/orders/:id/reserve-stock', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReserveOrderStock);
 jmm_route.post('/orders/:id/stock-request', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCreateOrderStockRequest);
