@@ -9987,15 +9987,30 @@ async function handleLeopardsCourierStatusWebhook(req, res) {
     if (req.method === 'GET') {
       return res.status(200).type('text/plain').send('OK');
     }
-    if (!isAuthorizedLeopardsPush(req)) {
-      logger.warn('Leopards courier webhook rejected because token did not match');
-      return res.status(401).type('text/plain').send('Unauthorized');
-    }
 
     const payload = req.body || {};
     const trackingNumber = extractLeopardsTrackingNumber(payload);
     const courierStatus = extractLeopardsStatus(payload);
     const remarks = extractLeopardsRemarks(payload);
+
+    // Some courier portals send an empty/sample POST while saving webhook settings.
+    // Accept that validation ping, but still require the token for real status updates.
+    if (!trackingNumber && !courierStatus) {
+      logger.info('Leopards courier webhook validation ping received', {
+        hasBody: Boolean(Object.keys(payload || {}).length),
+        headerNames: Object.keys(req.headers || {}).filter((key) => !['authorization', 'cookie'].includes(String(key).toLowerCase())),
+      });
+      return res.status(200).type('text/plain').send('OK');
+    }
+
+    if (!isAuthorizedLeopardsPush(req)) {
+      logger.warn('Leopards courier webhook rejected because token did not match', {
+        trackingNumber,
+        courierStatus,
+        headerNames: Object.keys(req.headers || {}).filter((key) => !['authorization', 'cookie'].includes(String(key).toLowerCase())),
+      });
+      return res.status(401).type('text/plain').send('Unauthorized');
+    }
 
     logger.info('Leopards courier webhook received', {
       trackingNumber,
