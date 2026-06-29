@@ -9985,63 +9985,75 @@ function isAuthorizedLeopardsPush(req) {
 async function handleLeopardsCourierStatusWebhook(req, res) {
   try {
     if (req.method === 'GET') {
-      return res.status(200).type('text/plain').send('OK');
+      return res.status(202).json([{ status: 1, errors: [] }]);
     }
 
     const payload = req.body || {};
-    const trackingNumber = extractLeopardsTrackingNumber(payload);
-    const courierStatus = extractLeopardsStatus(payload);
-    const remarks = extractLeopardsRemarks(payload);
+    const rows = Array.isArray(payload?.data) && payload.data.length ? payload.data : [payload];
+    const hasRealStatusUpdate = rows.some((row) => extractLeopardsTrackingNumber(row) || extractLeopardsStatus(row));
 
     // Some courier portals send an empty/sample POST while saving webhook settings.
     // Accept that validation ping, but still require the token for real status updates.
-    if (!trackingNumber && !courierStatus) {
+    if (!hasRealStatusUpdate) {
       logger.info('Leopards courier webhook validation ping received', {
         hasBody: Boolean(Object.keys(payload || {}).length),
         headerNames: Object.keys(req.headers || {}).filter((key) => !['authorization', 'cookie'].includes(String(key).toLowerCase())),
       });
-      return res.status(200).type('text/plain').send('OK');
+      return res.status(202).json([{ status: 1, errors: [] }]);
     }
 
     if (!isAuthorizedLeopardsPush(req)) {
       logger.warn('Leopards courier webhook rejected because token did not match', {
-        trackingNumber,
-        courierStatus,
+        records: rows.length,
         headerNames: Object.keys(req.headers || {}).filter((key) => !['authorization', 'cookie'].includes(String(key).toLowerCase())),
       });
-      return res.status(401).type('text/plain').send('Unauthorized');
+      return res.status(401).json([{ status: 0, errors: ['Unauthorized request'] }]);
+    }
+
+    let updatedCount = 0;
+    const missingTracking = [];
+    const unmatchedTracking = [];
+    for (const row of rows) {
+      const trackingNumber = extractLeopardsTrackingNumber(row);
+      const courierStatus = extractLeopardsStatus(row);
+      const remarks = extractLeopardsRemarks(row);
+      const activityDate = row?.activity_date || row?.activityDate || row?.Activity_Date || row?.ActivityDate || '';
+      const statusAt = activityDate ? new Date(activityDate) : new Date();
+
+      if (!trackingNumber) {
+        missingTracking.push(row);
+        continue;
+      }
+
+      const order = await Order.findOne({ 'courier.trackingNumber': trackingNumber });
+      if (!order) {
+        unmatchedTracking.push(trackingNumber);
+        continue;
+      }
+
+      order.courier = {
+        ...(order.courier || {}),
+        provider: order.courier?.provider || 'leopards',
+        latestStatus: courierStatus || order.courier?.latestStatus || '',
+        latestStatusAt: Number.isNaN(statusAt.getTime()) ? new Date() : statusAt,
+        latestStatusRemarks: remarks || order.courier?.latestStatusRemarks || '',
+        latestStatusRaw: row,
+      };
+      await order.save();
+      updatedCount += 1;
     }
 
     logger.info('Leopards courier webhook received', {
-      trackingNumber,
-      courierStatus,
-      hasRemarks: Boolean(remarks),
+      records: rows.length,
+      updatedCount,
+      unmatchedTracking,
+      missingTrackingCount: missingTracking.length,
     });
 
-    if (!trackingNumber) {
-      return res.status(200).type('text/plain').send('OK');
-    }
-
-    const order = await Order.findOne({ 'courier.trackingNumber': trackingNumber });
-    if (!order) {
-      logger.warn('Leopards courier webhook tracking number not linked to an order', { trackingNumber });
-      return res.status(200).type('text/plain').send('OK');
-    }
-
-    order.courier = {
-      ...(order.courier || {}),
-      provider: order.courier?.provider || 'leopards',
-      latestStatus: courierStatus || order.courier?.latestStatus || '',
-      latestStatusAt: new Date(),
-      latestStatusRemarks: remarks || order.courier?.latestStatusRemarks || '',
-      latestStatusRaw: payload,
-    };
-    await order.save();
-
-    return res.status(200).type('text/plain').send('OK');
+    return res.status(202).json([{ status: 1, errors: [] }]);
   } catch (err) {
     logger.error('Leopards courier webhook failed', { error: err?.message || String(err) });
-    return res.status(200).type('text/plain').send('OK');
+    return res.status(400).json([{ status: 0, errors: [err?.message || 'Invalid request'] }]);
   }
 }
 
