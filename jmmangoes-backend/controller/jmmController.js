@@ -5978,6 +5978,84 @@ async function handleAssignCourier(req, res) {
   }
 }
 
+async function handleRefreshLeopardsCourierStatuses(req, res) {
+  try {
+    const orders = await Order.find({
+      status: 'dispatched',
+      'courier.trackingNumber': { $nin: [null, ''] },
+      $or: [
+        { 'courier.provider': { $regex: /leopards/i } },
+        { 'courier.courierName': { $regex: /leopards/i } },
+      ],
+    }).select('orderNumber courier');
+
+    const trackNumbers = [...new Set(
+      orders
+        .map((order) => String(order?.courier?.trackingNumber || '').trim())
+        .filter(Boolean)
+    )];
+    if (!trackNumbers.length) {
+      return res.status(200).json({ success: true, message: 'No dispatched Leopards tracking numbers found.', checked: 0, updated: 0 });
+    }
+
+    const rows = [];
+    const rawPayloads = [];
+    const batchSize = 25;
+    for (let i = 0; i < trackNumbers.length; i += batchSize) {
+      const batch = trackNumbers.slice(i, i + batchSize);
+      const result = await fetchLeopardsLastStatuses(batch);
+      rawPayloads.push(result.payload);
+      rows.push(...result.rows);
+    }
+
+    const rowByTracking = new Map();
+    for (const row of rows) {
+      const trackingNumber = extractLeopardsTrackingNumber(row);
+      if (trackingNumber) rowByTracking.set(String(trackingNumber).trim(), row);
+    }
+
+    let updated = 0;
+    const unmatched = [];
+    for (const order of orders) {
+      const trackingNumber = String(order?.courier?.trackingNumber || '').trim();
+      const row = rowByTracking.get(trackingNumber);
+      if (!row) {
+        unmatched.push(trackingNumber);
+        continue;
+      }
+      order.courier = {
+        ...(order.courier || {}),
+        provider: order.courier?.provider || 'leopards',
+        latestStatus: extractLeopardsStatus(row) || order.courier?.latestStatus || '',
+        latestStatusAt: extractLeopardsStatusDate(row),
+        latestStatusRemarks: extractLeopardsRemarks(row) || order.courier?.latestStatusRemarks || '',
+        latestStatusRaw: row,
+      };
+      await order.save();
+      updated += 1;
+    }
+
+    logger.info('Leopards courier statuses refreshed', {
+      checked: trackNumbers.length,
+      returnedRows: rows.length,
+      updated,
+      unmatchedCount: unmatched.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      checked: trackNumbers.length,
+      returnedRows: rows.length,
+      updated,
+      unmatched,
+      rawSample: rawPayloads[0] || null,
+    });
+  } catch (err) {
+    logger.error('Leopards courier status refresh failed', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Failed to refresh Leopards statuses', error: err.message });
+  }
+}
+
 async function handleCancelOrder(req, res) {
   try {
     const { id } = req.params;
@@ -9966,6 +10044,77 @@ function extractLeopardsRemarks(payload) {
   ]) || '').trim();
 }
 
+function extractLeopardsStatusDate(payload) {
+  const rawDate = getNestedCourierValue(payload, [
+    (key) => ['activitydate', 'deliverydate', 'bookingdate', 'updatedat', 'statusdate'].includes(key),
+    (key) => key.includes('activity') && key.includes('date'),
+  ]);
+  const rawTime = getNestedCourierValue(payload, [
+    (key) => ['activitytime', 'statustime'].includes(key),
+    (key) => key.includes('activity') && key.includes('time'),
+  ]);
+  const candidate = [rawDate, rawTime].filter(Boolean).join(' ').trim();
+  const parsed = candidate ? new Date(candidate) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function collectLeopardsStatusRows(payload, requestedTrackingNumbers = []) {
+  const requested = new Set(requestedTrackingNumbers.map((value) => String(value || '').trim()).filter(Boolean));
+  const rows = [];
+  const seen = new Set();
+  const stack = [payload];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) stack.push(item);
+      continue;
+    }
+    const trackingNumber = extractLeopardsTrackingNumber(current);
+    const courierStatus = extractLeopardsStatus(current);
+    if (trackingNumber || courierStatus) {
+      if (!requested.size || requested.has(String(trackingNumber || '').trim()) || courierStatus) {
+        rows.push(current);
+      }
+    }
+    for (const value of Object.values(current)) {
+      if (value && typeof value === 'object') stack.push(value);
+    }
+  }
+  return rows;
+}
+
+function getLeopardsApiUrl(pathname) {
+  const base = String(process.env.LEOPARDS_API_BASE_URL || 'https://merchantapi.leopardscourier.com/api').replace(/\/+$/, '');
+  const cleanPath = String(pathname || '').replace(/^\/+/, '');
+  return `${base}/${cleanPath}`;
+}
+
+async function fetchLeopardsLastStatuses(trackNumbers = []) {
+  const apiKey = String(process.env.LEOPARDS_API_KEY || '').trim();
+  const apiPassword = String(process.env.LEOPARDS_API_PASSWORD || '').trim();
+  if (!apiKey || !apiPassword) {
+    throw new Error('LEOPARDS_API_KEY and LEOPARDS_API_PASSWORD are required');
+  }
+  const url = new URL(getLeopardsApiUrl('getBookedPacketLastStatus/format/json/'));
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('api_password', apiPassword);
+  url.searchParams.set('track_numbers', trackNumbers.join(','));
+  const response = await fetch(url.toString(), { method: 'GET' });
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch (_) {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(`Leopards API returned ${response.status}: ${text.slice(0, 250)}`);
+  }
+  return { payload, rows: collectLeopardsStatusRows(payload, trackNumbers) };
+}
+
 function isAuthorizedLeopardsPush(req) {
   const expectedToken = String(process.env.LEOPARDS_PUSH_TOKEN || '').trim();
   if (!expectedToken) return true;
@@ -10350,6 +10499,7 @@ module.exports = {
     handlePreviewFulfilmentSites,
     handleGetFulfilmentSiteProducts,
     handleAssignCourier,
+    handleRefreshLeopardsCourierStatuses,
     handleDispatchOrder,
     handleCancelOrder,
     handleDeliverOrder,

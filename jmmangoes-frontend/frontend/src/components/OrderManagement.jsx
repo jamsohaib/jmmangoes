@@ -37,6 +37,7 @@ const OrderManagement = () => {
   const [fulfilmentProducts, setFulfilmentProducts] = useState([]);
   const [loadingFulfilmentProducts, setLoadingFulfilmentProducts] = useState(false);
   const [tableSearch, setTableSearch] = useState({});
+  const [refreshingLeopardsStatuses, setRefreshingLeopardsStatuses] = useState(false);
   const formatDateTime = (v) => (v ? new Date(v).toLocaleString() : '-');
   const getConfirmedAtForView = (order) => {
     const explicit = order?.statusTimeline?.confirmedAt;
@@ -304,6 +305,24 @@ const OrderManagement = () => {
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to assign courier.');
+    }
+  };
+
+  const refreshAllLeopardsStatuses = async () => {
+    if (!window.confirm('Refresh status for all dispatched Leopards orders?')) return;
+    setRefreshingLeopardsStatuses(true);
+    try {
+      const res = await api.post('/orders/leopards/refresh-statuses', {});
+      const data = res.data || {};
+      toast.success(`Leopards statuses refreshed. Updated ${data.updated || 0} of ${data.checked || 0}.`);
+      if (Array.isArray(data.unmatched) && data.unmatched.length) {
+        toast.info(`${data.unmatched.length} tracking number(s) did not return a status yet.`);
+      }
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to refresh Leopards statuses.');
+    } finally {
+      setRefreshingLeopardsStatuses(false);
     }
   };
 
@@ -639,7 +658,16 @@ const OrderManagement = () => {
           placeholder={`Search ${title.toLowerCase()}...`}
           className="border rounded px-3 py-2 text-sm w-full md:max-w-sm"
         />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {tableKey === 'dispatched' ? (
+            <button
+              onClick={refreshAllLeopardsStatuses}
+              disabled={refreshingLeopardsStatuses}
+              className="bg-amber-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+            >
+              {refreshingLeopardsStatuses ? 'Refreshing Leopards...' : 'Refresh All Leopards Statuses'}
+            </button>
+          ) : null}
           <button onClick={() => downloadOrdersCsv(title, filteredRows, 'visible')} className="bg-blue-600 text-white px-3 py-2 rounded text-sm">Download Visible</button>
           <button onClick={() => downloadOrdersCsv(title, rows, 'all')} className="bg-green-600 text-white px-3 py-2 rounded text-sm">Download All</button>
         </div>
