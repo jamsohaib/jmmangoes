@@ -985,6 +985,8 @@ const OrderManagement = () => {
               <div><strong>Customer:</strong> {viewOrderModal.order.customer?.name || '-'}</div>
               <div><strong>Email:</strong> {viewOrderModal.order.customer?.email || '-'}</div>
               <div><strong>Mobile:</strong> {viewOrderModal.order.customer?.mobile || '-'}</div>
+              <div><strong>Address:</strong> {viewOrderModal.order.customer?.address || '-'}</div>
+              <div><strong>City:</strong> {viewOrderModal.order.customer?.city || '-'}</div>
               <div><strong>Status:</strong> {viewOrderModal.order.status}</div>
               <div className="mt-2">
                 <strong>Customer Confirmation:</strong>{' '}

@@ -195,6 +195,7 @@ jmm_route.get('/wastage/site-stock', authenticateUser, authorizePage('stockWaste
 jmm_route.post('/wastage/entries', authenticateUser, authorizePage('stockWasted', 'manage'), jmm_controller.handleCreateStockWastedEntry);
 jmm_route.get('/wastage/entries', authenticateUser, authorizePage('stockWasted', 'view'), jmm_controller.handleGetStockWastedEntries);
 jmm_route.get('/customers/directory', authenticateUser, authorizePage('customerDirectory', 'view'), jmm_controller.handleCustomerDirectory);
+jmm_route.post('/customers/directory/import', authenticateUser, authorizePage('customerDirectory', 'manage'), jmm_controller.handleImportCustomerContacts);
 jmm_route.get('/order-alert-emails', authenticateUser, authorizePage('emailAlerts', 'view'), jmm_controller.handleGetOrderAlertEmails);
 jmm_route.post('/order-alert-emails', authenticateUser, authorizePage('emailAlerts', 'manage'), jmm_controller.handleAddOrderAlertEmail);
 jmm_route.delete('/order-alert-emails/:id', authenticateUser, authorizePage('emailAlerts', 'manage'), jmm_controller.handleDeleteOrderAlertEmail);

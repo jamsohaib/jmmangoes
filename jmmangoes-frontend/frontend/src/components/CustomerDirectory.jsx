@@ -6,6 +6,7 @@ import useAuthStore from '../store/authStore';
 const CustomerDirectory = () => {
   const user = useAuthStore((state) => state.user);
   const canView = user?.role === 'admin' || user?.permissions?.customerDirectory?.view;
+  const canManage = user?.role === 'admin' || user?.permissions?.customerDirectory?.manage;
   const canUseBroadcast = user?.role === 'admin' || user?.permissions?.communications?.view;
   const [rows, setRows] = useState([]);
   const [selectedRegion, setSelectedRegion] = useState('');
@@ -14,6 +15,8 @@ const CustomerDirectory = () => {
   const [broadcastOptions, setBroadcastOptions] = useState({ products: [], sites: [] });
   const [selectedProducts, setSelectedProducts] = useState([]);
   const [selectedSites, setSelectedSites] = useState([]);
+  const [importRows, setImportRows] = useState([]);
+  const [importing, setImporting] = useState(false);
 
   const load = async () => {
     const res = await api.get('/customers/directory');
@@ -47,13 +50,15 @@ const CustomerDirectory = () => {
   });
 
   const downloadCsv = (sourceRows = filteredRows, suffix = 'all') => {
-    const headers = ['Customer Name', 'Mobile / WhatsApp', 'Email', 'Last Purchase Date & Time', 'Last Purchase Site'];
+    const headers = ['Customer Name', 'Mobile / WhatsApp', 'Email', 'Last Purchase Date & Time', 'Last Purchase Site', 'Source', 'Notes'];
     const lines = sourceRows.map((r) => [
       `"${String(r.customerName || '-').replace(/"/g, '""')}"`,
       `"${String(r.customerWhatsapp || '-').replace(/"/g, '""')}"`,
       `"${String(r.customerEmail || '-').replace(/"/g, '""')}"`,
       `"${r.lastPurchaseAt ? new Date(r.lastPurchaseAt).toLocaleString() : '-'}"`,
       `"${String(r.lastPurchaseSite || '-').replace(/"/g, '""')}"`,
+      `"${String(r.source || '-').replace(/"/g, '""')}"`,
+      `"${String(r.notes || '-').replace(/"/g, '""')}"`,
     ].join(','));
     const csv = [headers.join(','), ...lines].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -65,6 +70,87 @@ const CustomerDirectory = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const parseCsvLine = (line) => {
+    const values = [];
+    let current = '';
+    let quoted = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      const next = line[i + 1];
+      if (char === '"' && quoted && next === '"') {
+        current += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = !quoted;
+      } else if (char === ',' && !quoted) {
+        values.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    values.push(current);
+    return values.map((value) => value.trim());
+  };
+
+  const downloadImportSampleCsv = () => {
+    const headers = ['whatsapp', 'name', 'email', 'site', 'source', 'notes'];
+    const sample = ['03006721290', 'Ahmed Sohaib', 'ahmed@example.com', 'online', 'previous_year_import', 'Previous online customer'];
+    const csv = [headers, sample].map((row) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'customer_directory_import_sample.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    if (lines.length < 2) {
+      window.alert('CSV should include header row and at least one contact row.');
+      return;
+    }
+    const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
+    const parsed = lines.slice(1).map((line, index) => {
+      const values = parseCsvLine(line);
+      const get = (keys, fallbackIndex) => {
+        const found = keys.map((key) => headers.indexOf(key)).find((idx) => idx >= 0);
+        return values[found >= 0 ? found : fallbackIndex] || '';
+      };
+      return {
+        row: index + 1,
+        whatsapp: get(['whatsapp', 'mobile', 'phone', 'contact'], 0),
+        name: get(['name', 'customername', 'customer_name'], 1),
+        email: get(['email', 'customeremail', 'customer_email'], 2),
+        site: get(['site', 'lastpurchasesite', 'last_purchase_site'], 3) || 'online',
+        source: get(['source'], 4) || 'previous_year_import',
+        notes: get(['notes', 'remarks'], 5),
+      };
+    }).filter((row) => row.whatsapp || row.name || row.email);
+    setImportRows(parsed);
+  };
+
+  const uploadImportedContacts = async () => {
+    if (!importRows.length) return window.alert('Please choose a CSV file first.');
+    setImporting(true);
+    try {
+      const res = await api.post('/customers/directory/import', { rows: importRows });
+      window.alert(res.data?.message || 'Contacts imported.');
+      setImportRows([]);
+      await load();
+    } catch (err) {
+      window.alert(err?.response?.data?.message || 'Failed to import contacts.');
+    } finally {
+      setImporting(false);
+    }
   };
 
   const cleanBroadcastLabel = (label = '') => {
@@ -129,6 +215,8 @@ const CustomerDirectory = () => {
       wrap: true,
     },
     { name: 'Last Purchase Site', selector: (r) => r.lastPurchaseSite || '-', sortable: true, wrap: true },
+    { name: 'Source', selector: (r) => r.source || '-', sortable: true, wrap: true },
+    { name: 'Notes', selector: (r) => r.notes || '-', sortable: true, wrap: true },
   ];
 
   if (!canView) return <div className="p-4 text-black">Access denied.</div>;
@@ -170,6 +258,37 @@ const CustomerDirectory = () => {
           </button>
         </div>
       </div>
+      {canManage ? (
+        <div className="bg-white rounded shadow p-4 mb-4">
+          <h3 className="font-semibold text-lg mb-2">Import Previous Customer Contacts</h3>
+          <p className="text-sm text-gray-700 mb-3">
+            Use this to import previous years customers, especially old online store contacts. Contacts are merged by WhatsApp number.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <button onClick={downloadImportSampleCsv} className="bg-green-700 text-white px-4 py-2 rounded">
+              Download Sample CSV
+            </button>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => handleImportFile(e.target.files?.[0])}
+              className="border rounded p-2 md:col-span-2"
+            />
+            <button
+              onClick={uploadImportedContacts}
+              disabled={importing || !importRows.length}
+              className="bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-60"
+            >
+              {importing ? 'Uploading...' : `Upload ${importRows.length || ''} Contacts`}
+            </button>
+          </div>
+          {importRows.length ? (
+            <div className="text-sm text-gray-700 mt-2">
+              Ready to import <strong>{importRows.length}</strong> contact(s). Columns: WhatsApp, Name, Email, Site, Source, Notes.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {canUseBroadcast ? (
         <div className="bg-white rounded shadow p-4 mb-4">
           <h3 className="font-semibold text-lg mb-2">Broadcast CSV Builder</h3>

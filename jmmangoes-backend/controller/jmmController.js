@@ -50,6 +50,7 @@ const StockLedger = require('../model/StockLedgerSchema');
 const StockTransfer = require('../model/StockTransferSchema');
 const OrderStockRequest = require('../model/OrderStockRequestSchema');
 const WhatsAppEvent = require('../model/WhatsAppEventSchema');
+const CustomerContact = require('../model/CustomerContactSchema');
 const GiftSource = require('../model/GiftSourceSchema');
 const Owner = require('../model/OwnerSchema');
 const { sendMail } = require('../services/mailer');
@@ -3603,10 +3604,23 @@ async function handleCustomerDirectory(req, res) {
       customerEmail: String(o.customer?.email || '').trim(),
       lastPurchaseAt: o.createdAt,
       lastPurchaseSite: 'online',
+      source: 'online_order',
+    })).filter((r) => r.customerWhatsapp);
+
+    const importedRowsRaw = await CustomerContact.find({}).sort({ updatedAt: -1 }).lean();
+    const importedRows = importedRowsRaw.map((row) => ({
+      _id: `imported-${String(row.customerWhatsapp || '').trim()}`,
+      customerWhatsapp: String(row.customerWhatsapp || '').trim(),
+      customerName: String(row.customerName || '').trim(),
+      customerEmail: String(row.customerEmail || '').trim(),
+      lastPurchaseAt: row.updatedAt || row.createdAt,
+      lastPurchaseSite: row.lastPurchaseSite || 'online',
+      source: row.source || 'imported',
+      notes: row.notes || '',
     })).filter((r) => r.customerWhatsapp);
 
     const mergedMap = new Map();
-    const allRows = [...saleRows, ...orderRows];
+    const allRows = [...saleRows.map((row) => ({ ...row, source: 'sale_point' })), ...orderRows, ...importedRows];
     for (const row of allRows) {
       const key = String(row.customerWhatsapp || '').trim();
       if (!key) continue;
@@ -3619,6 +3633,8 @@ async function handleCustomerDirectory(req, res) {
           customerEmail: row.customerEmail || '',
           lastPurchaseAt: row.lastPurchaseAt || null,
           lastPurchaseSite: row.lastPurchaseSite || '',
+          source: row.source || '',
+          notes: row.notes || '',
         });
         continue;
       }
@@ -3633,6 +3649,8 @@ async function handleCustomerDirectory(req, res) {
         customerEmail: useNext ? (row.customerEmail || prev.customerEmail || '') : (prev.customerEmail || row.customerEmail || ''),
         lastPurchaseAt: useNext ? row.lastPurchaseAt : prev.lastPurchaseAt,
         lastPurchaseSite: useNext ? (row.lastPurchaseSite || prev.lastPurchaseSite || '') : prev.lastPurchaseSite,
+        source: useNext ? (row.source || prev.source || '') : (prev.source || row.source || ''),
+        notes: useNext ? (row.notes || prev.notes || '') : (prev.notes || row.notes || ''),
       });
     }
 
@@ -3645,6 +3663,63 @@ async function handleCustomerDirectory(req, res) {
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleImportCustomerContacts(req, res) {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (!rows.length) return res.status(400).json({ message: 'No contacts found in upload.' });
+
+    let imported = 0;
+    let skipped = 0;
+    const results = [];
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index] || {};
+      const customerWhatsapp = cleanWhatsAppNumber(row.whatsapp || row.customerWhatsapp || row.mobile || row.phone || '');
+      const customerName = String(row.name || row.customerName || '').trim();
+      const customerEmail = String(row.email || row.customerEmail || '').trim().toLowerCase();
+      const lastPurchaseSite = String(row.site || row.lastPurchaseSite || row.sourceSite || 'online').trim() || 'online';
+      const source = String(row.source || 'previous_year_import').trim() || 'previous_year_import';
+      const notes = String(row.notes || '').trim();
+
+      if (!customerWhatsapp) {
+        skipped += 1;
+        results.push({ row: row.row || index + 1, status: 'skipped', message: 'WhatsApp number is required.' });
+        continue;
+      }
+
+      await CustomerContact.findOneAndUpdate(
+        { customerWhatsapp },
+        {
+          $set: {
+            customerWhatsapp,
+            customerName,
+            customerEmail,
+            lastPurchaseSite,
+            source,
+            notes,
+            importedBy: req.user?._id || null,
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      imported += 1;
+      results.push({ row: row.row || index + 1, status: 'imported', customerWhatsapp, customerName });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `${imported} contact(s) imported. ${skipped} skipped.`,
+      imported,
+      skipped,
+      results,
+    });
+  } catch (err) {
+    logger.error('Error importing customer contacts', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error while importing contacts.', error: err.message });
   }
 }
 
@@ -10245,6 +10320,7 @@ module.exports = {
     handleUpdateShippingCosts,
     handleFetchingShippingCosts,
     handleContactQuery,
+    handleImportCustomerContacts,
     handleSendWhatsAppTestMessage,
     handleGetWhatsAppBroadcastOptions,
     handleSendWhatsAppBroadcast,
