@@ -219,6 +219,7 @@ jmm_route.get('/orders/:id/stock-options', authenticateUser, authorizePage('orde
 jmm_route.put('/orders/:id/reserve-stock', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReserveOrderStock);
 jmm_route.post('/orders/:id/stock-request', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCreateOrderStockRequest);
 jmm_route.put('/orders/:id/stock-request/cancel', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCancelOrderStockRequest);
+jmm_route.put('/orders/:id/change-fulfilment-site', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleChangeOrderFulfilmentSite);
 jmm_route.get('/stock/order-requests', authenticateUser, authorizePage('stockTransfer', 'view'), jmm_controller.handleGetPendingOrderStockRequests);
 jmm_route.put('/stock/order-requests/:id/respond', authenticateUser, authorizePage('stockTransfer', 'manage'), jmm_controller.handleRespondOrderStockRequest);
 jmm_route.put('/orders/:id/confirm', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleConfirmOrder);

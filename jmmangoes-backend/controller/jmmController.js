@@ -297,9 +297,13 @@ async function addHolderProductReturnLot(holderType, holderId, holderName, produ
 }
 
 async function getSiteProductAvailableQtyByName(siteId, productName) {
+  return getHolderProductAvailableQtyByName('site', siteId, productName);
+}
+
+async function getHolderProductAvailableQtyByName(holderType, holderId, productName) {
   const rows = await StockLot.find({
-    holderType: 'site',
-    holderId: siteId,
+    holderType: normalizeEntityType(holderType),
+    holderId,
     productName,
     quantityAvailable: { $gt: 0 },
   }).select('quantityAvailable');
@@ -5501,7 +5505,10 @@ async function handleGetOrderStockOptions(req, res) {
     const sites = await Site.find({ isActive: true }).sort({ name: 1 });
     const rows = await Promise.all(sites.map(async (s) => {
       const items = await Promise.all((order.items || []).map(async (it) => {
-        const availableQty = await getSiteProductAvailableQtyByName(s._id, it.name);
+        const isOnlineSite = String(s.name || '').trim().toLowerCase() === 'online';
+        const availableQty = isOnlineSite
+          ? await getHolderProductAvailableQtyByName('online', s._id, it.name)
+          : await getSiteProductAvailableQtyByName(s._id, it.name);
         return {
           productName: it.name,
           requiredQty: Number(it.quantity || 0),
@@ -5518,6 +5525,273 @@ async function handleGetOrderStockOptions(req, res) {
   }
 }
 
+async function releaseOrderFulfilmentReservation(order, user = {}) {
+  if (!order?.stockReservation?.isReserved) return { released: false, reason: 'no-reservation' };
+  if (order?.stockReservation?.onlineDispatchDeductedAt) {
+    return { released: false, reason: 'already-dispatched-deducted' };
+  }
+
+  if (order?.stockRequest?.status === 'pending' && order?.stockRequest?.requestId) {
+    await OrderStockRequest.updateOne(
+      { _id: order.stockRequest.requestId, status: 'pending' },
+      {
+        $set: {
+          status: 'cancelled',
+          respondedAt: new Date(),
+          respondedBy: user.id === 'super-admin' ? null : user.id,
+          respondedByName: user.name || user.username || '',
+        },
+      }
+    );
+  }
+
+  const onlineSite = await ensureOnlineSite();
+  const currentSiteId = order.stockReservation.reservedSiteId;
+  const currentSiteName = order.stockReservation.reservedSiteName || '';
+  const currentIsOnline =
+    String(currentSiteId || '') === String(onlineSite._id)
+    || String(currentSiteName || '').trim().toLowerCase() === 'online';
+  const wasTransferredIntoOnline = String(order?.stockRequest?.status || '').toLowerCase() === 'accepted' && !currentIsOnline;
+  const restored = [];
+
+  for (const it of (order.stockReservation.items || [])) {
+    const qty = Number(it.reservedQty || it.requestedQty || 0);
+    if (qty <= 0) continue;
+    const product = await Product.findById(it.productId).select('name');
+    const productDoc = {
+      _id: it.productId || product?._id || null,
+      name: product?.name || it.productName || 'Product',
+    };
+
+    if (wasTransferredIntoOnline) {
+      const consumed = await consumeHolderProductLotsByName('online', onlineSite._id, productDoc.name, qty);
+      if (!consumed.ok) {
+        return {
+          released: false,
+          error: `Unable to return ${productDoc.name}; online stock has only ${consumed.available}, required ${qty}.`,
+        };
+      }
+      for (const c of consumed.touched) {
+        await createStockLedgerRow({
+          movementType: 'transfer_out',
+          holderType: 'online',
+          holderId: onlineSite._id,
+          holderName: 'online',
+          productId: c.productId || it.productId || null,
+          productName: c.productName,
+          lotId: c.lotId,
+          lotCode: c.lotCode,
+          quantity: -Number(c.qty || 0),
+          unitCost: Number(c.unitCost || 0),
+          referenceType: 'order_fulfilment_change',
+          referenceId: order._id,
+          counterpartType: 'site',
+          counterpartId: currentSiteId,
+          counterpartName: currentSiteName,
+          remarks: `Returned online reserved stock while changing fulfilment for ${order.orderNumber}`,
+          createdBy: user.id === 'super-admin' ? null : user.id,
+          createdByName: user.name || user.username || '',
+        });
+      }
+      await addHolderProductReturnLot('site', currentSiteId, currentSiteName || 'Site', productDoc, qty, 0);
+      await createStockLedgerRow({
+        movementType: 'transfer_in',
+        holderType: 'site',
+        holderId: currentSiteId,
+        holderName: currentSiteName || 'Site',
+        productId: productDoc._id || null,
+        productName: productDoc.name,
+        quantity: Number(qty || 0),
+        unitCost: 0,
+        referenceType: 'order_fulfilment_change',
+        referenceId: order._id,
+        counterpartType: 'online',
+        counterpartId: onlineSite._id,
+        counterpartName: 'online',
+        remarks: `Restored stock from online while changing fulfilment for ${order.orderNumber}`,
+        createdBy: user.id === 'super-admin' ? null : user.id,
+        createdByName: user.name || user.username || '',
+      });
+      restored.push({ productName: productDoc.name, qty, to: currentSiteName });
+    } else if (!currentIsOnline && currentSiteId) {
+      await addHolderProductReturnLot('site', currentSiteId, currentSiteName || 'Site', productDoc, qty, 0);
+      await createStockLedgerRow({
+        movementType: 'in',
+        holderType: 'site',
+        holderId: currentSiteId,
+        holderName: currentSiteName || 'Site',
+        productId: productDoc._id || null,
+        productName: productDoc.name,
+        quantity: Number(qty || 0),
+        unitCost: 0,
+        referenceType: 'order_fulfilment_change',
+        referenceId: order._id,
+        remarks: `Restored reserved stock while changing fulfilment for ${order.orderNumber}`,
+        createdBy: user.id === 'super-admin' ? null : user.id,
+        createdByName: user.name || user.username || '',
+      });
+      restored.push({ productName: productDoc.name, qty, to: currentSiteName });
+    }
+  }
+
+  order.stockReservation = {
+    ...(order.stockReservation || {}),
+    isReserved: false,
+    reservedSiteId: null,
+    reservedSiteName: '',
+    reservedAt: null,
+    reservedByName: '',
+    items: [],
+  };
+  order.stockRequest = {
+    ...(order.stockRequest || {}),
+    status: order?.stockRequest?.status === 'pending' ? 'cancelled' : 'none',
+    respondedAt: new Date(),
+    respondedByName: user.name || user.username || '',
+  };
+  return { released: true, restored };
+}
+
+async function reserveOrderFulfilmentDirectly(order, site, user = {}) {
+  const onlineSite = await ensureOnlineSite();
+  const isOnlineSite = String(site._id) === String(onlineSite._id) || String(site.name || '').trim().toLowerCase() === 'online';
+  const consumedAll = [];
+  for (const it of (order.items || [])) {
+    const needed = Number(it.quantity || 0);
+    if (needed <= 0) continue;
+    if (isOnlineSite) {
+      const available = await getHolderProductAvailableQtyByName('online', onlineSite._id, it.name);
+      if (available < needed) return { ok: false, message: `Insufficient online stock for ${it.name}` };
+      continue;
+    }
+    const consumed = await consumeSiteProductLotsByName(site._id, it.name, needed);
+    if (!consumed.ok) {
+      for (const c of consumedAll) {
+        const lot = await StockLot.findById(c.lotId);
+        if (lot) {
+          lot.quantityAvailable = Number(lot.quantityAvailable || 0) + Number(c.qty || 0);
+          await lot.save();
+        }
+      }
+      return { ok: false, message: `Insufficient stock for ${it.name} at ${site.name}` };
+    }
+    consumedAll.push(...consumed.touched);
+  }
+
+  for (const c of consumedAll) {
+    await createStockLedgerRow({
+      movementType: 'out',
+      holderType: 'site',
+      holderId: site._id,
+      holderName: site.name,
+      productId: c.productId || null,
+      productName: c.productName,
+      lotId: c.lotId,
+      lotCode: c.lotCode,
+      quantity: -Number(c.qty || 0),
+      unitCost: Number(c.unitCost || 0),
+      referenceType: 'order_fulfilment_change_reserve',
+      referenceId: order._id,
+      remarks: `Reserved after fulfilment change for order ${order.orderNumber}`,
+      createdBy: user.id === 'super-admin' ? null : user.id,
+      createdByName: user.name || user.username || '',
+    });
+  }
+
+  order.stockReservation = {
+    isReserved: true,
+    reservedSiteId: site._id,
+    reservedSiteName: site.name,
+    reservedAt: new Date(),
+    reservedByName: user.name || user.username || '',
+    items: (order.items || []).map((i) => ({
+      productId: i.productId || null,
+      productName: i.name || '',
+      requestedQty: Number(i.quantity || 0),
+      reservedQty: Number(i.quantity || 0),
+    })),
+  };
+  order.stockRequest = {
+    ...(order.stockRequest || {}),
+    requestId: null,
+    status: 'none',
+    sourceSiteId: null,
+    sourceSiteName: '',
+    requestedAt: null,
+    requestedByName: '',
+    respondedAt: null,
+    respondedByName: '',
+  };
+  return { ok: true };
+}
+
+async function handleChangeOrderFulfilmentSite(req, res) {
+  try {
+    const { siteId, mode = 'request' } = req.body || {};
+    if (!siteId) return res.status(400).json({ message: 'siteId is required' });
+    if (!['reserve', 'request'].includes(String(mode))) return res.status(400).json({ message: 'Invalid mode' });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (!['confirmed', 'pending_confirmation'].includes(order.status)) {
+      return res.status(400).json({ message: 'Fulfilment site can only be changed before dispatch' });
+    }
+    const site = await Site.findById(siteId);
+    if (!site) return res.status(404).json({ message: 'Site not found' });
+
+    if (String(mode) === 'reserve') {
+      const isSuperAdminUser = req.user?.id === 'super-admin' || String(req.user?.username || '').toLowerCase() === 'admin';
+      if (!isSuperAdminUser) return res.status(403).json({ message: 'Only super admin can directly reserve fulfilment stock' });
+    }
+
+    const released = await releaseOrderFulfilmentReservation(order, req.user);
+    if (released.error) return res.status(400).json({ message: released.error });
+
+    if (String(mode) === 'reserve') {
+      const reservation = await reserveOrderFulfilmentDirectly(order, site, req.user);
+      if (!reservation.ok) return res.status(400).json({ message: reservation.message || 'Unable to reserve selected fulfilment site' });
+      await order.save();
+      return res.status(200).json({ success: true, order, released });
+    }
+
+    const items = (order.items || []).map((it) => ({
+      productId: it.productId || null,
+      productName: it.name,
+      quantity: Number(it.quantity || 0),
+    })).filter((x) => x.quantity > 0);
+    const request = await OrderStockRequest.create({
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      sourceSiteId: site._id,
+      sourceSiteName: site.name,
+      status: 'pending',
+      items,
+      requestedBy: req.user.id === 'super-admin' ? null : req.user.id,
+      requestedByName: req.user.name || req.user.username || '',
+    });
+    order.stockRequest = {
+      requestId: request._id,
+      status: 'pending',
+      sourceSiteId: site._id,
+      sourceSiteName: site.name,
+      requestedAt: new Date(),
+      requestedByName: req.user.name || req.user.username || '',
+      respondedAt: null,
+      respondedByName: '',
+    };
+    await order.save();
+
+    const stockTransferLink = `${process.env.CLIENT_ORIGIN || 'http://localhost:5173'}/stock-transfer`;
+    const subject = `Stock Request - Order ${order.orderNumber}`;
+    const text = `A stock request is awaiting your action for Order ${order.orderNumber}.\nSource Site: ${site.name}\nOpen after login: ${stockTransferLink}`;
+    const html = `<p>A stock request is awaiting your action for Order <strong>${order.orderNumber}</strong>.</p><p>Source Site: <strong>${site.name}</strong></p><p><a href="${stockTransferLink}">Open Stock Transfer Page</a></p>`;
+    await sendOrderStockRequestEmailsForSite(site._id, subject, text, html);
+
+    return res.status(200).json({ success: true, request, order, released });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleReserveOrderStock(req, res) {
   try {
     const { siteId } = req.body;
@@ -5528,10 +5802,17 @@ async function handleReserveOrderStock(req, res) {
     if (order.stockReservation?.isReserved) return res.status(400).json({ message: 'Order stock already reserved' });
     const site = await Site.findById(siteId);
     if (!site) return res.status(404).json({ message: 'Site not found' });
+    const onlineSite = await ensureOnlineSite();
+    const isOnlineSite = String(site._id) === String(onlineSite._id) || String(site.name || '').trim().toLowerCase() === 'online';
 
     const consumedAll = [];
     for (const it of (order.items || [])) {
       const needed = Number(it.quantity || 0);
+      if (isOnlineSite) {
+        const available = await getHolderProductAvailableQtyByName('online', onlineSite._id, it.name);
+        if (available < needed) return res.status(400).json({ message: `Insufficient online stock for ${it.name}` });
+        continue;
+      }
       const consumed = await consumeSiteProductLotsByName(site._id, it.name, needed);
       if (!consumed.ok) {
         // rollback previous consumptions by recreating available qty
@@ -10698,6 +10979,7 @@ module.exports = {
     handleReserveOrderStock,
     handleCreateOrderStockRequest,
     handleCancelOrderStockRequest,
+    handleChangeOrderFulfilmentSite,
     handleGetPendingOrderStockRequests,
     handleRespondOrderStockRequest,
     handleConfirmOrder,

@@ -32,11 +32,12 @@ const OrderManagement = () => {
   const [products, setProducts] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [publicSites, setPublicSites] = useState([]);
-  const [stockOptionsModal, setStockOptionsModal] = useState({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
+  const [stockOptionsModal, setStockOptionsModal] = useState({ open: false, order: null, options: [], loading: false, reservingSiteId: '', mode: 'reserve' });
   const [newItem, setNewItem] = useState({ productId: '', quantity: 1 });
   const [fulfilmentProducts, setFulfilmentProducts] = useState([]);
   const [loadingFulfilmentProducts, setLoadingFulfilmentProducts] = useState(false);
   const [tableSearch, setTableSearch] = useState({});
+  const [globalOrderSearch, setGlobalOrderSearch] = useState('');
   const [refreshingLeopardsStatuses, setRefreshingLeopardsStatuses] = useState(false);
   const [repairingOnlineDispatchStock, setRepairingOnlineDispatchStock] = useState(false);
   const formatDateTime = (v) => (v ? new Date(v).toLocaleString() : '-');
@@ -186,6 +187,39 @@ const OrderManagement = () => {
     cancelled: orders.filter((o) => o.status === 'cancelled' || o.status === 'rejected'),
   }), [orders]);
 
+  const orderStatusInfo = (order) => {
+    const status = String(order?.status || '').toLowerCase();
+    if (status === 'pending_confirmation') return { label: 'Pending For Confirmation', className: 'bg-yellow-100 text-yellow-800 border-yellow-300' };
+    if (status === 'confirmed') {
+      const hasCourier = Boolean(order?.courier?.courierId || order?.courier?.courierName || order?.courier?.trackingNumber);
+      return hasCourier
+        ? { label: 'Courier Assigned', className: 'bg-indigo-100 text-indigo-800 border-indigo-300' }
+        : { label: 'Confirmed', className: 'bg-blue-100 text-blue-800 border-blue-300' };
+    }
+    if (status === 'dispatched') return { label: 'Dispatched', className: 'bg-purple-100 text-purple-800 border-purple-300' };
+    if (status === 'delivered') return { label: 'Delivered', className: 'bg-green-100 text-green-800 border-green-300' };
+    if (status === 'returned') return { label: 'Returned', className: 'bg-orange-100 text-orange-800 border-orange-300' };
+    if (status === 'cancelled') return { label: 'Cancelled', className: 'bg-red-100 text-red-800 border-red-300' };
+    if (status === 'rejected') return { label: 'Cancelled / Rejected', className: 'bg-red-100 text-red-800 border-red-300' };
+    return { label: order?.status || '-', className: 'bg-gray-100 text-gray-700 border-gray-300' };
+  };
+
+  const searchableOrderText = (order) => [
+    order?.orderNumber,
+    order?.customer?.name,
+    order?.customer?.mobile,
+    order?.customer?.phone,
+    order?.customer?.email,
+    order?.customer?.city,
+    order?.courier?.trackingNumber,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const globalSearchResults = useMemo(() => {
+    const q = String(globalOrderSearch || '').trim().toLowerCase();
+    if (!q) return [];
+    return orders.filter((order) => searchableOrderText(order).includes(q));
+  }, [orders, globalOrderSearch]);
+
   const amount = (o) => Number(o.finalAmount || o.totalCost || 0).toFixed(2);
   const paymentLabel = (o) => o?.paymentDetails?.methodName || o?.paymentMode || '-';
   const isCodOrder = (o) => o?.paymentMode === 'cod' || o?.paymentDetails?.methodCode === 'cash-on-delivery';
@@ -226,7 +260,7 @@ const OrderManagement = () => {
   };
 
   const openStockOptions = async (order) => {
-    setStockOptionsModal({ open: true, order, options: [], loading: true, reservingSiteId: '' });
+    setStockOptionsModal({ open: true, order, options: [], loading: true, reservingSiteId: '', mode: 'reserve' });
     try {
       const res = await api.get(`/orders/${order._id}/stock-options`);
       setStockOptionsModal((p) => ({ ...p, options: res.data?.options || [], loading: false }));
@@ -243,7 +277,7 @@ const OrderManagement = () => {
     try {
       await api.put(`/orders/${order._id}/reserve-stock`, { siteId });
       toast.success('Stock reserved for this order.');
-      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
+      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '', mode: 'reserve' });
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to reserve stock.');
@@ -255,7 +289,7 @@ const OrderManagement = () => {
     try {
       await api.post(`/orders/${orderId}/stock-request`, { sourceSiteId });
       toast.success('Stock request sent.');
-      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' });
+      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '', mode: 'reserve' });
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to request stock.');
@@ -292,6 +326,34 @@ const OrderManagement = () => {
       await load();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to dispatch order.');
+    }
+  };
+
+  const changeFulfilmentSite = async (siteId, mode = 'request') => {
+    const order = stockOptionsModal.order;
+    if (!order?._id) return;
+    const actionLabel = mode === 'reserve' ? 'reserve this site directly' : 'request stock from this site';
+    if (!window.confirm(`Change fulfilment site for ${order.orderNumber} and ${actionLabel}? Existing reserved stock will be returned first.`)) return;
+    setStockOptionsModal((p) => ({ ...p, reservingSiteId: siteId }));
+    try {
+      await api.put(`/orders/${order._id}/change-fulfilment-site`, { siteId, mode });
+      toast.success(mode === 'reserve' ? 'Fulfilment site changed and stock reserved.' : 'Fulfilment site change requested.');
+      setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '', mode: 'reserve' });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to change fulfilment site.');
+      setStockOptionsModal((p) => ({ ...p, reservingSiteId: '' }));
+    }
+  };
+
+  const openChangeFulfilment = async (order) => {
+    setStockOptionsModal({ open: true, order, options: [], loading: true, reservingSiteId: '', mode: 'change' });
+    try {
+      const res = await api.get(`/orders/${order._id}/stock-options`);
+      setStockOptionsModal((p) => ({ ...p, options: res.data?.options || [], loading: false }));
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to load stock options.');
+      setStockOptionsModal((p) => ({ ...p, loading: false }));
     }
   };
 
@@ -812,6 +874,96 @@ const OrderManagement = () => {
   return (
     <div className="p-4 text-black">
       <h2 className="text-2xl font-bold mb-4">Order Management</h2>
+
+      <div className="bg-white rounded shadow mb-5">
+        <div className="px-4 py-3 border-b">
+          <div className="font-semibold">Search All Orders</div>
+          <div className="text-xs text-gray-600 mt-1">Search by order number, customer name, phone number, email, city, or tracking number.</div>
+        </div>
+        <div className="px-4 py-3 border-b">
+          <input
+            type="text"
+            value={globalOrderSearch}
+            onChange={(e) => setGlobalOrderSearch(e.target.value)}
+            placeholder="Search all orders..."
+            className="border rounded px-3 py-2 text-sm w-full md:max-w-xl"
+          />
+        </div>
+        {String(globalOrderSearch || '').trim() ? (
+          <div className="overflow-x-auto">
+            <DataTable
+              columns={[
+                { name: 'Order #', selector: (o) => o.orderNumber || '-', sortable: true, wrap: true },
+                {
+                  name: 'Date & Time',
+                  selector: (o) => new Date(o.createdAt || o.updatedAt || Date.now()).toLocaleString(),
+                  sortable: true,
+                  wrap: true,
+                },
+                {
+                  name: 'Customer',
+                  selector: (o) => `${o.customer?.name || '-'} ${o.customer?.mobile || ''}`.trim(),
+                  sortable: true,
+                  wrap: true,
+                  grow: 1.2,
+                  cell: (o) => (
+                    <div>
+                      <div>{o.customer?.name || '-'}</div>
+                      <div className="text-xs text-gray-600">{o.customer?.mobile || '-'}</div>
+                      <div className="text-xs text-gray-600">{o.customer?.email || '-'}</div>
+                    </div>
+                  ),
+                },
+                { name: 'Items', selector: (o) => orderItemsText(o), sortable: false, wrap: true, grow: 1.5 },
+                { name: 'City', selector: (o) => o.customer?.city || '-', sortable: true, wrap: true },
+                { name: 'Fulfilment Source', selector: (o) => fulfillmentSourceLabel(o), sortable: true, wrap: true },
+                {
+                  name: 'Current Status',
+                  selector: (o) => orderStatusInfo(o).label,
+                  sortable: true,
+                  wrap: true,
+                  cell: (o) => {
+                    const info = orderStatusInfo(o);
+                    return <span className={`inline-flex items-center rounded border px-2 py-1 text-xs font-semibold ${info.className}`}>{info.label}</span>;
+                  },
+                },
+                {
+                  name: 'Courier / Tracking',
+                  selector: (o) => `${o?.courier?.courierName || '-'} ${o?.courier?.trackingNumber || '-'}`.trim(),
+                  sortable: true,
+                  wrap: true,
+                  cell: (o) => (
+                    <div>
+                      <div>{o?.courier?.courierName || '-'}</div>
+                      <div className="text-xs text-gray-600">{o?.courier?.trackingNumber || '-'}</div>
+                    </div>
+                  ),
+                },
+                {
+                  name: 'Amount',
+                  selector: (o) => Number(o.finalAmount || o.totalCost || 0),
+                  sortable: true,
+                  right: true,
+                  cell: (o) => `PKR ${amount(o)}`,
+                },
+                {
+                  name: 'Actions',
+                  cell: (o) => <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>,
+                  ignoreRowClick: true,
+                  button: true,
+                },
+              ]}
+              data={globalSearchResults}
+              pagination
+              highlightOnHover
+              striped
+              dense
+              noDataComponent="No matching orders"
+            />
+          </div>
+        ) : null}
+      </div>
+
       {renderTable('pending', 'Pending For Confirmation', grouped.pending, (o) => (
         <div className="flex flex-wrap gap-2 items-start">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
@@ -851,6 +1003,7 @@ const OrderManagement = () => {
         <div className="space-y-2 w-full">
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+            <button onClick={() => openChangeFulfilment(o)} className="text-orange-700 hover:underline">Change Fulfilment Site</button>
             <span className="inline-flex items-center gap-2">
               <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
               <WhatsAppCheckbox action="dispatch" orderId={o._id} />
@@ -1177,7 +1330,9 @@ const OrderManagement = () => {
       {stockOptionsModal.open && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
           <div className="bg-white rounded shadow w-full max-w-3xl p-4 max-h-[90vh] overflow-auto">
-            <h3 className="text-xl font-semibold mb-3">Stock Options: {stockOptionsModal.order?.orderNumber || '-'}</h3>
+            <h3 className="text-xl font-semibold mb-3">
+              {stockOptionsModal.mode === 'change' ? 'Change Fulfilment Site' : 'Stock Options'}: {stockOptionsModal.order?.orderNumber || '-'}
+            </h3>
             {stockOptionsModal.loading ? (
               <div className="text-sm text-gray-600">Loading...</div>
             ) : (
@@ -1209,18 +1364,22 @@ const OrderManagement = () => {
                         {isSuperAdmin ? (
                           <button
                             disabled={!opt.canFulfill || !!stockOptionsModal.reservingSiteId}
-                            onClick={() => reserveStock(opt.siteId)}
+                            onClick={() => stockOptionsModal.mode === 'change' ? changeFulfilmentSite(opt.siteId, 'reserve') : reserveStock(opt.siteId)}
                             className="text-blue-700 hover:underline disabled:opacity-50"
                           >
-                            {stockOptionsModal.reservingSiteId === String(opt.siteId) ? 'Reserving...' : 'Reserve From This Site'}
+                            {stockOptionsModal.reservingSiteId === String(opt.siteId)
+                              ? 'Reserving...'
+                              : stockOptionsModal.mode === 'change'
+                                ? 'Change & Reserve From This Site'
+                                : 'Reserve From This Site'}
                           </button>
                         ) : null}
                         <button
-                          disabled={!opt.canFulfill || !!stockOptionsModal.reservingSiteId || stockOptionsModal.order?.stockRequest?.status === 'pending'}
-                          onClick={() => createStockRequest(stockOptionsModal.order?._id, opt.siteId)}
+                          disabled={!opt.canFulfill || !!stockOptionsModal.reservingSiteId || (stockOptionsModal.mode !== 'change' && stockOptionsModal.order?.stockRequest?.status === 'pending')}
+                          onClick={() => stockOptionsModal.mode === 'change' ? changeFulfilmentSite(opt.siteId, 'request') : createStockRequest(stockOptionsModal.order?._id, opt.siteId)}
                           className="text-purple-700 hover:underline disabled:opacity-50"
                         >
-                          Request Stock From Site
+                          {stockOptionsModal.mode === 'change' ? 'Change & Request Stock From Site' : 'Request Stock From Site'}
                         </button>
                       </div>
                     </div>
@@ -1229,7 +1388,7 @@ const OrderManagement = () => {
               </div>
             )}
             <div className="flex justify-end mt-4">
-              <button onClick={() => setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '' })} className="px-4 py-2 rounded border">Close</button>
+              <button onClick={() => setStockOptionsModal({ open: false, order: null, options: [], loading: false, reservingSiteId: '', mode: 'reserve' })} className="px-4 py-2 rounded border">Close</button>
             </div>
           </div>
         </div>
