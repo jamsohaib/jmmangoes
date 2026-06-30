@@ -5177,6 +5177,27 @@ async function handleDeleteOrder(req, res) {
   }
 }
 
+async function handleAddOrderNote(req, res) {
+  try {
+    const { text = '' } = req.body || {};
+    const noteText = String(text || '').trim();
+    if (!noteText) return res.status(400).json({ message: 'Note text is required' });
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    order.notes = Array.isArray(order.notes) ? order.notes : [];
+    order.notes.push({
+      text: noteText,
+      createdAt: new Date(),
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: req.user.name || req.user.username || '',
+    });
+    await order.save();
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateOrderStockRequest(req, res) {
   try {
     const siteId = req.body?.siteId || req.body?.sourceSiteId || '';
@@ -10975,6 +10996,7 @@ module.exports = {
     handleDeletePaymentMethod,
     handleGetOrders,
     handleDeleteOrder,
+    handleAddOrderNote,
     handleGetOrderStockOptions,
     handleReserveOrderStock,
     handleCreateOrderStockRequest,

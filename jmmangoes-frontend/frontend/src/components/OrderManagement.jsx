@@ -18,6 +18,7 @@ const OrderManagement = () => {
   const [returnModal, setReturnModal] = useState({ open: false, orderId: '', reason: 'Customer return request' });
   const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true });
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
+  const [notesModal, setNotesModal] = useState({ open: false, order: null, text: '', saving: false });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
   const [redirectModal, setRedirectModal] = useState({
     open: false,
@@ -257,6 +258,28 @@ const OrderManagement = () => {
     await api.put(`/orders/${order._id}/customer-confirmation`, { status: nextStatus });
     toast.success(isConfirmed ? 'Customer confirmation removed.' : 'Customer marked confirmed.');
     await load();
+  };
+
+  const openNotes = (order) => {
+    setNotesModal({ open: true, order, text: '', saving: false });
+  };
+
+  const saveOrderNote = async () => {
+    const order = notesModal.order;
+    const text = String(notesModal.text || '').trim();
+    if (!order?._id) return;
+    if (!text) return toast.warn('Please enter note text.');
+    setNotesModal((p) => ({ ...p, saving: true }));
+    try {
+      const res = await api.post(`/orders/${order._id}/notes`, { text });
+      const updatedOrder = res.data?.order || null;
+      setNotesModal({ open: true, order: updatedOrder || order, text: '', saving: false });
+      toast.success('Order note added.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to add order note.');
+      setNotesModal((p) => ({ ...p, saving: false }));
+    }
   };
 
   const openStockOptions = async (order) => {
@@ -948,7 +971,12 @@ const OrderManagement = () => {
                 },
                 {
                   name: 'Actions',
-                  cell: (o) => <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>,
+                  cell: (o) => (
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+                      <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
+                    </div>
+                  ),
                   ignoreRowClick: true,
                   button: true,
                 },
@@ -967,6 +995,7 @@ const OrderManagement = () => {
       {renderTable('pending', 'Pending For Confirmation', grouped.pending, (o) => (
         <div className="flex flex-wrap gap-2 items-start">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
           <button onClick={() => openStockOptions(o)} className="text-blue-700 hover:underline">View Stock Options</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
           <CustomerConfirmationBadge order={o} />
@@ -1003,6 +1032,7 @@ const OrderManagement = () => {
         <div className="space-y-2 w-full">
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+            <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
             <button onClick={() => openChangeFulfilment(o)} className="text-orange-700 hover:underline">Change Fulfilment Site</button>
             <span className="inline-flex items-center gap-2">
               <button onClick={() => dispatch(o._id)} className="text-blue-700 hover:underline">Order Dispatched</button>
@@ -1039,6 +1069,7 @@ const OrderManagement = () => {
       {renderTable('dispatched', 'Dispatched Orders', grouped.dispatched, (o) => (
         <div className="flex gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified && o?.paymentDetails?.receiptUrl ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Mark Payment Verified</button> : null}
           <span className="inline-flex items-center gap-2">
             <button onClick={() => markDelivered(o._id)} className="text-green-700 hover:underline">Mark Delivered</button>
@@ -1051,6 +1082,7 @@ const OrderManagement = () => {
       {renderTable('delivered', 'Delivered Orders', grouped.delivered, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
           {o.feedback?.rating ? (
             <button onClick={() => setFeedbackModal({ open: true, order: o })} className="text-green-700 hover:underline">View Feedback</button>
           ) : (
@@ -1070,6 +1102,7 @@ const OrderManagement = () => {
           return (
             <div className="flex flex-col gap-1">
               <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
+              <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline text-left">Notes</button>
               {!isResolved ? (
                 <>
                   <button onClick={() => markReturnWasted(o._id)} className="text-red-700 hover:underline text-left">Mark Wasted</button>
@@ -1085,6 +1118,7 @@ const OrderManagement = () => {
       {renderTable('cancelled', 'Cancelled Orders', grouped.cancelled, (o) => (
         <div className="flex flex-col gap-1">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
+          <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline text-left">Notes</button>
           <span>{o.adminRemarks || o.rejectionReason || '-'}</span>
         </div>
       ))}
@@ -1099,6 +1133,43 @@ const OrderManagement = () => {
 
       {returnModal.open && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3"><div className="bg-white rounded shadow p-4 w-full max-w-md"><h3 className="font-semibold mb-2">Return Order</h3><textarea value={returnModal.reason} onChange={(e) => setReturnModal((p) => ({ ...p, reason: e.target.value }))} className="w-full border p-2 rounded" rows={3} /><div className="flex justify-end gap-2 mt-3"><button className="border px-3 py-2 rounded" onClick={() => setReturnModal({ open: false, orderId: '', reason: 'Customer return request' })}>Back</button><button className="bg-red-600 text-white px-3 py-2 rounded" onClick={submitReturn}>Submit</button></div></div></div>
+      )}
+
+      {notesModal.open && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow p-4 w-full max-w-2xl max-h-[90vh] overflow-auto">
+            <h3 className="text-lg font-semibold mb-3">Order Notes: {notesModal.order?.orderNumber || '-'}</h3>
+            <div className="space-y-2 mb-4">
+              {Array.isArray(notesModal.order?.notes) && notesModal.order.notes.length ? (
+                [...notesModal.order.notes]
+                  .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+                  .map((note, idx) => (
+                    <div key={note._id || idx} className="border rounded p-3 bg-gray-50">
+                      <div className="text-sm whitespace-pre-wrap">{note.text || '-'}</div>
+                      <div className="text-xs text-gray-600 mt-2">
+                        {note.createdByName || 'User'} | {formatDateTime(note.createdAt)}
+                      </div>
+                    </div>
+                  ))
+              ) : (
+                <div className="text-sm text-gray-600 border rounded p-3 bg-gray-50">No notes added yet.</div>
+              )}
+            </div>
+            <textarea
+              value={notesModal.text}
+              onChange={(e) => setNotesModal((p) => ({ ...p, text: e.target.value }))}
+              className="w-full border p-2 rounded"
+              rows={4}
+              placeholder="Add a note for this order..."
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <button className="border px-3 py-2 rounded" onClick={() => setNotesModal({ open: false, order: null, text: '', saving: false })}>Close</button>
+              <button className="bg-blue-600 text-white px-3 py-2 rounded disabled:opacity-60" disabled={notesModal.saving} onClick={saveOrderNote}>
+                {notesModal.saving ? 'Saving...' : 'Add Note'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modifyModal.open && (

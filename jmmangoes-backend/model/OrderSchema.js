@@ -60,6 +60,12 @@ const orderSchema = new mongoose.Schema({
     latestStatusRaw: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   adminRemarks: { type: String, default: '' },
+  notes: [{
+    text: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    createdByName: { type: String, default: '' },
+  }],
   feedback: {
     rating: { type: Number, min: 1, max: 5, default: null },
     comments: { type: String, default: '' },
