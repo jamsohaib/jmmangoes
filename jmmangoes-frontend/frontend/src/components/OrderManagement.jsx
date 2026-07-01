@@ -19,6 +19,20 @@ const OrderManagement = () => {
   const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true });
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
   const [notesModal, setNotesModal] = useState({ open: false, order: null, text: '', saving: false });
+  const [giftSources, setGiftSources] = useState([]);
+  const [giftModal, setGiftModal] = useState({
+    open: false,
+    order: null,
+    giftType: 'owner',
+    ownerGiftSourceId: '',
+    senderName: '',
+    senderContact: '',
+    senderAddress: '',
+    giftPaymentType: 'prepaid',
+    giftAmount: '0',
+    giftNote: '',
+    saving: false,
+  });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
   const [redirectModal, setRedirectModal] = useState({
     open: false,
@@ -91,6 +105,24 @@ const OrderManagement = () => {
       </div>
     );
   };
+  const GiftBadge = ({ order }) => {
+    if (!order?.giftInfo?.isGift) return null;
+    const type = order.giftInfo.giftType === 'owner' ? 'Owner Gift' : 'Customer Gift';
+    return (
+      <span className="inline-flex items-center rounded-full border border-pink-300 bg-pink-50 px-2 py-0.5 text-[11px] font-semibold text-pink-800">
+        {type}
+      </span>
+    );
+  };
+  const giftRowStyles = [
+    {
+      when: (row) => Boolean(row?.giftInfo?.isGift),
+      style: {
+        backgroundColor: '#f5f3ff',
+        borderLeft: '4px solid #8b5cf6',
+      },
+    },
+  ];
   const CourierStatusBadge = ({ order }) => {
     const status = order?.courier?.latestStatus || '-';
     const remarks = order?.courier?.latestStatusRemarks || '';
@@ -177,6 +209,12 @@ const OrderManagement = () => {
         ))
       ))
       .catch(() => {});
+  }, [canView]);
+  useEffect(() => {
+    if (!canView) return;
+    api.get('/gift-sources', { params: { activeOnly: true } })
+      .then((res) => setGiftSources(res.data || []))
+      .catch(() => setGiftSources([]));
   }, [canView]);
 
   const grouped = useMemo(() => ({
@@ -282,6 +320,71 @@ const OrderManagement = () => {
     }
   };
 
+  const openGiftModal = (order) => {
+    setGiftModal({
+      open: true,
+      order,
+      giftType: 'owner',
+      ownerGiftSourceId: giftSources[0]?._id || '',
+      senderName: '',
+      senderContact: '',
+      senderAddress: '',
+      giftPaymentType: 'prepaid',
+      giftAmount: String(Number(order?.finalAmount || order?.totalCost || 0) || 0),
+      giftNote: '',
+      saving: false,
+    });
+  };
+
+  const submitGiftOrder = async () => {
+    const order = giftModal.order;
+    if (!order?._id) return;
+    if (giftModal.giftType === 'owner' && !giftModal.ownerGiftSourceId) {
+      return toast.warn('Select the owner/family member gifting source.');
+    }
+    if (giftModal.giftType === 'customer') {
+      if (!String(giftModal.senderName || '').trim()) return toast.warn('Enter sender name.');
+      if (!String(giftModal.senderContact || '').trim()) return toast.warn('Enter sender contact.');
+      if (!String(giftModal.senderAddress || '').trim()) return toast.warn('Enter sender address.');
+    }
+    const giftAmount = Math.max(0, Number(giftModal.giftAmount || 0));
+    const confirmText = giftModal.giftType === 'owner'
+      ? `Mark ${order.orderNumber} as owner gift?\n\nCourier/COD amount will be zero.`
+      : `Mark ${order.orderNumber} as customer-sent gift?\n\nGift amount/value: PKR ${giftAmount.toFixed(2)}\nCourier/COD amount will be zero.`;
+    if (!window.confirm(confirmText)) return;
+    setGiftModal((p) => ({ ...p, saving: true }));
+    try {
+      await api.put(`/orders/${order._id}/gift`, {
+        giftType: giftModal.giftType,
+        ownerGiftSourceId: giftModal.ownerGiftSourceId,
+        senderName: giftModal.senderName,
+        senderContact: giftModal.senderContact,
+        senderAddress: giftModal.senderAddress,
+        giftPaymentType: giftModal.giftPaymentType,
+        giftAmount,
+        giftNote: giftModal.giftNote,
+      });
+      toast.success('Order marked as gift.');
+      setGiftModal({
+        open: false,
+        order: null,
+        giftType: 'owner',
+        ownerGiftSourceId: '',
+        senderName: '',
+        senderContact: '',
+        senderAddress: '',
+        giftPaymentType: 'prepaid',
+        giftAmount: '0',
+        giftNote: '',
+        saving: false,
+      });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to mark order as gift.');
+      setGiftModal((p) => ({ ...p, saving: false }));
+    }
+  };
+
   const openStockOptions = async (order) => {
     setStockOptionsModal({ open: true, order, options: [], loading: true, reservingSiteId: '', mode: 'reserve' });
     try {
@@ -339,7 +442,7 @@ const OrderManagement = () => {
     const payload = {
       courierId,
       trackingNumber,
-      paymentMode: f.paymentMode || order?.paymentMode || 'cod',
+      paymentMode: order?.giftInfo?.isGift ? 'prepaid' : (f.paymentMode || order?.paymentMode || 'cod'),
       sendWhatsApp: whatsAppEnabled('dispatch', id),
     };
     if (!window.confirm('Dispatch this order?')) return;
@@ -384,7 +487,7 @@ const OrderManagement = () => {
     const order = orders.find((o) => String(o._id) === String(id));
     const f = dispatchForm[id] || {};
     if (!f.courierId) return toast.warn('Select courier.');
-    const payload = { ...f, paymentMode: f.paymentMode || order?.paymentMode || 'cod' };
+    const payload = { ...f, paymentMode: order?.giftInfo?.isGift ? 'prepaid' : (f.paymentMode || order?.paymentMode || 'cod') };
     try {
       await api.put(`/orders/${id}/assign-courier`, payload);
       toast.success('Courier assigned.');
@@ -808,6 +911,13 @@ const OrderManagement = () => {
             ),
           },
           {
+            name: 'Gift',
+            selector: (o) => o?.giftInfo?.isGift ? (o.giftInfo.giftType === 'owner' ? 'Owner Gift' : 'Customer Gift') : '-',
+            sortable: true,
+            wrap: true,
+            cell: (o) => o?.giftInfo?.isGift ? <GiftBadge order={o} /> : '-',
+          },
+          {
             name: 'Items',
             selector: (o) => orderItemsText(o),
             sortable: false,
@@ -882,6 +992,7 @@ const OrderManagement = () => {
           },
         ]}
         data={filteredRows}
+        conditionalRowStyles={giftRowStyles}
         pagination
         highlightOnHover
         striped
@@ -937,6 +1048,13 @@ const OrderManagement = () => {
                     </div>
                   ),
                 },
+                {
+                  name: 'Gift',
+                  selector: (o) => o?.giftInfo?.isGift ? (o.giftInfo.giftType === 'owner' ? 'Owner Gift' : 'Customer Gift') : '-',
+                  sortable: true,
+                  wrap: true,
+                  cell: (o) => o?.giftInfo?.isGift ? <GiftBadge order={o} /> : '-',
+                },
                 { name: 'Items', selector: (o) => orderItemsText(o), sortable: false, wrap: true, grow: 1.5 },
                 { name: 'City', selector: (o) => o.customer?.city || '-', sortable: true, wrap: true },
                 { name: 'Fulfilment Source', selector: (o) => fulfillmentSourceLabel(o), sortable: true, wrap: true },
@@ -982,6 +1100,7 @@ const OrderManagement = () => {
                 },
               ]}
               data={globalSearchResults}
+              conditionalRowStyles={giftRowStyles}
               pagination
               highlightOnHover
               striped
@@ -996,6 +1115,7 @@ const OrderManagement = () => {
         <div className="flex flex-wrap gap-2 items-start">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
+          <button onClick={() => openGiftModal(o)} className="text-pink-700 hover:underline">Mark as Gift</button>
           <button onClick={() => openStockOptions(o)} className="text-blue-700 hover:underline">View Stock Options</button>
           {!isCodOrder(o) && !o?.paymentDetails?.isVerified ? <button onClick={() => verifyPayment(o._id)} className="text-emerald-700 hover:underline">Verify Payment</button> : null}
           <CustomerConfirmationBadge order={o} />
@@ -1052,11 +1172,13 @@ const OrderManagement = () => {
             <input className="border px-2 py-1.5 rounded text-xs w-full" placeholder="Tracking #" defaultValue={o?.courier?.trackingNumber || ''} onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), trackingNumber: e.target.value } }))} />
             <select
               className="border px-2 py-1.5 rounded text-xs w-full"
-              value={dispatchForm[o._id]?.paymentMode ?? o.paymentMode ?? 'cod'}
+              value={o?.giftInfo?.isGift ? 'prepaid' : (dispatchForm[o._id]?.paymentMode ?? o.paymentMode ?? 'cod')}
+              disabled={o?.giftInfo?.isGift}
               onChange={(e) => setDispatchForm((p) => ({ ...p, [o._id]: { ...(p[o._id] || {}), paymentMode: e.target.value } }))}
             >
               <option value="cod">Cash On Delivery</option><option value="prepaid">Prepaid</option><option value="free">Free</option>
             </select>
+            {o?.giftInfo?.isGift ? <div className="text-[11px] text-orange-700">Gift order: courier/COD amount remains zero.</div> : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => assignCourier(o._id)} className="text-indigo-700 hover:underline">Assign Courier</button>
@@ -1166,6 +1288,144 @@ const OrderManagement = () => {
               <button className="border px-3 py-2 rounded" onClick={() => setNotesModal({ open: false, order: null, text: '', saving: false })}>Close</button>
               <button className="bg-blue-600 text-white px-3 py-2 rounded disabled:opacity-60" disabled={notesModal.saving} onClick={saveOrderNote}>
                 {notesModal.saving ? 'Saving...' : 'Add Note'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {giftModal.open && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow p-4 w-full max-w-2xl max-h-[90vh] overflow-auto">
+            <h3 className="text-lg font-semibold mb-3">Mark Order as Gift: {giftModal.order?.orderNumber || '-'}</h3>
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <label className="border rounded p-3 cursor-pointer">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <input
+                      type="radio"
+                      name="giftType"
+                      checked={giftModal.giftType === 'owner'}
+                      onChange={() => setGiftModal((p) => ({ ...p, giftType: 'owner', giftPaymentType: 'prepaid', giftAmount: String(Number(p.order?.finalAmount || p.order?.totalCost || 0) || 0) }))}
+                    />
+                    Gift from Owners
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">Select owner/family source. Order amount and courier COD will be zero.</div>
+                </label>
+                <label className="border rounded p-3 cursor-pointer">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <input
+                      type="radio"
+                      name="giftType"
+                      checked={giftModal.giftType === 'customer'}
+                      onChange={() => setGiftModal((p) => ({ ...p, giftType: 'customer', giftAmount: String(Number(p.order?.finalAmount || p.order?.totalCost || 0) || 0) }))}
+                    />
+                    Sent from Customer
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">Enter sender details and whether the gift amount is prepaid or pay later.</div>
+                </label>
+              </div>
+
+              {giftModal.giftType === 'owner' ? (
+                <div>
+                  <label className="block font-medium mb-1">Owner / Family Member *</label>
+                  <select
+                    className="border p-2 rounded w-full"
+                    value={giftModal.ownerGiftSourceId}
+                    onChange={(e) => setGiftModal((p) => ({ ...p, ownerGiftSourceId: e.target.value }))}
+                  >
+                    <option value="">Select gift source</option>
+                    {giftSources.map((source) => (
+                      <option key={source._id} value={source._id}>{source.name}</option>
+                    ))}
+                  </select>
+                  {!giftSources.length ? (
+                    <div className="text-xs text-amber-700 mt-1">No active owner/family gift sources found. Add them in Gift Source Management first.</div>
+                  ) : null}
+                  <label className="block mt-3">
+                    <span className="block font-medium mb-1">Gift value including delivery</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="border p-2 rounded w-full"
+                      value={giftModal.giftAmount}
+                      onChange={(e) => setGiftModal((p) => ({ ...p, giftAmount: e.target.value }))}
+                    />
+                    <span className="text-xs text-gray-600">Recorded for gift value only. Customer/courier COD amount remains zero.</span>
+                  </label>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <input
+                    className="border p-2 rounded"
+                    placeholder="Sender name *"
+                    value={giftModal.senderName}
+                    onChange={(e) => setGiftModal((p) => ({ ...p, senderName: e.target.value }))}
+                  />
+                  <input
+                    className="border p-2 rounded"
+                    placeholder="Sender contact *"
+                    value={giftModal.senderContact}
+                    onChange={(e) => setGiftModal((p) => ({ ...p, senderContact: e.target.value }))}
+                  />
+                  <input
+                    className="border p-2 rounded md:col-span-2"
+                    placeholder="Sender address *"
+                    value={giftModal.senderAddress}
+                    onChange={(e) => setGiftModal((p) => ({ ...p, senderAddress: e.target.value }))}
+                  />
+                  <label className="block">
+                    <span className="block font-medium mb-1">Gift payment *</span>
+                    <select
+                      className="border p-2 rounded w-full"
+                      value={giftModal.giftPaymentType}
+                      onChange={(e) => setGiftModal((p) => ({ ...p, giftPaymentType: e.target.value }))}
+                    >
+                      <option value="prepaid">Prepaid</option>
+                      <option value="pay_later">Pay Later</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="block font-medium mb-1">Gift amount including delivery *</span>
+                    <input
+                      type="number"
+                      min={0}
+                      className="border p-2 rounded w-full"
+                      value={giftModal.giftAmount}
+                      onChange={(e) => setGiftModal((p) => ({ ...p, giftAmount: e.target.value }))}
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-medium mb-1">Gift Note</label>
+                <textarea
+                  className="border p-2 rounded w-full"
+                  rows={3}
+                  placeholder="Optional message or note from sender..."
+                  value={giftModal.giftNote}
+                  onChange={(e) => setGiftModal((p) => ({ ...p, giftNote: e.target.value }))}
+                />
+              </div>
+
+              <div className="rounded border bg-blue-50 p-3 text-blue-900">
+                This order will be treated as prepaid for courier processing, so our team books it with zero COD amount.
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="border px-3 py-2 rounded"
+                onClick={() => setGiftModal({ open: false, order: null, giftType: 'owner', ownerGiftSourceId: '', senderName: '', senderContact: '', senderAddress: '', giftPaymentType: 'prepaid', giftAmount: '0', giftNote: '', saving: false })}
+              >
+                Cancel
+              </button>
+              <button
+                className="bg-pink-600 text-white px-3 py-2 rounded disabled:opacity-60"
+                disabled={giftModal.saving}
+                onClick={submitGiftOrder}
+              >
+                {giftModal.saving ? 'Saving...' : 'Mark as Gift'}
               </button>
             </div>
           </div>
@@ -1306,6 +1566,26 @@ const OrderManagement = () => {
               </div>
               <div><strong>Customer Response At:</strong> {formatDateTime(viewOrderModal.order?.customerConfirmation?.respondedAt)}</div>
               <div><strong>Customer Response:</strong> {viewOrderModal.order?.customerConfirmation?.responseText || '-'}</div>
+              {viewOrderModal.order?.giftInfo?.isGift ? (
+                <div className="mt-2 border rounded p-3 bg-orange-50 text-orange-950">
+                  <div className="font-semibold mb-1">Gift Details</div>
+                  <div><strong>Gift Type:</strong> {viewOrderModal.order.giftInfo.giftType === 'owner' ? 'Gift from Owners' : 'Gift Sent from Customer'}</div>
+                  {viewOrderModal.order.giftInfo.giftType === 'owner' ? (
+                    <div><strong>Gift Source:</strong> {viewOrderModal.order.giftInfo.ownerGiftSourceName || '-'}</div>
+                  ) : (
+                    <>
+                      <div><strong>Sender:</strong> {viewOrderModal.order.giftInfo.senderName || '-'}</div>
+                      <div><strong>Sender Contact:</strong> {viewOrderModal.order.giftInfo.senderContact || '-'}</div>
+                      <div><strong>Sender Address:</strong> {viewOrderModal.order.giftInfo.senderAddress || '-'}</div>
+                    </>
+                  )}
+                  <div><strong>Gift Payment:</strong> {viewOrderModal.order.giftInfo.giftPaymentType === 'pay_later' ? 'Pay Later' : 'Prepaid'}</div>
+                  <div><strong>Gift Amount / Value:</strong> PKR {Number(viewOrderModal.order.giftInfo.giftAmount || 0).toFixed(2)}</div>
+                  <div><strong>Gift Note:</strong> {viewOrderModal.order.giftInfo.giftNote || '-'}</div>
+                  <div><strong>Marked By:</strong> {viewOrderModal.order.giftInfo.markedByName || '-'}</div>
+                  <div><strong>Marked At:</strong> {formatDateTime(viewOrderModal.order.giftInfo.markedAt)}</div>
+                </div>
+              ) : null}
               <div><strong>Payment Mode:</strong> {viewOrderModal.order.paymentMode}</div>
               <div><strong>Payment Method:</strong> {viewOrderModal.order.paymentDetails?.methodName || '-'}</div>
               <div><strong>Courier Company:</strong> {viewOrderModal.order.courier?.courierName || '-'}</div>

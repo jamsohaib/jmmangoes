@@ -53,6 +53,7 @@ const WhatsAppEvent = require('../model/WhatsAppEventSchema');
 const CustomerContact = require('../model/CustomerContactSchema');
 const GiftSource = require('../model/GiftSourceSchema');
 const Owner = require('../model/OwnerSchema');
+const OwnerPayment = require('../model/OwnerPaymentSchema');
 const { sendMail } = require('../services/mailer');
 const { sendWhatsAppMessage } = require('../services/whatsappService');
 const logger = require('../utils/logger');
@@ -5198,6 +5199,126 @@ async function handleAddOrderNote(req, res) {
   }
 }
 
+async function handleMarkOrderAsGift(req, res) {
+  try {
+    const {
+      giftType = '',
+      ownerGiftSourceId = '',
+      senderName = '',
+      senderContact = '',
+      senderAddress = '',
+      giftPaymentType = 'prepaid',
+      giftAmount = 0,
+      giftNote = '',
+    } = req.body || {};
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    if (order.status !== 'pending_confirmation') {
+      return res.status(400).json({ message: 'Only pending confirmation orders can be marked as gift.' });
+    }
+
+    const normalizedGiftType = String(giftType || '').trim().toLowerCase();
+    if (!['owner', 'customer'].includes(normalizedGiftType)) {
+      return res.status(400).json({ message: 'Select gift from owners or sent from customer.' });
+    }
+
+    const amount = Math.max(0, Number(giftAmount || 0));
+    const noteText = String(giftNote || '').trim();
+    const markedByName = req.user?.name || req.user?.username || '';
+
+    let ownerSource = null;
+    let normalizedPaymentType = String(giftPaymentType || 'prepaid').trim().toLowerCase();
+
+    if (normalizedGiftType === 'owner') {
+      if (!ownerGiftSourceId) return res.status(400).json({ message: 'Select the owner/family member gifting source.' });
+      ownerSource = await GiftSource.findById(ownerGiftSourceId);
+      if (!ownerSource || ownerSource.isActive === false) return res.status(400).json({ message: 'Selected gift source is not active.' });
+      normalizedPaymentType = 'prepaid';
+    } else {
+      if (!String(senderName || '').trim()) return res.status(400).json({ message: 'Sender name is required.' });
+      if (!String(senderContact || '').trim()) return res.status(400).json({ message: 'Sender contact is required.' });
+      if (!String(senderAddress || '').trim()) return res.status(400).json({ message: 'Sender address is required.' });
+      if (!['prepaid', 'pay_later'].includes(normalizedPaymentType)) {
+        return res.status(400).json({ message: 'Select prepaid or pay later for customer gift.' });
+      }
+    }
+
+    const previousPaymentMode = order.paymentMode;
+    const previousFinalAmount = Number(order.finalAmount || order.totalCost || 0);
+    const previousPayableAmount = Number(order.paymentDetails?.payableAmount || previousFinalAmount || 0);
+    const displayAmount = normalizedGiftType === 'owner' ? 0 : amount;
+
+    order.giftInfo = {
+      isGift: true,
+      giftType: normalizedGiftType,
+      ownerGiftSourceId: normalizedGiftType === 'owner' ? ownerSource._id : null,
+      ownerGiftSourceName: normalizedGiftType === 'owner' ? ownerSource.name : '',
+      senderName: normalizedGiftType === 'customer' ? String(senderName || '').trim() : '',
+      senderContact: normalizedGiftType === 'customer' ? String(senderContact || '').trim() : '',
+      senderAddress: normalizedGiftType === 'customer' ? String(senderAddress || '').trim() : '',
+      giftPaymentType: normalizedPaymentType,
+      giftAmount: amount,
+      giftNote: noteText,
+      markedAt: new Date(),
+      markedByName,
+    };
+
+    order.paymentMode = 'prepaid';
+    order.finalAmount = displayAmount;
+    order.paymentDetails = {
+      ...(order.paymentDetails || {}),
+      methodId: null,
+      methodName: normalizedGiftType === 'owner'
+        ? `Gift from Owners${ownerSource?.name ? ` - ${ownerSource.name}` : ''}`
+        : normalizedPaymentType === 'pay_later'
+          ? 'Gift from Customer - Pay Later'
+          : 'Gift from Customer - Prepaid',
+      methodCode: normalizedGiftType === 'owner' ? 'gift-owner' : `gift-customer-${normalizedPaymentType}`,
+      paymentDiscount: 0,
+      paymentCharge: 0,
+      payableAmount: normalizedGiftType === 'owner' ? 0 : (normalizedPaymentType === 'prepaid' ? amount : 0),
+    };
+
+    order.notes = Array.isArray(order.notes) ? order.notes : [];
+    const noteLines = [
+      `Marked as ${normalizedGiftType === 'owner' ? 'gift from owners' : 'gift sent from customer'}.`,
+      normalizedGiftType === 'owner' ? `Gift source: ${ownerSource.name}` : `Sender: ${String(senderName || '').trim()} (${String(senderContact || '').trim()})`,
+      `Gift payment: ${normalizedPaymentType === 'pay_later' ? 'Pay Later' : 'Prepaid'}`,
+      `Gift amount/value: PKR ${amount.toFixed(2)}`,
+      noteText ? `Gift note: ${noteText}` : '',
+    ].filter(Boolean);
+    order.notes.push({
+      text: noteLines.join('\n'),
+      createdAt: new Date(),
+      createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+      createdByName: markedByName,
+    });
+
+    await order.save();
+    await recordAction(req, {
+      action: 'mark_order_as_gift',
+      module: 'Orders',
+      entityType: 'Order',
+      entityId: order._id,
+      entityLabel: order.orderNumber,
+      details: {
+        orderNumber: order.orderNumber,
+        giftType: normalizedGiftType,
+        giftPaymentType: normalizedPaymentType,
+        giftAmount: amount,
+        previousPaymentMode,
+        previousFinalAmount,
+        previousPayableAmount,
+      },
+    });
+
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleCreateOrderStockRequest(req, res) {
   try {
     const siteId = req.body?.siteId || req.body?.sourceSiteId || '';
@@ -6231,7 +6352,7 @@ async function handleDispatchOrder(req, res) {
       if (!deduction.ok) return res.status(400).json({ message: deduction.message || 'Unable to deduct online stock for dispatch.' });
     }
     order.status = 'dispatched';
-    order.paymentMode = paymentMode;
+    order.paymentMode = order?.giftInfo?.isGift ? 'prepaid' : paymentMode;
     order.statusTimeline = {
       ...(order.statusTimeline || {}),
       placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
@@ -6287,7 +6408,7 @@ async function handleAssignCourier(req, res) {
     const courier = await Courier.findById(courierId);
     if (!courier) return res.status(404).json({ message: 'Courier not found' });
 
-    order.paymentMode = paymentMode;
+    order.paymentMode = order?.giftInfo?.isGift ? 'prepaid' : paymentMode;
     order.courier = {
       courierId: courier._id,
       courierName: courier.name,
@@ -8781,9 +8902,32 @@ async function handleGetAdminFinancialDashboard(req, res) {
   }
 }
 
+const normalizePhoneDigits = (value = '') => String(value || '').replace(/\D/g, '').replace(/^0/, '92');
+const isPrivilegedUser = (req) => req.user?.role === 'admin' || req.user?.id === 'super-admin';
+
+async function getOwnersVisibleToUser(req, baseQuery = {}) {
+  if (isPrivilegedUser(req) || req.user?.permissions?.ownerManagement?.view) {
+    return Owner.find(baseQuery).sort({ isActive: -1, name: 1 });
+  }
+  const email = String(req.user?.email || '').trim().toLowerCase();
+  const name = String(req.user?.name || '').trim();
+  const phone = normalizePhoneDigits(req.user?.contactNumber || '');
+  const owners = await Owner.find(baseQuery).sort({ isActive: -1, name: 1 });
+  return owners.filter((owner) => {
+    const ownerEmail = String(owner.email || '').trim().toLowerCase();
+    const ownerPhone = normalizePhoneDigits(owner.contactNumber || '');
+    const ownerName = String(owner.name || '').trim().toLowerCase();
+    return (
+      (email && ownerEmail && email === ownerEmail) ||
+      (phone && ownerPhone && phone === ownerPhone) ||
+      (name && ownerName && ownerName === name.toLowerCase())
+    );
+  });
+}
+
 async function handleGetOwners(req, res) {
   try {
-    const rows = await Owner.find({}).sort({ isActive: -1, name: 1 });
+    const rows = await getOwnersVisibleToUser(req, {});
     return res.status(200).json(rows);
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -8867,6 +9011,163 @@ async function handleDeleteOwner(req, res) {
   }
 }
 
+async function handleCreateOwnerPayment(req, res) {
+  try {
+    const {
+      financialYearId = '',
+      ownerId = '',
+      paymentDate = new Date(),
+      amount = 0,
+      details = '',
+    } = req.body || {};
+    const fy = await resolveFinancialYear(financialYearId);
+    if (!fy) return res.status(400).json({ message: 'Financial year is required' });
+    const owner = await Owner.findById(ownerId);
+    if (!owner) return res.status(404).json({ message: 'Owner not found' });
+    const visibleOwners = await getOwnersVisibleToUser(req, { _id: owner._id });
+    if (!visibleOwners.length) return res.status(403).json({ message: 'You can add payment only for your owner record.' });
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) return res.status(400).json({ message: 'Enter a valid payment amount' });
+
+    const row = await OwnerPayment.create({
+      financialYearId: fy._id,
+      financialYearName: fy.name || '',
+      ownerId: owner._id,
+      ownerName: owner.name,
+      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+      amount: numericAmount,
+      details: String(details || '').trim(),
+      createdBy: req.user?.id === 'super-admin' ? null : req.user?.id,
+      createdByName: req.user?.name || req.user?.username || '',
+    });
+    await recordAction(req, {
+      action: 'create_owner_payment',
+      module: 'owners',
+      entityType: 'OwnerPayment',
+      entityId: row._id,
+      entityLabel: `${owner.name} - ${numericAmount}`,
+      details: {
+        financialYear: fy.name,
+        ownerName: owner.name,
+        amount: numericAmount,
+        paymentDate: row.paymentDate,
+      },
+    });
+    return res.status(201).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleGetOwnerPayments(req, res) {
+  try {
+    const { financialYearId = '', ownerId = '', dateFrom = '', dateTo = '' } = req.query || {};
+    const query = {};
+    if (financialYearId) query.financialYearId = financialYearId;
+    if (ownerId) query.ownerId = ownerId;
+    if (dateFrom || dateTo) {
+      query.paymentDate = {};
+      if (dateFrom) {
+        const from = new Date(dateFrom);
+        from.setHours(0, 0, 0, 0);
+        query.paymentDate.$gte = from;
+      }
+      if (dateTo) {
+        const to = new Date(dateTo);
+        to.setHours(23, 59, 59, 999);
+        query.paymentDate.$lte = to;
+      }
+    }
+
+    const visibleOwners = await getOwnersVisibleToUser(req, { isActive: true });
+    const visibleOwnerIds = visibleOwners.map((owner) => String(owner._id));
+    if (!isPrivilegedUser(req) && !req.user?.permissions?.ownerManagement?.view) {
+      query.ownerId = { $in: visibleOwnerIds };
+    } else if (!ownerId && visibleOwnerIds.length) {
+      // Keep admin/all-owner views open, but the branch documents why no filter is applied here.
+    }
+
+    const rows = await OwnerPayment.find(query).sort({ paymentDate: -1, createdAt: -1 });
+    return res.status(200).json(rows);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUpdateOwnerPayment(req, res) {
+  try {
+    if (!isPrivilegedUser(req)) return res.status(403).json({ message: 'Only super admin can edit owner payments.' });
+    const row = await OwnerPayment.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Owner payment not found' });
+    const {
+      financialYearId = row.financialYearId,
+      ownerId = row.ownerId,
+      paymentDate = row.paymentDate,
+      amount = row.amount,
+      details = row.details,
+    } = req.body || {};
+    const fy = await resolveFinancialYear(financialYearId);
+    if (!fy) return res.status(400).json({ message: 'Financial year is required' });
+    const owner = await Owner.findById(ownerId);
+    if (!owner) return res.status(404).json({ message: 'Owner not found' });
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) return res.status(400).json({ message: 'Enter a valid payment amount' });
+
+    const before = {
+      financialYearId: row.financialYearId,
+      ownerId: row.ownerId,
+      paymentDate: row.paymentDate,
+      amount: row.amount,
+      details: row.details,
+    };
+    row.financialYearId = fy._id;
+    row.financialYearName = fy.name || '';
+    row.ownerId = owner._id;
+    row.ownerName = owner.name;
+    row.paymentDate = paymentDate ? new Date(paymentDate) : new Date();
+    row.amount = numericAmount;
+    row.details = String(details || '').trim();
+    await row.save();
+    await recordAction(req, {
+      action: 'update_owner_payment',
+      module: 'owners',
+      entityType: 'OwnerPayment',
+      entityId: row._id,
+      entityLabel: `${row.ownerName} - ${row.amount}`,
+      details: { before, after: { ownerName: row.ownerName, financialYearName: row.financialYearName, paymentDate: row.paymentDate, amount: row.amount, details: row.details } },
+    });
+    return res.status(200).json(row);
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleDeleteOwnerPayment(req, res) {
+  try {
+    if (!isPrivilegedUser(req)) return res.status(403).json({ message: 'Only super admin can delete owner payments.' });
+    const row = await OwnerPayment.findById(req.params.id);
+    if (!row) return res.status(404).json({ message: 'Owner payment not found' });
+    await row.deleteOne();
+    await recordAction(req, {
+      action: 'delete_owner_payment',
+      module: 'owners',
+      entityType: 'OwnerPayment',
+      entityId: row._id,
+      entityLabel: `${row.ownerName} - ${row.amount}`,
+      details: {
+        financialYearName: row.financialYearName,
+        ownerName: row.ownerName,
+        amount: row.amount,
+        paymentDate: row.paymentDate,
+        details: row.details,
+      },
+    });
+    return res.status(200).json({ success: true, message: 'Owner payment deleted' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
 async function handleGetOwnerShareReport(req, res) {
   try {
     const fy = await resolveFinancialYear(req.query?.financialYearId || '');
@@ -8874,10 +9175,10 @@ async function handleGetOwnerShareReport(req, res) {
     const hrRange = { $gte: new Date(fy.startDate), $lte: new Date(fy.endDate) };
     hrRange.$gte.setHours(0, 0, 0, 0);
     hrRange.$lte.setHours(23, 59, 59, 999);
-    const [financialSummary, usherSummary, owners, hrRows] = await Promise.all([
+    const [financialSummary, usherSummary, owners, hrRows, paymentRows] = await Promise.all([
       calculateFinancialSummaryByRange(fy.startDate, fy.endDate, fy._id),
       calculateFarmUsherSummary(fy._id),
-      Owner.find({ isActive: true }).sort({ name: 1 }),
+      getOwnersVisibleToUser(req, { isActive: true }),
       FarmHRPayment.aggregate([
         {
           $match: {
@@ -8889,7 +9190,17 @@ async function handleGetOwnerShareReport(req, res) {
         },
         { $group: { _id: null, amount: { $sum: '$amount' } } },
       ]),
+      OwnerPayment.aggregate([
+        { $match: { financialYearId: fy._id } },
+        { $group: { _id: '$ownerId', amount: { $sum: '$amount' } } },
+      ]),
     ]);
+    const visibleOwnerIds = new Set((owners || []).map((owner) => String(owner._id)));
+    const disbursedByOwner = new Map(
+      (paymentRows || [])
+        .filter((row) => visibleOwnerIds.has(String(row._id)))
+        .map((row) => [String(row._id), Number(row.amount || 0)])
+    );
     const usherTotals = usherSummary?.totals || {};
     const farmYieldRevenue = Number(usherTotals.totalYieldValue || 0);
     const usherPaid = Number(usherTotals.usherPaid || 0);
@@ -8924,15 +9235,23 @@ async function handleGetOwnerShareReport(req, res) {
         percentage: Number(usherTotals.usherPercentage || 5),
       },
     };
-    const rows = owners.map((owner) => ({
-      ownerId: owner._id,
-      name: owner.name,
-      contactNumber: owner.contactNumber,
-      email: owner.email,
-      sharePercentage: Number(owner.sharePercentage || 0),
-      ownerNetShare: net * (Number(owner.sharePercentage || 0) / 100),
-      remainingUsherDueShare: usherRemaining * (Number(owner.sharePercentage || 0) / 100),
-    }));
+    const rows = owners.map((owner) => {
+      const shareRatio = Number(owner.sharePercentage || 0) / 100;
+      const ownerNetShare = net * shareRatio;
+      const remainingUsherDueShare = usherRemaining * shareRatio;
+      const disbursedAmount = Number(disbursedByOwner.get(String(owner._id)) || 0);
+      return {
+        ownerId: owner._id,
+        name: owner.name,
+        contactNumber: owner.contactNumber,
+        email: owner.email,
+        sharePercentage: Number(owner.sharePercentage || 0),
+        ownerNetShare,
+        remainingUsherDueShare,
+        disbursedAmount,
+        remainingAfterUsherAndDisbursement: ownerNetShare - remainingUsherDueShare - disbursedAmount,
+      };
+    });
     return res.status(200).json({
       financialYear: fy,
       summary,
@@ -8940,6 +9259,8 @@ async function handleGetOwnerShareReport(req, res) {
       totalSharePercentage: rows.reduce((sum, row) => sum + Number(row.sharePercentage || 0), 0),
       totalOwnerNetShare: rows.reduce((sum, row) => sum + Number(row.ownerNetShare || 0), 0),
       totalRemainingUsherDueShare: rows.reduce((sum, row) => sum + Number(row.remainingUsherDueShare || 0), 0),
+      totalDisbursedAmount: rows.reduce((sum, row) => sum + Number(row.disbursedAmount || 0), 0),
+      totalRemainingAfterUsherAndDisbursement: rows.reduce((sum, row) => sum + Number(row.remainingAfterUsherAndDisbursement || 0), 0),
     });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -10997,6 +11318,7 @@ module.exports = {
     handleGetOrders,
     handleDeleteOrder,
     handleAddOrderNote,
+    handleMarkOrderAsGift,
     handleGetOrderStockOptions,
     handleReserveOrderStock,
     handleCreateOrderStockRequest,
@@ -11103,6 +11425,10 @@ module.exports = {
     handleUpdateOwner,
     handleDeleteOwner,
     handleGetOwnerShareReport,
+    handleGetOwnerPayments,
+    handleCreateOwnerPayment,
+    handleUpdateOwnerPayment,
+    handleDeleteOwnerPayment,
     handleGetActionLogs,
     handleFarmDashboardSummary,
     handleGetOrderFeedbackMeta,

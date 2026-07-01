@@ -18,7 +18,7 @@ const authenticateUser = (req, res, next) => {
 
     // Rehydrate permissions/access from DB so token doesn't become stale after admin edits user.
     const dbUser = await User.findById(decoded.id).select(
-      'role name username isActive permissions siteAccess warehouseAccess wholesellerAccess farmBlockAccess isFarmUser isSalesUser'
+      'role name username email contactNumber isActive permissions siteAccess warehouseAccess wholesellerAccess farmBlockAccess isFarmUser isSalesUser'
     );
     if (!dbUser) return res.status(401).json({ message: 'Invalid token' });
     if (dbUser.isActive === false) return res.status(403).json({ message: 'User account is disabled' });
@@ -29,6 +29,8 @@ const authenticateUser = (req, res, next) => {
       role: dbUser.role,
       name: dbUser.name,
       username: dbUser.username,
+      email: dbUser.email || '',
+      contactNumber: dbUser.contactNumber || '',
       permissions: dbUser.permissions || {},
       siteAccess: (dbUser.siteAccess || []).map((s) => String(s)),
       warehouseAccess: (dbUser.warehouseAccess || []).map((w) => String(w)),

@@ -77,6 +77,7 @@ const permissionGroups = [
     title: 'Owners Tab',
     items: [
       { key: 'ownerManagement', label: 'Manage Owners' },
+      { key: 'ownerPayments', label: 'Payments to Owners' },
       { key: 'ownerShareReport', label: 'Owner Share Report' },
     ],
   },

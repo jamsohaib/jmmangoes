@@ -76,6 +76,7 @@ import FarmUsherBeneficiaries from './components/FarmUsherBeneficiaries';
 import FarmUsherReport from './components/FarmUsherReport';
 import ManageOwners from './components/ManageOwners';
 import OwnerShareReport from './components/OwnerShareReport';
+import OwnerPayments from './components/OwnerPayments';
 import ActionLogs from './components/ActionLogs';
 import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
@@ -217,6 +218,7 @@ function App() {
              <Route path="/farm-usher-beneficiaries" element={<FarmUsherBeneficiaries />} />
              <Route path="/farm-usher-report" element={<FarmUsherReport />} />
              <Route path="/owners/manage" element={<ManageOwners />} />
+             <Route path="/owners/payments" element={<OwnerPayments />} />
              <Route path="/owners/share-report" element={<OwnerShareReport />} />
              <Route path="/action-logs" element={<ActionLogs />} />
             </Route>

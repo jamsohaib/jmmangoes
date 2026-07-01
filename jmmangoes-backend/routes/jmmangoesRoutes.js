@@ -170,7 +170,7 @@ jmm_route.put('/sales/pay-later/:id/paid', authenticateUser, authorizePage('payL
 jmm_route.get('/sales/dashboard-summary', authenticateUser, authorizePage('salesDashboard', 'view'), jmm_controller.handleGetSalesDashboardSummary);
 jmm_route.get('/sales/product-wise-report', authenticateUser, authorizePage('productWiseSalesReport', 'view'), jmm_controller.handleGetProductWiseSalesReport);
 jmm_route.get('/sales/cash-transactions', authenticateUser, authorizePage('salesCashTransactions', 'view'), jmm_controller.handleGetSalesCashTransactions);
-jmm_route.get('/gift-sources', authenticateUser, authorizeAnyPage(['giftSourceManagement', 'salePoint'], 'view'), jmm_controller.handleGetGiftSources);
+jmm_route.get('/gift-sources', authenticateUser, authorizeAnyPage(['giftSourceManagement', 'salePoint', 'orderManagement'], 'view'), jmm_controller.handleGetGiftSources);
 jmm_route.post('/gift-sources', authenticateUser, authorizePage('giftSourceManagement', 'manage'), jmm_controller.handleCreateGiftSource);
 jmm_route.put('/gift-sources/:id', authenticateUser, authorizePage('giftSourceManagement', 'manage'), jmm_controller.handleUpdateGiftSource);
 jmm_route.delete('/gift-sources/:id', authenticateUser, authorizePage('giftSourceManagement', 'manage'), jmm_controller.handleDeleteGiftSource);
@@ -216,6 +216,7 @@ jmm_route.get('/orders', authenticateUser, authorizePage('orderManagement', 'vie
 jmm_route.post('/orders/leopards/refresh-statuses', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRefreshLeopardsCourierStatuses);
 jmm_route.post('/orders/online-dispatch-stock/repair', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleRepairOnlineDispatchStock);
 jmm_route.post('/orders/:id/notes', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleAddOrderNote);
+jmm_route.put('/orders/:id/gift', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleMarkOrderAsGift);
 jmm_route.get('/orders/:id/stock-options', authenticateUser, authorizePage('orderManagement', 'view'), jmm_controller.handleGetOrderStockOptions);
 jmm_route.put('/orders/:id/reserve-stock', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReserveOrderStock);
 jmm_route.post('/orders/:id/stock-request', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCreateOrderStockRequest);
@@ -318,7 +319,7 @@ jmm_route.post('/farm/expense-entries', authenticateUser, authorizePage('farmExp
 jmm_route.get('/farm/expense-entries', authenticateUser, authorizeAnyPage(['farmExpenseAdd', 'farmExpenseDashboard'], 'view'), jmm_controller.handleGetFarmExpenseEntries);
 jmm_route.put('/farm/expense-entries/:id', authenticateUser, authorizePage('farmExpenseAdd', 'manage'), jmm_controller.handleUpdateFarmExpenseEntry);
 jmm_route.get('/farm/expense-dashboard', authenticateUser, authorizePage('farmExpenseDashboard', 'view'), jmm_controller.handleGetFarmExpenseDashboard);
-jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseAdd', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses', 'farmUsherManage', 'farmUsherEntries', 'farmUsherReport', 'ownerShareReport', 'analysisFarmProductionMap', 'analysisNoProductionTrees'], 'view'), jmm_controller.handleGetFinancialYears);
+jmm_route.get('/financial-years', authenticateUser, authorizeAnyPage(['financialYears', 'farmExpenseAdd', 'farmExpenseDashboard', 'adminFinancialDashboard', 'farmHRExpenses', 'farmUsherManage', 'farmUsherEntries', 'farmUsherReport', 'ownerShareReport', 'ownerPayments', 'analysisFarmProductionMap', 'analysisNoProductionTrees'], 'view'), jmm_controller.handleGetFinancialYears);
 jmm_route.post('/financial-years', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleCreateFinancialYear);
 jmm_route.put('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleUpdateFinancialYear);
 jmm_route.delete('/financial-years/:id', authenticateUser, authorizePage('financialYears', 'manage'), jmm_controller.handleDeleteFinancialYear);
@@ -345,11 +346,15 @@ jmm_route.post('/farm/usher/entries', authenticateUser, authorizePage('farmUsher
 jmm_route.put('/farm/usher/entries/:id', authenticateUser, authorizePage('farmUsherEntries', 'manage'), jmm_controller.handleUpdateFarmUsherEntry);
 jmm_route.delete('/farm/usher/entries/:id', authenticateUser, authorizePage('farmUsherEntries', 'manage'), jmm_controller.handleDeleteFarmUsherEntry);
 jmm_route.get('/farm/usher/report', authenticateUser, authorizePage('farmUsherReport', 'view'), jmm_controller.handleGetFarmUsherReport);
-jmm_route.get('/owners', authenticateUser, authorizePage('ownerManagement', 'view'), jmm_controller.handleGetOwners);
+jmm_route.get('/owners', authenticateUser, authorizeAnyPage(['ownerManagement', 'ownerShareReport', 'ownerPayments'], 'view'), jmm_controller.handleGetOwners);
 jmm_route.post('/owners', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleCreateOwner);
+jmm_route.get('/owners/share-report', authenticateUser, authorizePage('ownerShareReport', 'view'), jmm_controller.handleGetOwnerShareReport);
+jmm_route.get('/owners/payments', authenticateUser, authorizePage('ownerPayments', 'view'), jmm_controller.handleGetOwnerPayments);
+jmm_route.post('/owners/payments', authenticateUser, authorizePage('ownerPayments', 'manage'), jmm_controller.handleCreateOwnerPayment);
+jmm_route.put('/owners/payments/:id', authenticateUser, authorizePage('ownerPayments', 'manage'), jmm_controller.handleUpdateOwnerPayment);
+jmm_route.delete('/owners/payments/:id', authenticateUser, authorizePage('ownerPayments', 'manage'), jmm_controller.handleDeleteOwnerPayment);
 jmm_route.put('/owners/:id', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleUpdateOwner);
 jmm_route.delete('/owners/:id', authenticateUser, authorizePage('ownerManagement', 'manage'), jmm_controller.handleDeleteOwner);
-jmm_route.get('/owners/share-report', authenticateUser, authorizePage('ownerShareReport', 'view'), jmm_controller.handleGetOwnerShareReport);
 jmm_route.get('/action-logs', authenticateUser, authorizePage('actionLogs', 'view'), jmm_controller.handleGetActionLogs);
 
 jmm_route.post('/shippingCosts', authenticateUser, authorizePage('shippingRates', 'manage'), jmm_controller.handleUpdateShippingCosts);

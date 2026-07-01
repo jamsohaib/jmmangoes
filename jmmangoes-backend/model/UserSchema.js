@@ -110,6 +110,7 @@ const userSchema = new mongoose.Schema({
       farmUsherReport: { view: false, manage: false },
       ownerManagement: { view: false, manage: false },
       ownerShareReport: { view: false, manage: false },
+      ownerPayments: { view: false, manage: false },
       analysisFarmProductionMap: { view: false, manage: false },
       analysisNoProductionTrees: { view: false, manage: false },
       analysisUnspecifiedTrees: { view: false, manage: false },

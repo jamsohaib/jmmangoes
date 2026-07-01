@@ -52,7 +52,7 @@ const OwnerShareReport = () => {
 
   const downloadCsv = () => {
     if (!rows.length) return toast.warn('No owner share rows to download.');
-    const header = ['Owner', 'Contact', 'Email', 'Share %', 'Owner Share From Net', 'Remaining Usher Due Share'];
+    const header = ['Owner', 'Contact', 'Email', 'Share %', 'Owner Share From Net', 'Remaining Usher Due Share', 'Already Disbursed', 'Remaining Share'];
     const lines = rows.map((row) => [
       row.name || '',
       row.contactNumber || '',
@@ -60,6 +60,8 @@ const OwnerShareReport = () => {
       Number(row.sharePercentage || 0).toFixed(2),
       Number(row.ownerNetShare || 0).toFixed(2),
       Number(row.remainingUsherDueShare || 0).toFixed(2),
+      Number(row.disbursedAmount || 0).toFixed(2),
+      Number(row.remainingAfterUsherAndDisbursement || 0).toFixed(2),
     ]);
     const csv = [header, ...lines].map((line) => line.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -80,6 +82,8 @@ const OwnerShareReport = () => {
         <td>${Number(row.sharePercentage || 0).toFixed(2)}%</td>
         <td>${money(row.ownerNetShare)}</td>
         <td>${money(row.remainingUsherDueShare)}</td>
+        <td>${money(row.disbursedAmount)}</td>
+        <td>${money(row.remainingAfterUsherAndDisbursement)}</td>
       </tr>
     `).join('');
     const html = `
@@ -109,6 +113,8 @@ const OwnerShareReport = () => {
             <div class="card"><div class="label">Usher Paid</div><div class="value">${money(summary.usher?.paid)}</div></div>
             <div class="card"><div class="label">Owners Share From Net</div><div class="value">${money(summary.net)}</div></div>
             <div class="card"><div class="label">Remaining Usher Due</div><div class="value">${money(summary.usher?.remaining)}</div></div>
+            <div class="card"><div class="label">Already Disbursed</div><div class="value">${money(report?.totalDisbursedAmount)}</div></div>
+            <div class="card"><div class="label">Remaining Share</div><div class="value">${money(report?.totalRemainingAfterUsherAndDisbursement)}</div></div>
             <div class="card"><div class="label">Total Owner Share %</div><div class="value">${Number(report?.totalSharePercentage || 0).toFixed(2)}%</div></div>
           </div>
           <table>
@@ -120,15 +126,19 @@ const OwnerShareReport = () => {
                 <th>Share %</th>
                 <th>Owner Share From Net</th>
                 <th>Remaining Usher Due Share</th>
+                <th>Already Disbursed</th>
+                <th>Remaining Share</th>
               </tr>
             </thead>
-            <tbody>${tableRows || '<tr><td colspan="6">No owner share rows found.</td></tr>'}</tbody>
+            <tbody>${tableRows || '<tr><td colspan="8">No owner share rows found.</td></tr>'}</tbody>
             <tfoot>
               <tr>
                 <td colspan="3">Totals</td>
                 <td>${Number(report?.totalSharePercentage || 0).toFixed(2)}%</td>
                 <td>${money(report?.totalOwnerNetShare)}</td>
                 <td>${money(report?.totalRemainingUsherDueShare)}</td>
+                <td>${money(report?.totalDisbursedAmount)}</td>
+                <td>${money(report?.totalRemainingAfterUsherAndDisbursement)}</td>
               </tr>
             </tfoot>
           </table>
@@ -170,6 +180,8 @@ const OwnerShareReport = () => {
           <div className="border rounded p-3"><span className="font-semibold">Total Owner Share %:</span> {Number(report?.totalSharePercentage || 0).toFixed(2)}%</div>
           <div className="border rounded p-3"><span className="font-semibold">Total Owner Net Share:</span> {money(report?.totalOwnerNetShare)}</div>
           <div className="border rounded p-3"><span className="font-semibold">Total Owner Usher Due Share:</span> {money(report?.totalRemainingUsherDueShare)}</div>
+          <div className="border rounded p-3"><span className="font-semibold">Already Disbursed:</span> {money(report?.totalDisbursedAmount)}</div>
+          <div className="border rounded p-3"><span className="font-semibold">Remaining Share:</span> {money(report?.totalRemainingAfterUsherAndDisbursement)}</div>
         </div>
       </div>
 
@@ -190,6 +202,8 @@ const OwnerShareReport = () => {
             { name: 'Share %', selector: (row) => Number(row.sharePercentage || 0), sortable: true, cell: (row) => `${Number(row.sharePercentage || 0).toFixed(2)}%` },
             { name: 'Owner Share From Net', selector: (row) => Number(row.ownerNetShare || 0), sortable: true, cell: (row) => money(row.ownerNetShare) },
             { name: 'Remaining Usher Due Share', selector: (row) => Number(row.remainingUsherDueShare || 0), sortable: true, cell: (row) => money(row.remainingUsherDueShare) },
+            { name: 'Already Disbursed', selector: (row) => Number(row.disbursedAmount || 0), sortable: true, cell: (row) => money(row.disbursedAmount) },
+            { name: 'Remaining Share', selector: (row) => Number(row.remainingAfterUsherAndDisbursement || 0), sortable: true, cell: (row) => money(row.remainingAfterUsherAndDisbursement) },
           ]}
           data={filteredRows}
           pagination

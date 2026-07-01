@@ -107,6 +107,7 @@ const Navbar = () => {
   const showCharityMenu = visibleCharityLinks.length > 0;
   const ownerLinks = [
     { to: '/owners/manage', label: 'Manage Owners', key: 'ownerManagement' },
+    { to: '/owners/payments', label: 'Payments to Owners', key: 'ownerPayments' },
     { to: '/owners/share-report', label: 'Share Report', key: 'ownerShareReport' },
   ];
   const visibleOwnerLinks = ownerLinks.filter((link) => canView(link.key));
