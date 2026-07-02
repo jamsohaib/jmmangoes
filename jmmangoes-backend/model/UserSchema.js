@@ -104,6 +104,7 @@ const userSchema = new mongoose.Schema({
       adminFinancialDashboard: { view: false, manage: false },
       farmHR: { view: false, manage: false },
       farmHRExpenses: { view: false, manage: false },
+      farmPriceManagement: { view: false, manage: false },
       farmUsherManage: { view: false, manage: false },
       farmUsherEntries: { view: false, manage: false },
       farmUsherBeneficiaries: { view: false, manage: false },

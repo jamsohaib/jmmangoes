@@ -58,6 +58,7 @@ const permissionGroups = [
       { key: 'farmExpenseManage', label: 'Farm Manage Expenses' },
       { key: 'farmExpenseAdd', label: 'Farm Add Expenses' },
       { key: 'financialYears', label: 'Manage Financial Years' },
+      { key: 'farmPriceManagement', label: 'Farm Price Management' },
       { key: 'farmHR', label: 'Farm HR' },
       { key: 'farmHRExpenses', label: 'Farm HR Expenses' },
       { key: 'farmUsherManage', label: 'Farm Manage Usher' },

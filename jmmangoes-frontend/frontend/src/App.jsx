@@ -70,6 +70,7 @@ import FinancialYears from './components/FinancialYears';
 import AdminFinancialDashboard from './components/AdminFinancialDashboard';
 import FarmHR from './components/FarmHR';
 import FarmHRExpenses from './components/FarmHRExpenses';
+import FarmPriceManagement from './components/FarmPriceManagement';
 import FarmManageUsher from './components/FarmManageUsher';
 import FarmUsherEntries from './components/FarmUsherEntries';
 import FarmUsherBeneficiaries from './components/FarmUsherBeneficiaries';
@@ -213,6 +214,7 @@ function App() {
              <Route path="/admin-financial-dashboard" element={<AdminFinancialDashboard />} />
              <Route path="/farm-hr" element={<FarmHR />} />
              <Route path="/farm-hr-expenses" element={<FarmHRExpenses />} />
+             <Route path="/farm-price-management" element={<FarmPriceManagement />} />
              <Route path="/farm-manage-usher" element={<FarmManageUsher />} />
              <Route path="/farm-usher-entries" element={<FarmUsherEntries />} />
              <Route path="/farm-usher-beneficiaries" element={<FarmUsherBeneficiaries />} />

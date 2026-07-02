@@ -92,6 +92,7 @@ const Navbar = () => {
     { to: '/farm-manage-expenses', label: 'Manage Expenses', key: 'farmExpenseManage' },
     { to: '/farm-add-expenses', label: 'Add Expenses', key: 'farmExpenseAdd' },
     { to: '/financial-years', label: 'Manage Financial Years', key: 'financialYears' },
+    { to: '/farm-price-management', label: 'Price Management', key: 'farmPriceManagement' },
     { to: '/farm-hr', label: 'HR', key: 'farmHR' },
     { to: '/farm-hr-expenses', label: 'HR Expenses', key: 'farmHRExpenses' },
   ];

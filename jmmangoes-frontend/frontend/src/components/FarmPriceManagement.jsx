@@ -6,14 +6,15 @@ import useAuthStore from '../store/authStore';
 
 const money = (value) => `PKR ${Number(value || 0).toFixed(2)}`;
 
-const FarmManageUsher = () => {
+const FarmPriceManagement = () => {
   const user = useAuthStore((state) => state.user);
-  const canView = user?.role === 'admin' || user?.permissions?.farmUsherManage?.view;
-  const canManage = user?.role === 'admin' || user?.permissions?.farmUsherManage?.manage;
+  const canView = user?.role === 'admin' || user?.permissions?.farmPriceManagement?.view;
+  const canManage = user?.role === 'admin' || user?.permissions?.farmPriceManagement?.manage;
   const [years, setYears] = useState([]);
   const [financialYearId, setFinancialYearId] = useState('');
   const [summary, setSummary] = useState(null);
-  const [usherPercentage, setUsherPercentage] = useState(5);
+  const [gradePrices, setGradePrices] = useState([]);
+  const [saving, setSaving] = useState(false);
 
   const loadYears = async () => {
     const res = await api.get('/financial-years');
@@ -30,7 +31,19 @@ const FarmManageUsher = () => {
     const res = await api.get('/farm/usher/summary', { params: { financialYearId } });
     const data = res.data || {};
     setSummary(data);
-    setUsherPercentage(Number(data.setting?.usherPercentage ?? 5));
+    const saved = new Map((data.setting?.gradePrices || []).map((row) => [String(row.varietyName || '').toLowerCase(), row]));
+    const rows = (data.varieties || []).map((variety) => {
+      const existing = saved.get(String(variety.name || '').toLowerCase()) || {};
+      return {
+        varietyId: variety._id,
+        varietyName: variety.name,
+        gradeA: Number(existing.gradeA || 0),
+        gradeB: Number(existing.gradeB || 0),
+        gradeC: Number(existing.gradeC || 0),
+        gradeD: Number(existing.gradeD || 0),
+      };
+    });
+    setGradePrices(rows);
   };
 
   useEffect(() => {
@@ -38,20 +51,33 @@ const FarmManageUsher = () => {
   }, [canView]);
 
   useEffect(() => {
-    if (canView && financialYearId) loadSummary().catch(() => toast.error('Failed to load Usher summary.'));
+    if (canView && financialYearId) loadSummary().catch(() => toast.error('Failed to load farm price summary.'));
   }, [canView, financialYearId]);
 
-  const saveSettings = async () => {
+  const setPrice = (index, key, value) => {
+    setGradePrices((prev) => prev.map((row, i) => i === index ? { ...row, [key]: value } : row));
+  };
+
+  const savePrices = async () => {
+    if (!canManage) return toast.warn('No manage permission.');
+    setSaving(true);
     try {
-      const res = await api.put('/farm/usher/settings', {
+      await api.put('/farm/usher/settings', {
         financialYearId,
-        usherPercentage: Number(usherPercentage || 0),
+        gradePrices: gradePrices.map((row) => ({
+          ...row,
+          gradeA: Number(row.gradeA || 0),
+          gradeB: Number(row.gradeB || 0),
+          gradeC: Number(row.gradeC || 0),
+          gradeD: Number(row.gradeD || 0),
+        })),
       });
-      setSummary(res.data || null);
-      toast.success('Usher settings saved.');
+      toast.success('Farm prices saved.');
       await loadSummary();
     } catch (err) {
-      toast.error(err?.response?.data?.message || 'Failed to save Usher settings.');
+      toast.error(err?.response?.data?.message || 'Failed to save farm prices.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -62,7 +88,7 @@ const FarmManageUsher = () => {
 
   return (
     <div className="p-4 text-black">
-      <h2 className="text-2xl font-bold mb-4">Manage Usher (Charity)</h2>
+      <h2 className="text-2xl font-bold mb-4">Farm Price Management</h2>
 
       <div className="bg-white rounded shadow p-4 mb-4">
         <label className="block text-sm font-medium mb-1">Financial Year</label>
@@ -72,32 +98,48 @@ const FarmManageUsher = () => {
         </select>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-3 mb-4">
-        <div className="bg-white rounded shadow p-4 border-l-4 border-green-700"><div className="text-sm text-gray-600">Total Yield</div><div className="text-xl font-bold">{money(totals.totalYieldValue)}</div></div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
         <div className="bg-white rounded shadow p-4 border-l-4 border-blue-700"><div className="text-sm text-gray-600">Total Production</div><div className="text-xl font-bold">{Number(totals.totalProductionKg || 0).toFixed(2)} kg</div></div>
-        <div className="bg-white rounded shadow p-4 border-l-4 border-red-700"><div className="text-sm text-gray-600">Total Payable Usher</div><div className="text-xl font-bold">{money(totals.totalPayableUsher)}</div></div>
-        <div className="bg-white rounded shadow p-4 border-l-4 border-green-700"><div className="text-sm text-gray-600">Usher Paid</div><div className="text-xl font-bold">{money(totals.usherPaid)}</div></div>
-        <div className="bg-white rounded shadow p-4 border-l-4 border-orange-700"><div className="text-sm text-gray-600">Remaining</div><div className="text-xl font-bold">{money(totals.usherRemaining)}</div></div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-green-700"><div className="text-sm text-gray-600">Total Yield Value</div><div className="text-xl font-bold">{money(totals.totalYieldValue)}</div></div>
+        <div className="bg-white rounded shadow p-4 border-l-4 border-orange-700"><div className="text-sm text-gray-600">Configured Varieties</div><div className="text-xl font-bold">{gradePrices.length}</div></div>
       </div>
 
       <div className="bg-white rounded shadow p-4 mb-4">
-        <h3 className="text-lg font-semibold mb-3">Usher Calculation Parameters</h3>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-          <label className="block">
-            <span className="text-sm font-medium">Usher Percentage</span>
-            <input type="number" min="0" step="0.01" value={usherPercentage} onChange={(e) => setUsherPercentage(e.target.value)} className="border p-2 rounded w-full" />
-          </label>
-          <div className="flex items-end">
-            <button onClick={saveSettings} disabled={!canManage || !financialYearId} className="bg-green-700 text-white px-4 py-2 rounded disabled:opacity-60">Save Parameters</button>
-          </div>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 mb-3">
+          <h3 className="text-lg font-semibold">On-Farm Grade Prices</h3>
+          <button onClick={savePrices} disabled={!canManage || !financialYearId || saving} className="bg-green-700 text-white px-4 py-2 rounded disabled:opacity-60">
+            {saving ? 'Saving...' : 'Save Prices'}
+          </button>
         </div>
-        <div className="rounded border bg-amber-50 p-3 text-sm text-amber-900">
-          On-farm grade prices are managed from Farm &gt; Price Management. This page uses those prices to calculate Usher.
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="p-2 text-left">Variety</th>
+                <th className="p-2 text-left">Grade A Price</th>
+                <th className="p-2 text-left">Grade B Price</th>
+                <th className="p-2 text-left">Grade C Price</th>
+                <th className="p-2 text-left">Grade D Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {gradePrices.map((row, index) => (
+                <tr key={row.varietyId || row.varietyName} className="border-t">
+                  <td className="p-2 font-semibold">{row.varietyName}</td>
+                  {['gradeA', 'gradeB', 'gradeC', 'gradeD'].map((key) => (
+                    <td key={key} className="p-2">
+                      <input type="number" min="0" step="0.01" value={row[key]} onChange={(e) => setPrice(index, key, e.target.value)} className="border p-2 rounded w-32" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
       <div className="bg-white rounded shadow p-4">
-        <h3 className="text-lg font-semibold mb-3">Production, Prices And Usher Yield By Variety</h3>
+        <h3 className="text-lg font-semibold mb-3">Production, Prices And Yield By Variety</h3>
         <DataTable
           columns={[
             { name: 'Variety', selector: (row) => row.varietyName || '-', sortable: true, wrap: true },
@@ -123,4 +165,4 @@ const FarmManageUsher = () => {
   );
 };
 
-export default FarmManageUsher;
+export default FarmPriceManagement;

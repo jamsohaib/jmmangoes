@@ -9384,23 +9384,29 @@ async function handleGetFarmUsherSummary(req, res) {
 
 async function handleSaveFarmUsherSetting(req, res) {
   try {
-    const { financialYearId, usherPercentage = 5, gradePrices = [] } = req.body || {};
+    const { financialYearId, usherPercentage, gradePrices } = req.body || {};
     const fy = await resolveFinancialYear(financialYearId);
     if (!fy) return res.status(400).json({ message: 'Financial year is required' });
-    const cleanPrices = (Array.isArray(gradePrices) ? gradePrices : []).map((row) => ({
-      varietyId: row.varietyId || null,
-      varietyName: normalizeVarietyName(row.varietyName),
-      gradeA: Number(row.gradeA || 0),
-      gradeB: Number(row.gradeB || 0),
-      gradeC: Number(row.gradeC || 0),
-      gradeD: Number(row.gradeD || 0),
-    }));
+    const existing = await FarmUsherSetting.findOne({ financialYearId: fy._id });
+    const cleanPrices = Array.isArray(gradePrices)
+      ? gradePrices.map((row) => ({
+        varietyId: row.varietyId || null,
+        varietyName: normalizeVarietyName(row.varietyName),
+        gradeA: Number(row.gradeA || 0),
+        gradeB: Number(row.gradeB || 0),
+        gradeC: Number(row.gradeC || 0),
+        gradeD: Number(row.gradeD || 0),
+      }))
+      : existing?.gradePrices || [];
+    const resolvedUsherPercentage = usherPercentage === undefined || usherPercentage === null || usherPercentage === ''
+      ? Number(existing?.usherPercentage ?? 5)
+      : Number(usherPercentage || 0);
     const row = await FarmUsherSetting.findOneAndUpdate(
       { financialYearId: fy._id },
       {
         financialYearId: fy._id,
         financialYearName: fy.name,
-        usherPercentage: Number(usherPercentage || 0),
+        usherPercentage: resolvedUsherPercentage,
         gradePrices: cleanPrices,
         updatedBy: req.user?._id || null,
         updatedByName: req.user?.name || req.user?.username || '',
