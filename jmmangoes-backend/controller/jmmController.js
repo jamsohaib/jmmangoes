@@ -554,6 +554,55 @@ function getTwilioTemplateSid(templateKey, ...fallbackEnvKeys) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const TWILIO_TEMPLATE_PREVIEWS = Object.freeze({
+  [APPROVED_TWILIO_TEMPLATE_SIDS.orderConfirmRequest]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: amount = '' }) =>
+    `Dear ${name},\n\nThank you for your order at JM Mangoes.\n\nOrder number: ${orderNo}\n\nOrder details:\n${items}\n\nTotal payable: PKR ${amount}\n\nPlease confirm whether you want us to process this order.`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.orderDispatched]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: courier = '', 5: tracking = '' }) =>
+    `Dear ${name}, your order ${orderNo} of ${items} has been dispatched via ${courier}. Tracking: ${tracking}.`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.orderDeliveredFeedback]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: link = '' }) =>
+    `Dear ${name}, your order ${orderNo} of ${items} has been delivered. Please share feedback: ${link}`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.stallPurchaseThankYou]: ({ 1: name = 'Customer', 2: items = '' }) =>
+    `Dear ${name}, thank you for your purchase of ${items} from JM Mangoes.`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.thankYouForPurchase]: ({ 1: name = 'Customer', 2: items = '' }) =>
+    `Dear ${name},\n\nThank you for your purchase of ${items}.\nWe look forward to serving you again.\n\njmmangoes.pk`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.newStockArrival]: ({ 1: name = 'Customer', 2: products = '', 3: sites = '' }) =>
+    `Dear ${name}, fresh ${products} mango stock is now available at ${sites}. Visit our stall or order online at jmmangoes.pk.`,
+  [APPROVED_TWILIO_TEMPLATE_SIDS.onlineOrderingOpen]: ({ 1: variety = 'mangoes', 2: link = 'https://jmmangoes.pk' }) =>
+    `Fresh ${variety} is available for online ordering at ${link}.`,
+});
+
+function renderTwilioTemplatePreview(contentSid = '', variables = {}) {
+  const renderer = TWILIO_TEMPLATE_PREVIEWS[String(contentSid || '').trim()];
+  if (renderer) return renderer(variables || {});
+  return `Template message sent (${contentSid}) ${Object.values(variables || {}).filter(Boolean).join(' | ')}`.trim();
+}
+
+async function logOutgoingWhatsAppMessage({ to, result, messageType = 'template', message = '', contentSid = '', variables = {}, actionTaken = '' }) {
+  try {
+    const meta = result?.meta || {};
+    const recipientId = normalizeTwilioWhatsappNumber(meta.to || to);
+    const from = normalizeTwilioWhatsappNumber(meta.from || process.env.TWILIO_WHATSAPP_FROM || process.env.WHATSAPP_PHONE_NUMBER_ID || '');
+    const text = messageType === 'template' ? renderTwilioTemplatePreview(contentSid, variables) : String(message || meta.body || '').trim();
+    await WhatsAppEvent.create({
+      eventType: 'message',
+      direction: 'outgoing',
+      phoneNumberId: from,
+      displayPhoneNumber: from,
+      waId: recipientId,
+      from,
+      recipientId,
+      messageId: meta.sid || meta.messages?.[0]?.id || '',
+      messageType,
+      text,
+      timestamp: new Date(),
+      actionTaken,
+      raw: { contentSid, variables, meta },
+    });
+  } catch (err) {
+    logger.warn('Failed to log outgoing WhatsApp message event', { error: err?.message || String(err) });
+  }
+}
+
 async function sendWhatsAppTemplateIfEnabled({ enabled = true, to, contentSid, variables = {}, label = 'WhatsApp notification' }) {
   if (!enabled) return { skipped: true, reason: 'disabled' };
   const recipient = cleanWhatsAppNumber(to);
@@ -568,6 +617,14 @@ async function sendWhatsAppTemplateIfEnabled({ enabled = true, to, contentSid, v
       messageType: 'template',
       contentSid,
       contentVariables: JSON.stringify(variables || {}),
+    });
+    await logOutgoingWhatsAppMessage({
+      to: recipient,
+      result,
+      messageType: 'template',
+      contentSid,
+      variables,
+      actionTaken: label,
     });
     logger.info(`${label} sent`, { to: recipient, sid: result?.meta?.sid || result?.meta?.messages?.[0]?.id || '' });
     return result;
@@ -10287,6 +10344,23 @@ async function handleSendWhatsAppTestMessage(req, res) {
       message: messageType === 'text' ? textMessage : '',
       contentSid,
       contentVariables,
+    });
+    let parsedVariables = {};
+    if (messageType === 'template' && contentVariables) {
+      try {
+        parsedVariables = JSON.parse(contentVariables);
+      } catch (_) {
+        parsedVariables = {};
+      }
+    }
+    await logOutgoingWhatsAppMessage({
+      to,
+      result,
+      messageType,
+      message: textMessage,
+      contentSid,
+      variables: parsedVariables,
+      actionTaken: 'test_whatsapp',
     });
 
     return res.json({
