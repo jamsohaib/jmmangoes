@@ -209,6 +209,8 @@ jmm_route.put('/payment-methods/:id', authenticateUser, authorizePage('paymentMa
 jmm_route.delete('/payment-methods/:id', authenticateUser, authorizePage('paymentManager', 'manage'), jmm_controller.handleDeletePaymentMethod);
 jmm_route.get('/payment-methods/public', jmm_controller.handleGetPublicPaymentMethods);
 jmm_route.get('/communications/whatsapp/events', authenticateUser, authorizePage('communications', 'view'), jmm_controller.handleGetWhatsAppEvents);
+jmm_route.get('/communications/whatsapp/conversations', authenticateUser, authorizePage('communications', 'view'), jmm_controller.handleGetWhatsAppConversations);
+jmm_route.post('/communications/whatsapp/conversations/reply', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppConversationReply);
 jmm_route.post('/communications/whatsapp/test', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppTestMessage);
 jmm_route.get('/communications/whatsapp/broadcast-options', authenticateUser, authorizePage('communications', 'view'), jmm_controller.handleGetWhatsAppBroadcastOptions);
 jmm_route.post('/communications/whatsapp/broadcast', authenticateUser, authorizePage('communications', 'manage'), jmm_controller.handleSendWhatsAppBroadcast);

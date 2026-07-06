@@ -11085,6 +11085,110 @@ async function handleGetWhatsAppEvents(req, res) {
   }
 }
 
+function getWhatsAppConversationNumber(event = {}) {
+  return normalizeTwilioWhatsappNumber(
+    event.direction === 'incoming'
+      ? event.from || event.waId
+      : event.recipientId || event.waId
+  );
+}
+
+async function handleGetWhatsAppConversations(req, res) {
+  try {
+    const { limit = 2000 } = req.query || {};
+    const rows = await WhatsAppEvent.find({ eventType: 'message' })
+      .sort({ createdAt: -1 })
+      .limit(Math.min(Number(limit) || 2000, 5000))
+      .lean();
+
+    const byNumber = new Map();
+    for (const event of rows) {
+      const phone = getWhatsAppConversationNumber(event);
+      if (!phone) continue;
+      if (!byNumber.has(phone)) {
+        byNumber.set(phone, {
+          phone,
+          contactName: event.contactName || '',
+          lastMessageAt: event.createdAt,
+          lastInboundAt: null,
+          lastText: event.text || event.buttonText || event.buttonPayload || '',
+          lastDirection: event.direction || 'unknown',
+          messages: [],
+        });
+      }
+      const conversation = byNumber.get(phone);
+      conversation.messages.push(event);
+      if (!conversation.contactName && event.contactName) conversation.contactName = event.contactName;
+      if (!conversation.lastInboundAt && event.direction === 'incoming') conversation.lastInboundAt = event.createdAt;
+    }
+
+    const conversations = [...byNumber.values()].map((conversation) => {
+      const lastInboundAt = conversation.lastInboundAt ? new Date(conversation.lastInboundAt) : null;
+      const replyWindowExpiresAt = lastInboundAt ? new Date(lastInboundAt.getTime() + 24 * 60 * 60 * 1000) : null;
+      const canReply = replyWindowExpiresAt ? replyWindowExpiresAt.getTime() > Date.now() : false;
+      return {
+        ...conversation,
+        messages: conversation.messages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)),
+        replyWindowExpiresAt,
+        canReply,
+      };
+    }).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+
+    return res.status(200).json(conversations);
+  } catch (err) {
+    logger.error('Error fetching WhatsApp conversations', { error: err?.message || String(err) });
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleSendWhatsAppConversationReply(req, res) {
+  try {
+    const { to = '', message = '' } = req.body || {};
+    const phone = normalizeTwilioWhatsappNumber(to);
+    const text = String(message || '').trim();
+    if (!phone) return res.status(400).json({ message: 'Customer WhatsApp number is required.' });
+    if (!text) return res.status(400).json({ message: 'Reply message is required.' });
+
+    const latestInbound = await WhatsAppEvent.findOne({
+      eventType: 'message',
+      direction: 'incoming',
+      $or: [{ from: phone }, { waId: phone }],
+    }).sort({ createdAt: -1 });
+    if (!latestInbound) {
+      return res.status(400).json({ message: 'Free-form reply is allowed only after the customer messages first.' });
+    }
+    const replyWindowExpiresAt = new Date(new Date(latestInbound.createdAt).getTime() + 24 * 60 * 60 * 1000);
+    if (replyWindowExpiresAt.getTime() <= Date.now()) {
+      return res.status(400).json({ message: '24-hour free-form reply window has expired. Use an approved template instead.' });
+    }
+
+    const result = await sendWhatsAppMessage({ to: phone, messageType: 'text', message: text });
+    const meta = result?.meta || {};
+    const messageId = meta.sid || meta.messages?.[0]?.id || '';
+    const from = normalizeTwilioWhatsappNumber(meta.from || process.env.TWILIO_WHATSAPP_FROM || process.env.WHATSAPP_PHONE_NUMBER_ID || '');
+    const recipientId = normalizeTwilioWhatsappNumber(meta.to || phone);
+    const event = await WhatsAppEvent.create({
+      eventType: 'message',
+      direction: 'outgoing',
+      phoneNumberId: from,
+      displayPhoneNumber: from,
+      waId: recipientId,
+      from,
+      recipientId,
+      messageId,
+      messageType: 'text',
+      text,
+      timestamp: new Date(),
+      actionTaken: 'free_form_reply',
+      raw: meta,
+    });
+    return res.status(200).json({ success: true, message: 'WhatsApp reply sent.', event, meta });
+  } catch (err) {
+    logger.error('WhatsApp conversation reply failed', { error: err?.message || String(err), meta: err?.meta });
+    return res.status(err.status || 500).json({ message: err.message || 'Failed to send WhatsApp reply.', meta: err.meta || {} });
+  }
+}
+
 
 async function handleCheckout(req,res){ 
   logger.debug("In handleCheckout");
@@ -11454,6 +11558,8 @@ module.exports = {
     handleGetWhatsAppBroadcastOptions,
     handleSendWhatsAppBroadcast,
     handleGetWhatsAppEvents,
+    handleGetWhatsAppConversations,
+    handleSendWhatsAppConversationReply,
     handleWhatsAppWebhookVerify,
     handleWhatsAppWebhookEvent,
     handleTwilioWhatsAppIncoming,

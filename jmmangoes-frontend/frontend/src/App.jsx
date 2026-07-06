@@ -83,6 +83,7 @@ import ResetPassword from './components/ResetPassword';
 import TestWhatsApp from './components/TestWhatsApp';
 import PrivacyPolicy from './components/PrivacyPolicy';
 import WhatsAppLogs from './components/WhatsAppLogs';
+import WhatsAppChat from './components/WhatsAppChat';
 import BroadcastWhatsApp from './components/BroadcastWhatsApp';
 import api from './lib/api';
 import useAuthStore from './store/authStore';
@@ -193,6 +194,7 @@ function App() {
              <Route path="/payment-manager" element={<PaymentManager />} />
              <Route path="/communications/test-whatsapp" element={<TestWhatsApp />} />
              <Route path="/communications/broadcast-whatsapp" element={<BroadcastWhatsApp />} />
+             <Route path="/communications/whatsapp-chat" element={<WhatsAppChat />} />
              <Route path="/communications/whatsapp-logs" element={<WhatsAppLogs />} />
              <Route path="/order-management" element={<OrderManagement />} />
              <Route path="/feedback-report" element={<FeedbackReport />} />

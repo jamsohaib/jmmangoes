@@ -123,6 +123,7 @@ const Navbar = () => {
   const communicationsLinks = [
     { to: '/customer-directory', label: 'Customer Directory', key: 'customerDirectory' },
     { to: '/communications/broadcast-whatsapp', label: 'Broadcast Message', key: 'communications' },
+    { to: '/communications/whatsapp-chat', label: 'WhatsApp Chat', key: 'communications' },
     { to: '/communications/test-whatsapp', label: 'Test WhatsApp', key: 'communications' },
     { to: '/communications/whatsapp-logs', label: 'WhatsApp Logs', key: 'communications' },
   ];
