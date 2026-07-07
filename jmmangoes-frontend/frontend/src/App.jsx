@@ -31,6 +31,7 @@ import ManageStocks from './components/ManageStocks';
 import StockMovement from './components/StockMovement';
 import AdminUsers from './components/AdminUsers';
 import SalePoint from './components/SalePoint';
+import PlaceCustomerOrder from './components/PlaceCustomerOrder';
 import GiftingRecords from './components/GiftingRecords';
 import PayLaterRecords from './components/PayLaterRecords';
 import GiftSources from './components/GiftSources';
@@ -174,6 +175,7 @@ function App() {
              <Route path="/manage-stocks" element={<ManageStocks />} />
              <Route path="/stock-movement" element={<StockMovement />} />
              <Route path="/sale-point" element={<SalePoint />} />
+             <Route path="/place-customer-order" element={<PlaceCustomerOrder />} />
              <Route path="/gifting-records" element={<GiftingRecords />} />
              <Route path="/pay-later-records" element={<PayLaterRecords />} />
              <Route path="/gift-sources" element={<GiftSources />} />

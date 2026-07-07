@@ -83,6 +83,10 @@ const FarmTrees = () => {
     }),
     [filteredTrees]
   );
+  const treeVarietyText = (tree) => {
+    const values = Array.isArray(tree?.varieties) ? tree.varieties : [];
+    return values.length ? values.join(', ') : '-';
+  };
   const maxRow = useMemo(
     () => Math.max(1, Number(selectedBlockObj?.gridRows || 1), ...filteredTrees.map((t) => Number(t.rowNumber || 0))),
     [filteredTrees, selectedBlockObj]
@@ -880,6 +884,7 @@ const FarmTrees = () => {
                 <th className="border px-3 py-2">Block</th>
                 <th className="border px-3 py-2">Tree Code</th>
                 <th className="border px-3 py-2">Tree ID</th>
+                <th className="border px-3 py-2">Variety</th>
                 <th className="border px-3 py-2">Row</th>
                 <th className="border px-3 py-2">Tree in Row</th>
                 <th className="border px-3 py-2">QR</th>
@@ -892,6 +897,7 @@ const FarmTrees = () => {
                   <td className="border px-3 py-2">{row.blockName}</td>
                   <td className="border px-3 py-2">{row.treeCode}</td>
                   <td className="border px-3 py-2">{row.treeId}</td>
+                  <td className="border px-3 py-2">{treeVarietyText(row)}</td>
                   <td className="border px-3 py-2">{row.rowNumber || '-'}</td>
                   <td className="border px-3 py-2">{row.rowTreeNumber || '-'}</td>
                   <td className="border px-3 py-2">{row.qrCodeData ? <img src={`https://api.qrserver.com/v1/create-qr-code/?size=90x90&data=${encodeURIComponent(row.qrCodeData)}`} alt={`QR ${row.treeCode}`} className="w-16 h-16 border rounded" /> : '-'}</td>
@@ -905,7 +911,7 @@ const FarmTrees = () => {
                   </td>
                 </tr>
               ))}
-              {!filteredTrees.length ? <tr><td colSpan="7" className="border px-3 py-4 text-center text-gray-500">No trees found for selected block.</td></tr> : null}
+              {!filteredTrees.length ? <tr><td colSpan="8" className="border px-3 py-4 text-center text-gray-500">No trees found for selected block.</td></tr> : null}
             </tbody>
           </table>
         </div>

@@ -552,26 +552,38 @@ function getTwilioTemplateSid(templateKey, ...fallbackEnvKeys) {
   return APPROVED_TWILIO_TEMPLATE_SIDS[templateKey] || getEnvFirst(...fallbackEnvKeys);
 }
 
+function getOrderDetailsThankYouTemplateSid() {
+  return getEnvFirst(
+    'TWILIO_TEMPLATE_ORDER_DETAILS_THANK_YOU_SID',
+    'TWILIO_TEMPLATE_ORDER_THANK_YOU_DETAILS_SID',
+    'TWILIO_TEMPLATE_ADMIN_ORDER_THANK_YOU_SID'
+  ) || 'HX169de80971706b197decb3c99b854d4c';
+}
+
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const TWILIO_TEMPLATE_PREVIEWS = Object.freeze({
   [APPROVED_TWILIO_TEMPLATE_SIDS.orderConfirmRequest]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: amount = '' }) =>
-    `Dear ${name},\n\nThank you for your order at JM Mangoes.\n\nOrder number: ${orderNo}\n\nOrder details:\n${items}\n\nTotal payable: PKR ${amount}\n\nPlease confirm whether you want us to process this order.`,
+    `Dear ${name},\n\nThank you for your order at JM Mangoes.\n\nOrder number: ${orderNo}\n\nOrder details:\n${items}\n\nTotal payable: PKR ${amount}\n\nPlease confirm whether you want us to process this order.\n\njmmangoes.pk\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.orderDispatched]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: courier = '', 5: tracking = '' }) =>
-    `Dear ${name}, your order ${orderNo} of ${items} has been dispatched via ${courier}. Tracking: ${tracking}.`,
+    `Dear ${name}, your order ${orderNo} of ${items} has been dispatched via ${courier}. Tracking: ${tracking}.\n\njmmangoes.pk\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.orderDeliveredFeedback]: ({ 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: link = '' }) =>
-    `Dear ${name}, your order ${orderNo} of ${items} has been delivered. Please share feedback: ${link}`,
+    `Dear ${name}, your order ${orderNo} of ${items} has been delivered. Please share feedback: ${link}\n\njmmangoes.pk\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.stallPurchaseThankYou]: ({ 1: name = 'Customer', 2: items = '' }) =>
-    `Dear ${name}, thank you for your purchase of ${items} from JM Mangoes.`,
+    `Dear ${name}, thank you for your purchase of ${items} from JM Mangoes.\n\njmmangoes.pk\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.thankYouForPurchase]: ({ 1: name = 'Customer', 2: items = '' }) =>
-    `Dear ${name},\n\nThank you for your purchase of ${items}.\nWe look forward to serving you again.\n\njmmangoes.pk`,
+    `Dear ${name},\n\nThank you for your purchase of ${items}.\nWe look forward to serving you again.\n\njmmangoes.pk\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.newStockArrival]: ({ 1: name = 'Customer', 2: products = '', 3: sites = '' }) =>
-    `Dear ${name}, fresh ${products} mango stock is now available at ${sites}. Visit our stall or order online at jmmangoes.pk.`,
+    `Dear ${name}, fresh ${products} mango stock is now available at ${sites}. Visit our stall or order online at jmmangoes.pk.\n\n03218869344`,
   [APPROVED_TWILIO_TEMPLATE_SIDS.onlineOrderingOpen]: ({ 1: variety = 'mangoes', 2: link = 'https://jmmangoes.pk' }) =>
-    `Fresh ${variety} is available for online ordering at ${link}.`,
+    `Fresh ${variety} is available for online ordering at ${link}.\n03218869344`,
 });
 
 function renderTwilioTemplatePreview(contentSid = '', variables = {}) {
+  if (String(contentSid || '').trim() === getOrderDetailsThankYouTemplateSid()) {
+    const { 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: amount = '' } = variables || {};
+    return `Dear ${name},\n\nThank you for your order at JM Mangoes.\n\nOrder number: ${orderNo}\nOrder details: ${items}\nTotal payable: PKR ${amount}\n\njmmangoes.pk\n03218869344`;
+  }
   const renderer = TWILIO_TEMPLATE_PREVIEWS[String(contentSid || '').trim()];
   if (renderer) return renderer(variables || {});
   return `Template message sent (${contentSid}) ${Object.values(variables || {}).filter(Boolean).join(' | ')}`.trim();
@@ -6285,7 +6297,10 @@ async function handlePreviewFulfilmentSites(req, res) {
     const sites = await Site.find({ isActive: true }).sort({ name: 1 }).select('name');
     const rows = await Promise.all(sites.map(async (s) => {
       const details = await Promise.all(normalizedItems.map(async (it) => {
-        const availableQty = await getSiteProductAvailableQtyByName(s._id, it.productName);
+        const isOnlineSite = String(s.name || '').trim().toLowerCase() === 'online';
+        const availableQty = isOnlineSite
+          ? await getHolderProductAvailableQtyByName('online', s._id, it.productName)
+          : await getSiteProductAvailableQtyByName(s._id, it.productName);
         return {
           productName: it.productName,
           requiredQty: it.quantity,
@@ -11264,122 +11279,252 @@ async function handleSendWhatsAppConversationReply(req, res) {
 }
 
 
-async function handleCheckout(req,res){ 
-  logger.debug("In handleCheckout");
+async function createOnlineOrder({
+  customer = {},
+  items = [],
+  paymentMethodId = '',
+  receiptUrl = '',
+  paymentMode = '',
+  paymentVerified = false,
+  customerAlreadyConfirmed = false,
+  createdByAdmin = null,
+}) {
+  if (!customer?.name || !customer?.address || !customer?.city || !customer?.mobile) {
+    const err = new Error('Customer name, address, city, and mobile are required.');
+    err.status = 400;
+    throw err;
+  }
+  if (!Array.isArray(items) || !items.length) {
+    const err = new Error('At least one order item is required.');
+    err.status = 400;
+    throw err;
+  }
 
- try {
-    const { customer, items, paymentMethodId = '', receiptUrl = '' } = req.body;
-
-    // Load shipping settings
-    const settings = await ShippingSettings.findOne({});
-    const zoneRate = settings?.zoneAUnitCost || 0;
-    const override = settings?.cityOverrides?.find(o => o.city.toLowerCase() === customer.city.toLowerCase());
-    const shippingRate = override ? override.cost : zoneRate;
-
-    
-
-    // Calculate derived values
-    const subtotal = items.reduce((sum, v) => sum + v.price * v.quantity, 0);
-    const totalQuantity = items.reduce((sum, v) => sum + v.quantity, 0);
-    const shippingCost = shippingRate * totalQuantity;
-    const totalCost = subtotal + shippingCost;
-
-    let selectedPaymentMethod = null;
-    if (paymentMethodId) {
-      selectedPaymentMethod = await PaymentMethod.findById(paymentMethodId);
-      if (!selectedPaymentMethod || !selectedPaymentMethod.isActive) {
-        return res.status(400).json({ success: false, message: 'Selected payment method is not available' });
-      }
-      if (selectedPaymentMethod.requiresReceipt && !String(receiptUrl || '').trim()) {
-        return res.status(400).json({ success: false, message: 'Receipt is required for selected payment method' });
-      }
+  const onlineSite = await ensureOnlineSite();
+  const products = await Product.find({ _id: { $in: items.map((item) => item.productId).filter(Boolean) }, isActive: { $ne: false } });
+  const productMap = new Map(products.map((p) => [String(p._id), p]));
+  const normalizedItems = items.map((item) => {
+    const product = productMap.get(String(item.productId));
+    const quantity = Math.trunc(Number(item.quantity || 0));
+    if (!product || !productHasSiteAssignment(product, onlineSite._id, 'online') || quantity < 1) {
+      const err = new Error('Invalid product or quantity in order.');
+      err.status = 400;
+      throw err;
     }
+    return {
+      productId: product._id,
+      name: product.name,
+      price: Number(getProductSitePrice(product, onlineSite._id, product.price) || 0),
+      quantity,
+    };
+  });
 
-    let paymentDiscount = 0;
-    if (selectedPaymentMethod?.discountType === 'fixed') {
-      paymentDiscount = Number(selectedPaymentMethod.discountValue || 0);
-    } else if (selectedPaymentMethod?.discountType === 'percentage') {
-      paymentDiscount = (Number(totalCost || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
+  const settings = await ShippingSettings.findOne({});
+  const cityText = String(customer.city || '').trim();
+  const override = settings?.cityOverrides?.find((o) => String(o.city || '').toLowerCase() === cityText.toLowerCase());
+  const shippingRate = Number(override ? override.cost : settings?.zoneAUnitCost || 0) || 0;
+  const subtotal = normalizedItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0);
+  const totalQuantity = normalizedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const shippingCost = shippingRate * totalQuantity;
+  const totalCost = subtotal + shippingCost;
+
+  let selectedPaymentMethod = null;
+  if (paymentMethodId) {
+    selectedPaymentMethod = await PaymentMethod.findById(paymentMethodId);
+    if (!selectedPaymentMethod || !selectedPaymentMethod.isActive) {
+      const err = new Error('Selected payment method is not available.');
+      err.status = 400;
+      throw err;
     }
-    paymentDiscount = Math.max(0, Number(paymentDiscount || 0));
-
-    let paymentCharge = 0;
-    if (selectedPaymentMethod?.chargeType === 'fixed') {
-      paymentCharge = Number(selectedPaymentMethod.chargeValue || 0);
-    } else if (selectedPaymentMethod?.chargeType === 'percentage') {
-      paymentCharge = (Number(totalCost || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    if (selectedPaymentMethod.requiresReceipt && !String(receiptUrl || '').trim()) {
+      const err = new Error('Receipt is required for selected payment method.');
+      err.status = 400;
+      throw err;
     }
-    paymentCharge = Math.max(0, Number(paymentCharge || 0));
+  }
 
-    const payableAmount = Math.max(0, Number(totalCost || 0) - paymentDiscount + paymentCharge);
+  const explicitMode = String(paymentMode || '').toLowerCase();
+  const resolvedPaymentMode = explicitMode === 'cod'
+    ? 'cod'
+    : explicitMode === 'free'
+      ? 'free'
+      : selectedPaymentMethod?.isCashOnDelivery
+        ? 'cod'
+        : 'prepaid';
 
-    logger.debug('Checkout shipping cost computed', { shippingCost });
-    logger.debug('Checkout total cost computed', { totalCost });
+  if (resolvedPaymentMode === 'prepaid' && createdByAdmin && !String(receiptUrl || '').trim()) {
+    const err = new Error('Payment receipt is required for prepaid customer order.');
+    err.status = 400;
+    throw err;
+  }
 
-    // Save order
-    const orderNumber = await getNextOrderNumber();
-    const order = new Order({
-      orderNumber,
-      customer,
-      items,
-      subtotal,
-      shippingRate,
-      shippingCost,
-      totalCost,
-      discountAmount: 0,
-      finalAmount: payableAmount,
-      paymentMode: selectedPaymentMethod?.isCashOnDelivery ? 'cod' : 'prepaid',
-      paymentDetails: {
-        methodId: selectedPaymentMethod?._id || null,
-        methodName: selectedPaymentMethod?.name || '',
-        methodCode: selectedPaymentMethod?.code || '',
-        receiptUrl: String(receiptUrl || '').trim(),
-        paymentDiscount,
-        paymentCharge,
-        payableAmount,
-      },
-      status: 'pending_confirmation',
-      statusTimeline: {
-        placedAt: new Date(),
-      },
-    });
-    await order.save();
+  let paymentDiscount = 0;
+  if (selectedPaymentMethod?.discountType === 'fixed') {
+    paymentDiscount = Number(selectedPaymentMethod.discountValue || 0);
+  } else if (selectedPaymentMethod?.discountType === 'percentage') {
+    paymentDiscount = (Number(totalCost || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
+  }
+  paymentDiscount = Math.max(0, Number(paymentDiscount || 0));
 
-    const customerName = customer?.fullName || customer?.name || 'Customer';
-    const customerPhone = customer?.phone || customer?.contactNumber || customer?.mobile || 'N/A';
-    const customerCity = customer?.city || 'N/A';
-    const lines = (items || [])
-      .map((item) => `- ${item.name} x ${item.quantity} @ ${item.price}`)
-      .join('\n');
-    const text = `New order received
+  let paymentCharge = 0;
+  if (selectedPaymentMethod?.chargeType === 'fixed') {
+    paymentCharge = Number(selectedPaymentMethod.chargeValue || 0);
+  } else if (selectedPaymentMethod?.chargeType === 'percentage') {
+    paymentCharge = (Number(totalCost || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+  }
+  paymentCharge = Math.max(0, Number(paymentCharge || 0));
+
+  const payableAmount = Math.max(0, Number(totalCost || 0) - paymentDiscount + paymentCharge);
+  const orderNumber = await getNextOrderNumber();
+  const now = new Date();
+  const order = new Order({
+    orderNumber,
+    customer: {
+      name: String(customer.name || customer.fullName || '').trim(),
+      email: String(customer.email || '').trim(),
+      address: String(customer.address || '').trim(),
+      city: cityText,
+      otherCity: String(customer.otherCity || '').trim(),
+      postalCode: String(customer.postalCode || '').trim(),
+      mobile: String(customer.mobile || customer.phone || customer.contactNumber || '').trim(),
+    },
+    items: normalizedItems,
+    subtotal,
+    shippingRate,
+    shippingCost,
+    totalCost,
+    discountAmount: 0,
+    finalAmount: payableAmount,
+    paymentMode: resolvedPaymentMode,
+    paymentDetails: {
+      methodId: selectedPaymentMethod?._id || null,
+      methodName: selectedPaymentMethod?.name || (resolvedPaymentMode === 'cod' ? 'Cash on Delivery' : resolvedPaymentMode === 'free' ? 'Free' : 'Prepaid'),
+      methodCode: selectedPaymentMethod?.code || resolvedPaymentMode,
+      receiptUrl: String(receiptUrl || '').trim(),
+      paymentDiscount,
+      paymentCharge,
+      payableAmount,
+      isVerified: Boolean(paymentVerified),
+      verifiedAt: paymentVerified ? now : null,
+      verifiedByName: paymentVerified ? (createdByAdmin?.name || createdByAdmin?.username || 'Admin') : '',
+    },
+    status: 'pending_confirmation',
+    statusTimeline: { placedAt: now },
+    customerConfirmation: customerAlreadyConfirmed ? {
+      status: 'confirmed',
+      respondedAt: now,
+      responseSource: createdByAdmin ? 'admin-created' : 'admin',
+      responseMessageId: '',
+      responseText: createdByAdmin ? `Order created as already confirmed by ${createdByAdmin.name || createdByAdmin.username || 'admin'}` : 'Customer already confirmed',
+    } : undefined,
+    createdByAdmin: createdByAdmin ? {
+      isAdminCreated: true,
+      createdByName: createdByAdmin.name || createdByAdmin.username || 'Admin',
+      createdAt: now,
+      customerAlreadyConfirmed: Boolean(customerAlreadyConfirmed),
+    } : undefined,
+  });
+  await order.save();
+
+  return { order, orderNumber, subtotal, shippingCost, totalCost, payableAmount, selectedPaymentMethod };
+}
+
+function buildNewOrderAlertText({ orderNumber, customer, items, subtotal, shippingCost, totalCost, selectedPaymentMethod, payableAmount }) {
+  const lines = (items || []).map((item) => `- ${item.name} x ${item.quantity} @ ${item.price}`).join('\n');
+  return `New order received
 Order Number: ${orderNumber}
-Customer: ${customerName}
-Phone: ${customerPhone}
-City: ${customerCity}
+Customer: ${customer?.name || customer?.fullName || 'Customer'}
+Phone: ${customer?.mobile || customer?.phone || customer?.contactNumber || 'N/A'}
+City: ${customer?.city || 'N/A'}
 Subtotal: ${subtotal}
 Shipping: ${shippingCost}
 Total: ${totalCost}
 Payment Method: ${selectedPaymentMethod?.name || 'N/A'}
-Payment Discount: ${paymentDiscount}
-Payment Charge: ${paymentCharge}
 Payable: ${payableAmount}
 Items:
 ${lines}`;
-    sendOrderAlertEmails(`New JM Mangoes Order ${orderNumber}`, text, customer?.email)
-      .catch((mailErr) => {
-        logger.warn('Order placed but email sending failed', { error: mailErr?.message || String(mailErr) });
-      });
-    sendWhatsAppTemplateIfEnabled({
-      enabled: true,
-      to: customerPhone,
-      contentSid: getTwilioTemplateSid('orderConfirmRequest', 'TWILIO_TEMPLATE_ORDER_CONFIRM_REQUEST_SID', 'TWILIO_ORDER_CONFIRM_REQUEST_CONTENT_SID'),
-      variables: {
-        1: customerName,
-        2: orderNumber,
-        3: orderItemsSummary(items),
-        4: String(Number(payableAmount || 0).toFixed(0)),
-      },
-      label: 'Order confirmation request WhatsApp notification',
+}
+
+async function sendOrderConfirmationRequestWhatsApp({ enabled, customer, orderNumber, items, payableAmount }) {
+  return sendWhatsAppTemplateIfEnabled({
+    enabled,
+    to: customer?.mobile || customer?.phone || customer?.contactNumber || '',
+    contentSid: getTwilioTemplateSid('orderConfirmRequest', 'TWILIO_TEMPLATE_ORDER_CONFIRM_REQUEST_SID', 'TWILIO_ORDER_CONFIRM_REQUEST_CONTENT_SID'),
+    variables: {
+      1: customer?.fullName || customer?.name || 'Customer',
+      2: orderNumber,
+      3: orderItemsSummary(items),
+      4: String(Number(payableAmount || 0).toFixed(0)),
+    },
+    label: 'Order confirmation request WhatsApp notification',
+  });
+}
+
+async function sendOrderDetailsThankYouWhatsApp({ enabled, customer, orderNumber, items, payableAmount }) {
+  const detailsSid = getOrderDetailsThankYouTemplateSid();
+  const templateSid = detailsSid || getTwilioTemplateSid('thankYouForPurchase', 'TWILIO_TEMPLATE_THANK_YOU_FOR_PURCHASE_SID');
+  return sendWhatsAppTemplateIfEnabled({
+    enabled,
+    to: customer?.mobile || customer?.phone || customer?.contactNumber || '',
+    contentSid: templateSid,
+    variables: detailsSid ? {
+      1: customer?.fullName || customer?.name || 'Customer',
+      2: orderNumber,
+      3: orderItemsSummary(items),
+      4: String(Number(payableAmount || 0).toFixed(0)),
+    } : {
+      1: customer?.fullName || customer?.name || 'Customer',
+      2: orderItemsSummary(items),
+    },
+    label: 'Order details thank-you WhatsApp notification',
+  });
+}
+
+async function runInternalOrderAction(handler, req, orderId, body = {}) {
+  let statusCode = 200;
+  let payload = null;
+  const internalReq = { ...req, params: { ...(req.params || {}), id: orderId }, body };
+  const internalRes = {
+    status(code) {
+      statusCode = code;
+      return this;
+    },
+    json(data) {
+      payload = data;
+      return data;
+    },
+  };
+  await handler(internalReq, internalRes);
+  if (statusCode >= 400) {
+    const err = new Error(payload?.message || 'Order action failed.');
+    err.status = statusCode;
+    err.payload = payload;
+    throw err;
+  }
+  return payload;
+}
+
+async function handleCheckout(req,res){ 
+  logger.debug("In handleCheckout");
+
+ try {
+    const { customer, items, paymentMethodId = '', receiptUrl = '', sendWhatsApp = true } = req.body;
+    const created = await createOnlineOrder({ customer, items, paymentMethodId, receiptUrl });
+    const { order, orderNumber, subtotal, shippingCost, totalCost, payableAmount, selectedPaymentMethod } = created;
+
+    sendOrderAlertEmails(
+      `New JM Mangoes Order ${orderNumber}`,
+      buildNewOrderAlertText({ orderNumber, customer: order.customer, items: order.items, subtotal, shippingCost, totalCost, selectedPaymentMethod, payableAmount }),
+      order.customer?.email
+    ).catch((mailErr) => {
+      logger.warn('Order placed but email sending failed', { error: mailErr?.message || String(mailErr) });
+    });
+    sendOrderConfirmationRequestWhatsApp({
+      enabled: sendWhatsApp !== false,
+      customer: order.customer,
+      orderNumber,
+      items: order.items,
+      payableAmount,
     }).catch((waErr) => {
       logger.warn('Order placed but WhatsApp confirmation request failed', {
         orderNumber,
@@ -11390,7 +11535,80 @@ ${lines}`;
     res.status(201).json({ success: true, orderId: order._id, orderNumber, totalCost, payableAmount });
   } catch (err) {
     logger.error('Checkout error', { error: err?.message || String(err) });
-    res.status(500).json({ success: false, message: 'Checkout failed' });
+    res.status(err.status || 500).json({ success: false, message: err.status ? err.message : 'Checkout failed' });
+  }
+}
+
+async function handleCreateCustomerOrder(req, res) {
+  try {
+    const {
+      customer,
+      items,
+      paymentMode = 'cod',
+      paymentMethodId = '',
+      receiptUrl = '',
+      customerAlreadyConfirmed = true,
+      sendWhatsApp = true,
+      noteText = '',
+      gift = null,
+      stockAction = null,
+    } = req.body || {};
+    const isGiftOrder = Boolean(gift?.isGift);
+    const resolvedMode = !isGiftOrder && String(paymentMode || '').toLowerCase() === 'prepaid' ? 'prepaid' : 'cod';
+    const created = await createOnlineOrder({
+      customer,
+      items,
+      paymentMethodId,
+      receiptUrl,
+      paymentMode: resolvedMode,
+      paymentVerified: resolvedMode === 'prepaid',
+      customerAlreadyConfirmed: Boolean(customerAlreadyConfirmed),
+      createdByAdmin: req.user || {},
+    });
+    const { order, orderNumber, subtotal, shippingCost, totalCost, payableAmount, selectedPaymentMethod } = created;
+    await sendOrderAlertEmails(
+      `Customer Order Entered ${orderNumber}`,
+      buildNewOrderAlertText({ orderNumber, customer: order.customer, items: order.items, subtotal, shippingCost, totalCost, selectedPaymentMethod, payableAmount }),
+      order.customer?.email
+    );
+
+    if (String(noteText || '').trim()) {
+      order.notes = Array.isArray(order.notes) ? order.notes : [];
+      order.notes.push({
+        text: String(noteText || '').trim(),
+        createdAt: new Date(),
+        createdBy: req.user.id === 'super-admin' ? null : req.user.id,
+        createdByName: req.user.name || req.user.username || '',
+      });
+      await order.save();
+    }
+
+    if (gift?.isGift) {
+      await runInternalOrderAction(handleMarkOrderAsGift, req, order._id, gift);
+    }
+
+    const orderForMessage = await Order.findById(order._id);
+    if (sendWhatsApp !== false) {
+      const messageAmount = Number(orderForMessage?.finalAmount ?? payableAmount ?? 0);
+      if (customerAlreadyConfirmed) {
+        await sendOrderDetailsThankYouWhatsApp({ enabled: true, customer: orderForMessage.customer, orderNumber, items: orderForMessage.items, payableAmount: messageAmount });
+      } else {
+        await sendOrderConfirmationRequestWhatsApp({ enabled: true, customer: orderForMessage.customer, orderNumber, items: orderForMessage.items, payableAmount: messageAmount });
+      }
+    }
+
+    const mode = String(stockAction?.mode || 'later').toLowerCase();
+    if (mode === 'reserve') {
+      await runInternalOrderAction(handleReserveOrderStock, req, order._id, { siteId: stockAction?.siteId || '' });
+    } else if (mode === 'request') {
+      await runInternalOrderAction(handleCreateOrderStockRequest, req, order._id, { siteId: stockAction?.siteId || '' });
+    }
+
+    const finalOrder = await Order.findById(order._id);
+    return res.status(201).json({ success: true, orderId: order._id, orderNumber, order: finalOrder });
+  } catch (err) {
+    logger.error('Create customer order failed', { error: err?.message || String(err) });
+    return res.status(err.status || 500).json({ message: err.status ? err.message : 'Failed to create customer order.' });
   }
 }
 
@@ -11500,6 +11718,7 @@ module.exports = {
     handleUpdatePaymentMethod,
     handleDeletePaymentMethod,
     handleGetOrders,
+    handleCreateCustomerOrder,
     handleDeleteOrder,
     handleAddOrderNote,
     handleMarkOrderAsGift,

@@ -100,6 +100,12 @@ const orderSchema = new mongoose.Schema({
     responseMessageId: { type: String, default: '' },
     responseText: { type: String, default: '' },
   },
+  createdByAdmin: {
+    isAdminCreated: { type: Boolean, default: false },
+    createdByName: { type: String, default: '' },
+    createdAt: { type: Date, default: null },
+    customerAlreadyConfirmed: { type: Boolean, default: false },
+  },
   stockReservation: {
     isReserved: { type: Boolean, default: false },
     reservedSiteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Site', default: null },

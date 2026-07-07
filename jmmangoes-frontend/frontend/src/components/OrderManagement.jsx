@@ -75,15 +75,18 @@ const OrderManagement = () => {
   };
   const customerConfirmationInfo = (o) => {
     const status = o?.customerConfirmation?.status || 'none';
+    const source = String(o?.customerConfirmation?.responseSource || '').toLowerCase();
     if (status === 'confirmed') {
       return {
-        label: 'Customer Confirmed',
-        className: 'bg-green-100 text-green-800 border-green-300',
+        label: source === 'whatsapp' ? 'Automatically Confirmed by Customer' : 'Customer Confirmed',
+        className: source === 'whatsapp'
+          ? 'bg-cyan-100 text-cyan-900 border-cyan-300'
+          : 'bg-green-100 text-green-800 border-green-300',
       };
     }
     if (status === 'cancelled') {
       return {
-        label: 'Customer Cancelled',
+        label: source === 'whatsapp' ? 'Cancelled by Customer' : 'Customer Cancelled',
         className: 'bg-red-100 text-red-800 border-red-300',
       };
     }
@@ -114,12 +117,41 @@ const OrderManagement = () => {
       </span>
     );
   };
+  const NotesBadge = ({ order }) => {
+    const count = Array.isArray(order?.notes) ? order.notes.length : 0;
+    if (!count) return null;
+    return (
+      <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+        {count} note{count === 1 ? '' : 's'}
+      </span>
+    );
+  };
   const giftRowStyles = [
+    {
+      when: (row) => row?.customerConfirmation?.status === 'confirmed' && row?.customerConfirmation?.responseSource === 'whatsapp',
+      style: {
+        backgroundColor: '#ecfeff',
+        borderLeft: '4px solid #06b6d4',
+      },
+    },
+    {
+      when: (row) => row?.customerConfirmation?.status === 'cancelled' && row?.customerConfirmation?.responseSource === 'whatsapp',
+      style: {
+        backgroundColor: '#fee2e2',
+        borderLeft: '4px solid #dc2626',
+      },
+    },
     {
       when: (row) => Boolean(row?.giftInfo?.isGift),
       style: {
         backgroundColor: '#f5f3ff',
         borderLeft: '4px solid #8b5cf6',
+      },
+    },
+    {
+      when: (row) => Array.isArray(row?.notes) && row.notes.length > 0,
+      style: {
+        boxShadow: 'inset 4px 0 0 #f59e0b',
       },
     },
   ];
@@ -915,7 +947,12 @@ const OrderManagement = () => {
             selector: (o) => o?.giftInfo?.isGift ? (o.giftInfo.giftType === 'owner' ? 'Owner Gift' : 'Customer Gift') : '-',
             sortable: true,
             wrap: true,
-            cell: (o) => o?.giftInfo?.isGift ? <GiftBadge order={o} /> : '-',
+            cell: (o) => (
+              <div className="flex flex-col gap-1">
+                {o?.giftInfo?.isGift ? <GiftBadge order={o} /> : <span>-</span>}
+                <NotesBadge order={o} />
+              </div>
+            ),
           },
           {
             name: 'Items',
@@ -1053,7 +1090,12 @@ const OrderManagement = () => {
                   selector: (o) => o?.giftInfo?.isGift ? (o.giftInfo.giftType === 'owner' ? 'Owner Gift' : 'Customer Gift') : '-',
                   sortable: true,
                   wrap: true,
-                  cell: (o) => o?.giftInfo?.isGift ? <GiftBadge order={o} /> : '-',
+                  cell: (o) => (
+                    <div className="flex flex-col gap-1">
+                      {o?.giftInfo?.isGift ? <GiftBadge order={o} /> : <span>-</span>}
+                      <NotesBadge order={o} />
+                    </div>
+                  ),
                 },
                 { name: 'Items', selector: (o) => orderItemsText(o), sortable: false, wrap: true, grow: 1.5 },
                 { name: 'City', selector: (o) => o.customer?.city || '-', sortable: true, wrap: true },

@@ -67,6 +67,7 @@ const Navbar = () => {
     { to: '/sales-cash-transactions', label: 'Cash Transactions', key: 'salesCashTransactions' },
     { to: '/company-cash-deposits', label: 'Company Cash Deposit Register', key: 'companyCashDeposits' },
     { to: '/sale-point', label: 'Sale Point', key: 'salePoint' },
+    { to: '/place-customer-order', label: 'Place Customer Order', key: 'orderManagement' },
     { to: '/order-management', label: 'Order Management', key: 'orderManagement' },
     { to: '/manage-stocks', label: 'Manage Stocks', key: 'manageStocks' },
     { to: '/stock-movement', label: 'Stock Movement', key: 'stockMovement' },
