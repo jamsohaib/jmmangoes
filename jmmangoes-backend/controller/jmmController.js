@@ -560,6 +560,20 @@ function getOrderDetailsThankYouTemplateSid() {
   ) || 'HX169de80971706b197decb3c99b854d4c';
 }
 
+function getGiftNotificationTemplateSid() {
+  return getEnvFirst(
+    'TWILIO_TEMPLATE_GIFT_NOTIFICATION_SID',
+    'TWILIO_TEMPLATE_GIFT_RECEIVER_NOTIFICATION_SID'
+  );
+}
+
+function getGiftDispatchTemplateSid() {
+  return getEnvFirst(
+    'TWILIO_TEMPLATE_GIFT_DISPATCHED_SID',
+    'TWILIO_TEMPLATE_GIFT_DISPATCH_NOTIFICATION_SID'
+  );
+}
+
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const TWILIO_TEMPLATE_PREVIEWS = Object.freeze({
@@ -583,6 +597,14 @@ function renderTwilioTemplatePreview(contentSid = '', variables = {}) {
   if (String(contentSid || '').trim() === getOrderDetailsThankYouTemplateSid()) {
     const { 1: name = 'Customer', 2: orderNo = '', 3: items = '', 4: amount = '' } = variables || {};
     return `Dear ${name},\n\nThank you for your order at JM Mangoes.\n\nOrder number: ${orderNo}\nOrder details: ${items}\nTotal payable: PKR ${amount}\n\njmmangoes.pk\n03218869344`;
+  }
+  if (String(contentSid || '').trim() === getGiftNotificationTemplateSid()) {
+    const { 1: receiver = 'Customer', 2: sender = 'Someone special', 3: items = 'a mango gift' } = variables || {};
+    return `Dear ${receiver},\n\n${sender} has sent you a gift from JM Mangoes: ${items}.\n\nIt will be delivered soon once confirmed by courier.\n\njmmangoes.pk\n03218869344`;
+  }
+  if (String(contentSid || '').trim() === getGiftDispatchTemplateSid()) {
+    const { 1: name = 'Customer', 2: items = 'gift', 3: courier = 'courier', 4: tracking = '' } = variables || {};
+    return `Dear ${name},\n\nThe gift of ${items} has been dispatched through ${courier}. Tracking number: ${tracking}.\n\njmmangoes.pk\n03218869344`;
   }
   const renderer = TWILIO_TEMPLATE_PREVIEWS[String(contentSid || '').trim()];
   if (renderer) return renderer(variables || {});
@@ -5276,9 +5298,9 @@ async function handleMarkOrderAsGift(req, res) {
       senderName = '',
       senderContact = '',
       senderAddress = '',
-      giftPaymentType = 'prepaid',
       giftAmount = 0,
       giftNote = '',
+      sendWhatsApp = false,
     } = req.body || {};
 
     const order = await Order.findById(req.params.id);
@@ -5297,7 +5319,7 @@ async function handleMarkOrderAsGift(req, res) {
     const markedByName = req.user?.name || req.user?.username || '';
 
     let ownerSource = null;
-    let normalizedPaymentType = String(giftPaymentType || 'prepaid').trim().toLowerCase();
+    const normalizedPaymentType = 'prepaid';
 
     if (normalizedGiftType === 'owner') {
       if (!ownerGiftSourceId) return res.status(400).json({ message: 'Select the owner/family member gifting source.' });
@@ -5308,9 +5330,6 @@ async function handleMarkOrderAsGift(req, res) {
       if (!String(senderName || '').trim()) return res.status(400).json({ message: 'Sender name is required.' });
       if (!String(senderContact || '').trim()) return res.status(400).json({ message: 'Sender contact is required.' });
       if (!String(senderAddress || '').trim()) return res.status(400).json({ message: 'Sender address is required.' });
-      if (!['prepaid', 'pay_later'].includes(normalizedPaymentType)) {
-        return res.status(400).json({ message: 'Select prepaid or pay later for customer gift.' });
-      }
     }
 
     const previousPaymentMode = order.paymentMode;
@@ -5340,13 +5359,11 @@ async function handleMarkOrderAsGift(req, res) {
       methodId: null,
       methodName: normalizedGiftType === 'owner'
         ? `Gift from Owners${ownerSource?.name ? ` - ${ownerSource.name}` : ''}`
-        : normalizedPaymentType === 'pay_later'
-          ? 'Gift from Customer - Pay Later'
-          : 'Gift from Customer - Prepaid',
+        : 'Gift from Customer - Prepaid',
       methodCode: normalizedGiftType === 'owner' ? 'gift-owner' : `gift-customer-${normalizedPaymentType}`,
       paymentDiscount: 0,
       paymentCharge: 0,
-      payableAmount: normalizedGiftType === 'owner' ? 0 : (normalizedPaymentType === 'prepaid' ? amount : 0),
+      payableAmount: normalizedGiftType === 'owner' ? 0 : amount,
     };
 
     order.notes = Array.isArray(order.notes) ? order.notes : [];
@@ -5365,6 +5382,7 @@ async function handleMarkOrderAsGift(req, res) {
     });
 
     await order.save();
+    await sendGiftReceiverWhatsApp({ enabled: sendWhatsApp === true, order });
     await recordAction(req, {
       action: 'mark_order_as_gift',
       module: 'Orders',
@@ -6452,19 +6470,28 @@ async function handleDispatchOrder(req, res) {
         error: mailErr?.message || String(mailErr),
       });
     }
-    await sendWhatsAppTemplateIfEnabled({
-      enabled: sendWhatsApp !== false,
-      to: getOrderCustomerWhatsApp(order),
-      contentSid: getTwilioTemplateSid('orderDispatched', 'TWILIO_TEMPLATE_ORDER_DISPATCHED_SID', 'TWILIO_ORDER_DISPATCHED_CONTENT_SID'),
-      variables: {
-        1: order.customer?.name || 'Customer',
-        2: order.orderNumber || '',
-        3: orderItemsSummary(order),
-        4: courier.name || order.courier?.courierName || '',
-        5: trackingNumber || order.courier?.trackingNumber || '',
-      },
-      label: 'Order dispatched WhatsApp notification',
-    });
+    if (order?.giftInfo?.isGift) {
+      await sendGiftDispatchWhatsApp({
+        enabled: sendWhatsApp !== false,
+        order,
+        courierName: courier.name || order.courier?.courierName || '',
+        trackingNumber: trackingNumber || order.courier?.trackingNumber || '',
+      });
+    } else {
+      await sendWhatsAppTemplateIfEnabled({
+        enabled: sendWhatsApp !== false,
+        to: getOrderCustomerWhatsApp(order),
+        contentSid: getTwilioTemplateSid('orderDispatched', 'TWILIO_TEMPLATE_ORDER_DISPATCHED_SID', 'TWILIO_ORDER_DISPATCHED_CONTENT_SID'),
+        variables: {
+          1: order.customer?.name || 'Customer',
+          2: order.orderNumber || '',
+          3: orderItemsSummary(order),
+          4: courier.name || order.courier?.courierName || '',
+          5: trackingNumber || order.courier?.trackingNumber || '',
+        },
+        label: 'Order dispatched WhatsApp notification',
+      });
+    }
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -6661,6 +6688,49 @@ async function handleCancelOrder(req, res) {
     }
     await order.save();
     await sendOrderAlertEmails(`Order Cancelled - ${order.orderNumber}`, `Order ${order.orderNumber} was cancelled. Reason: ${reason}`, order.customer?.email);
+    return res.status(200).json({ success: true, order });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error', error: err.message });
+  }
+}
+
+async function handleUncancelWhatsAppOrder(req, res) {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    const wasWhatsappCancelled =
+      order.status === 'cancelled' &&
+      order?.customerConfirmation?.status === 'cancelled' &&
+      String(order?.customerConfirmation?.responseSource || '').toLowerCase() === 'whatsapp';
+    if (!wasWhatsappCancelled) {
+      return res.status(400).json({ message: 'Only orders automatically cancelled by WhatsApp can be uncancelled here.' });
+    }
+
+    order.status = 'pending_confirmation';
+    order.customerConfirmation = {
+      status: 'confirmed',
+      respondedAt: new Date(),
+      responseSource: 'admin',
+      responseMessageId: '',
+      responseText: `WhatsApp cancellation reversed by ${req.user?.name || req.user?.username || 'admin'}`,
+    };
+    order.statusTimeline = {
+      ...(order.statusTimeline || {}),
+      placedAt: order?.statusTimeline?.placedAt || order.createdAt || new Date(),
+      cancelledAt: null,
+    };
+    order.adminRemarks = String(order.adminRemarks || '')
+      .replace(/\s*\|\s*Customer cancelled via WhatsApp/g, '')
+      .replace(/Customer cancelled via WhatsApp/g, '')
+      .trim();
+    order.notes = Array.isArray(order.notes) ? order.notes : [];
+    order.notes.push({
+      text: `Order uncancelled by ${req.user?.name || req.user?.username || 'admin'} after WhatsApp cancellation review.`,
+      createdAt: new Date(),
+      createdBy: req.user?.id === 'super-admin' ? null : req.user?.id,
+      createdByName: req.user?.name || req.user?.username || '',
+    });
+    await order.save();
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -10547,10 +10617,22 @@ function extractOrderNumberFromWhatsAppText(...parts) {
   return match ? match[1].toUpperCase() : '';
 }
 
-function getWhatsAppOrderAction(...parts) {
-  const combined = parts.filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g, ' ');
-  if (/\b(confirm|confirmed|yes|approve|approved)\b/.test(combined)) return 'confirmed';
-  if (/\b(cancel|cancelled|canceled|no|reject|rejected)\b/.test(combined)) return 'cancelled';
+function getWhatsAppOrderAction({ buttonText = '', buttonPayload = '', text = '', messageType = '' } = {}) {
+  const buttonCombined = [buttonText, buttonPayload].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g, ' ');
+  if (buttonCombined) {
+    if (/\b(confirm|confirmed|yes|approve|approved)\b/.test(buttonCombined)) return 'confirmed';
+    if (/\b(cancel|cancelled|canceled|no|reject|rejected)\b/.test(buttonCombined)) return 'cancelled';
+  }
+
+  const normalizedText = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalizedText) return '';
+  if (/^(confirm|confirmed|yes|yes confirm|confirm order|please confirm|approved|approve)$/.test(normalizedText)) return 'confirmed';
+  if (/^(cancel|cancel order|please cancel|cancel my order|cancelled|canceled|reject order|reject)$/.test(normalizedText)) return 'cancelled';
+  if (messageType && messageType !== 'text') {
+    const combined = [buttonText, buttonPayload, text].filter(Boolean).join(' ').toLowerCase().replace(/[_-]+/g, ' ');
+    if (/\b(confirm|confirmed|approve|approved)\b/.test(combined)) return 'confirmed';
+    if (/\b(cancel|cancelled|canceled|reject|rejected)\b/.test(combined)) return 'cancelled';
+  }
   return '';
 }
 
@@ -10575,7 +10657,12 @@ async function findRecentOpenOrderByWhatsAppSender(eventRow) {
 
 async function applyWhatsAppOrderReply(eventRow, message) {
   const text = message.text?.body || eventRow.text || '';
-  const action = getWhatsAppOrderAction(eventRow.buttonText, eventRow.buttonPayload, text);
+  const action = getWhatsAppOrderAction({
+    buttonText: eventRow.buttonText,
+    buttonPayload: eventRow.buttonPayload,
+    text,
+    messageType: eventRow.messageType || message.type || '',
+  });
   const orderNumber = extractOrderNumberFromWhatsAppText(eventRow.buttonPayload, text, eventRow.buttonText);
   if (!action) return eventRow;
 
@@ -11288,6 +11375,7 @@ async function createOnlineOrder({
   paymentVerified = false,
   customerAlreadyConfirmed = false,
   createdByAdmin = null,
+  discountAmount = 0,
 }) {
   if (!customer?.name || !customer?.address || !customer?.city || !customer?.mobile) {
     const err = new Error('Customer name, address, city, and mobile are required.');
@@ -11327,6 +11415,12 @@ async function createOnlineOrder({
   const totalQuantity = normalizedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const shippingCost = shippingRate * totalQuantity;
   const totalCost = subtotal + shippingCost;
+  const adminDiscount = Math.max(0, Number(discountAmount || 0));
+  if (adminDiscount > totalCost) {
+    const err = new Error('Discount cannot be greater than order total.');
+    err.status = 400;
+    throw err;
+  }
 
   let selectedPaymentMethod = null;
   if (paymentMethodId) {
@@ -11362,7 +11456,7 @@ async function createOnlineOrder({
   if (selectedPaymentMethod?.discountType === 'fixed') {
     paymentDiscount = Number(selectedPaymentMethod.discountValue || 0);
   } else if (selectedPaymentMethod?.discountType === 'percentage') {
-    paymentDiscount = (Number(totalCost || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
+    paymentDiscount = (Number(Math.max(0, totalCost - adminDiscount) || 0) * Number(selectedPaymentMethod.discountValue || 0)) / 100;
   }
   paymentDiscount = Math.max(0, Number(paymentDiscount || 0));
 
@@ -11370,11 +11464,11 @@ async function createOnlineOrder({
   if (selectedPaymentMethod?.chargeType === 'fixed') {
     paymentCharge = Number(selectedPaymentMethod.chargeValue || 0);
   } else if (selectedPaymentMethod?.chargeType === 'percentage') {
-    paymentCharge = (Number(totalCost || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    paymentCharge = (Number(Math.max(0, totalCost - adminDiscount) || 0) * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
   }
   paymentCharge = Math.max(0, Number(paymentCharge || 0));
 
-  const payableAmount = Math.max(0, Number(totalCost || 0) - paymentDiscount + paymentCharge);
+  const payableAmount = Math.max(0, Number(totalCost || 0) - adminDiscount - paymentDiscount + paymentCharge);
   const orderNumber = await getNextOrderNumber();
   const now = new Date();
   const order = new Order({
@@ -11393,7 +11487,7 @@ async function createOnlineOrder({
     shippingRate,
     shippingCost,
     totalCost,
-    discountAmount: 0,
+    discountAmount: adminDiscount,
     finalAmount: payableAmount,
     paymentMode: resolvedPaymentMode,
     paymentDetails: {
@@ -11480,6 +11574,66 @@ async function sendOrderDetailsThankYouWhatsApp({ enabled, customer, orderNumber
   });
 }
 
+function getGiftSenderName(order = {}) {
+  if (order?.giftInfo?.giftType === 'owner') return order?.giftInfo?.ownerGiftSourceName || 'JM Mangoes family';
+  return order?.giftInfo?.senderName || 'Someone special';
+}
+
+function getGiftSenderContact(order = {}) {
+  if (order?.giftInfo?.giftType === 'customer') return order?.giftInfo?.senderContact || '';
+  return '';
+}
+
+async function sendGiftReceiverWhatsApp({ enabled, order }) {
+  if (!order?.giftInfo?.isGift) return { skipped: true, reason: 'not-gift' };
+  return sendWhatsAppTemplateIfEnabled({
+    enabled,
+    to: getOrderCustomerWhatsApp(order),
+    contentSid: getGiftNotificationTemplateSid(),
+    variables: {
+      1: order.customer?.name || 'Customer',
+      2: getGiftSenderName(order),
+      3: orderItemsSummary(order),
+    },
+    label: 'Gift receiver WhatsApp notification',
+  });
+}
+
+async function sendGiftDispatchWhatsApp({ enabled, order, courierName = '', trackingNumber = '' }) {
+  if (!order?.giftInfo?.isGift) return [];
+  const contentSid = getGiftDispatchTemplateSid();
+  const rows = [];
+  rows.push(await sendWhatsAppTemplateIfEnabled({
+    enabled,
+    to: getOrderCustomerWhatsApp(order),
+    contentSid,
+    variables: {
+      1: order.customer?.name || 'Customer',
+      2: orderItemsSummary(order),
+      3: courierName,
+      4: trackingNumber,
+    },
+    label: 'Gift receiver dispatch WhatsApp notification',
+  }));
+
+  const senderContact = getGiftSenderContact(order);
+  if (senderContact) {
+    rows.push(await sendWhatsAppTemplateIfEnabled({
+      enabled,
+      to: senderContact,
+      contentSid,
+      variables: {
+        1: order.giftInfo?.senderName || 'Customer',
+        2: orderItemsSummary(order),
+        3: courierName,
+        4: trackingNumber,
+      },
+      label: 'Gift sender dispatch WhatsApp notification',
+    }));
+  }
+  return rows;
+}
+
 async function runInternalOrderAction(handler, req, orderId, body = {}) {
   let statusCode = 200;
   let payload = null;
@@ -11547,6 +11701,7 @@ async function handleCreateCustomerOrder(req, res) {
       paymentMode = 'cod',
       paymentMethodId = '',
       receiptUrl = '',
+      discountAmount = 0,
       customerAlreadyConfirmed = true,
       sendWhatsApp = true,
       noteText = '',
@@ -11564,6 +11719,7 @@ async function handleCreateCustomerOrder(req, res) {
       paymentVerified: resolvedMode === 'prepaid',
       customerAlreadyConfirmed: Boolean(customerAlreadyConfirmed),
       createdByAdmin: req.user || {},
+      discountAmount,
     });
     const { order, orderNumber, subtotal, shippingCost, totalCost, payableAmount, selectedPaymentMethod } = created;
     await sendOrderAlertEmails(
@@ -11588,7 +11744,9 @@ async function handleCreateCustomerOrder(req, res) {
     }
 
     const orderForMessage = await Order.findById(order._id);
-    if (sendWhatsApp !== false) {
+    if (gift?.isGift) {
+      await sendGiftReceiverWhatsApp({ enabled: sendWhatsApp === true, order: orderForMessage });
+    } else if (sendWhatsApp !== false) {
       const messageAmount = Number(orderForMessage?.finalAmount ?? payableAmount ?? 0);
       if (customerAlreadyConfirmed) {
         await sendOrderDetailsThankYouWhatsApp({ enabled: true, customer: orderForMessage.customer, orderNumber, items: orderForMessage.items, payableAmount: messageAmount });
@@ -11599,6 +11757,10 @@ async function handleCreateCustomerOrder(req, res) {
 
     const mode = String(stockAction?.mode || 'later').toLowerCase();
     if (mode === 'reserve') {
+      const isSuperAdminUser = req.user?.id === 'super-admin' || String(req.user?.username || '').toLowerCase() === 'admin';
+      if (!isSuperAdminUser) {
+        return res.status(403).json({ message: 'Only super admin can directly reserve stock from this page.' });
+      }
       await runInternalOrderAction(handleReserveOrderStock, req, order._id, { siteId: stockAction?.siteId || '' });
     } else if (mode === 'request') {
       await runInternalOrderAction(handleCreateOrderStockRequest, req, order._id, { siteId: stockAction?.siteId || '' });
@@ -11740,6 +11902,7 @@ module.exports = {
     handleRefreshLeopardsCourierStatuses,
     handleDispatchOrder,
     handleCancelOrder,
+    handleUncancelWhatsAppOrder,
     handleDeliverOrder,
     handleSendFeedbackReminder,
     handleReturnOrder,

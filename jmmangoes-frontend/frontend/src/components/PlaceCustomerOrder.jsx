@@ -3,6 +3,7 @@ import { toast } from 'react-toastify';
 import { useNavigate } from 'react-router-dom';
 import api, { toPublicAssetUrl } from '../lib/api';
 import DEFAULT_CITIES from '../constants/defaultCities';
+import useAuthStore from '../store/authStore';
 
 const emptyCustomer = {
   name: '',
@@ -16,6 +17,8 @@ const emptyCustomer = {
 
 const PlaceCustomerOrder = () => {
   const navigate = useNavigate();
+  const user = useAuthStore((state) => state.user);
+  const isSuperAdmin = user?.id === 'super-admin' || String(user?.username || '').toLowerCase() === 'admin';
   const [customer, setCustomer] = useState(emptyCustomer);
   const [products, setProducts] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
@@ -25,10 +28,12 @@ const PlaceCustomerOrder = () => {
   const [newItem, setNewItem] = useState({ productId: '', quantity: 1 });
   const [paymentMode, setPaymentMode] = useState('cod');
   const [paymentMethodId, setPaymentMethodId] = useState('');
+  const [manualDiscount, setManualDiscount] = useState('');
   const [receiptUrl, setReceiptUrl] = useState('');
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [customerAlreadyConfirmed, setCustomerAlreadyConfirmed] = useState(true);
   const [sendWhatsApp, setSendWhatsApp] = useState(true);
+  const [sendGiftWhatsApp, setSendGiftWhatsApp] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [giftMode, setGiftMode] = useState('none');
   const [giftForm, setGiftForm] = useState({
@@ -112,19 +117,22 @@ const PlaceCustomerOrder = () => {
     let charge = 0;
     if (!isGift && paymentMode === 'prepaid' && selectedPaymentMethod?.chargeType === 'fixed') charge = Number(selectedPaymentMethod.chargeValue || 0);
     if (!isGift && paymentMode === 'prepaid' && selectedPaymentMethod?.chargeType === 'percentage') charge = (base * Number(selectedPaymentMethod.chargeValue || 0)) / 100;
+    const adminDiscount = isGift ? 0 : Math.max(0, Number(manualDiscount || 0));
+    const baseAfterManualDiscount = Math.max(0, base - adminDiscount);
     const payable = isGift
       ? (giftMode === 'owner' ? 0 : Math.max(0, Number(giftForm.giftAmount || base)))
-      : Math.max(0, base - Math.max(0, discount) + Math.max(0, charge));
+      : Math.max(0, baseAfterManualDiscount - Math.max(0, discount) + Math.max(0, charge));
     return {
       subtotal,
       qty,
       shipping,
+      manualDiscount: adminDiscount,
       discount: Math.max(0, discount),
       charge: Math.max(0, charge),
       payable,
       base,
     };
-  }, [items, paymentMode, selectedPaymentMethod, shippingRate, isGift, giftMode, giftForm.giftAmount]);
+  }, [items, paymentMode, selectedPaymentMethod, shippingRate, isGift, giftMode, giftForm.giftAmount, manualDiscount]);
 
   const setCustomerField = (field, value) => {
     setCustomer((prev) => ({ ...prev, [field]: value }));
@@ -185,11 +193,13 @@ const PlaceCustomerOrder = () => {
       if (!giftForm.senderAddress.trim()) return toast.warn('Sender address is required for customer gift.');
     }
     if (stockAction.mode !== 'later' && !stockAction.siteId) return toast.warn('Select fulfilment site for stock action.');
+    if (stockAction.mode === 'reserve' && !isSuperAdmin) return toast.warn('Only super admin can reserve stock directly from this page.');
     if (stockAction.mode === 'reserve') {
       const selected = fulfilmentOptions.find((row) => String(row.siteId) === String(stockAction.siteId));
       if (!selected?.canFulfill) return toast.warn('Selected site cannot directly reserve complete stock.');
     }
-    if (sendWhatsApp && !String(customer.mobile || '').replace(/\D/g, '')) return toast.warn('Enter customer WhatsApp number or uncheck WhatsApp.');
+    if (!isGift && sendWhatsApp && !String(customer.mobile || '').replace(/\D/g, '')) return toast.warn('Enter customer WhatsApp number or uncheck WhatsApp.');
+    if (isGift && sendGiftWhatsApp && !String(customer.mobile || '').replace(/\D/g, '')) return toast.warn('Enter receiver WhatsApp number or uncheck gift WhatsApp.');
 
     const stockLine = stockAction.mode === 'later'
       ? 'Stock Action: Later in Order Management'
@@ -205,8 +215,9 @@ const PlaceCustomerOrder = () => {
         paymentMode: isGift ? 'cod' : paymentMode,
         paymentMethodId: !isGift && paymentMode === 'prepaid' ? paymentMethodId : '',
         receiptUrl: !isGift && paymentMode === 'prepaid' ? receiptUrl : '',
-        customerAlreadyConfirmed,
-        sendWhatsApp,
+        discountAmount: !isGift ? Number(manualDiscount || 0) : 0,
+        customerAlreadyConfirmed: isGift ? true : customerAlreadyConfirmed,
+        sendWhatsApp: isGift ? sendGiftWhatsApp : sendWhatsApp,
         noteText,
         gift: isGift ? {
           isGift: true,
@@ -330,6 +341,21 @@ const PlaceCustomerOrder = () => {
                 {receiptUrl ? <a href={toPublicAssetUrl(receiptUrl)} target="_blank" rel="noreferrer" className="text-blue-700 text-sm underline">View uploaded receipt</a> : null}
               </div>
             ) : null}
+            {!isGift ? (
+              <div className="mt-4 border-t pt-3">
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Manual Discount (optional)</label>
+                <input
+                  className="border rounded p-2 w-full"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="Discount offered to customer"
+                  value={manualDiscount}
+                  onChange={(e) => setManualDiscount(e.target.value)}
+                />
+                <div className="text-xs text-gray-600 mt-1">This discount is applied before payment method discount/charges.</div>
+              </div>
+            ) : null}
           </div>
 
           <div className="border rounded p-4 bg-green-50">
@@ -337,6 +363,7 @@ const PlaceCustomerOrder = () => {
             <div className="space-y-1 text-sm">
               <div className="flex justify-between"><span>Subtotal</span><span>PKR {totals.subtotal.toFixed(2)}</span></div>
               <div className="flex justify-between"><span>Shipping ({totals.qty} qty x PKR {shippingRate.toFixed(2)})</span><span>PKR {totals.shipping.toFixed(2)}</span></div>
+              <div className="flex justify-between"><span>Manual Discount</span><span>- PKR {totals.manualDiscount.toFixed(2)}</span></div>
               <div className="flex justify-between"><span>Payment Discount</span><span>- PKR {totals.discount.toFixed(2)}</span></div>
               <div className="flex justify-between"><span>Payment Charge</span><span>PKR {totals.charge.toFixed(2)}</span></div>
               <div className="flex justify-between font-bold text-base border-t pt-2 mt-2"><span>Total Payable</span><span>PKR {totals.payable.toFixed(2)}</span></div>
@@ -346,12 +373,22 @@ const PlaceCustomerOrder = () => {
                 <input type="checkbox" checked={customerAlreadyConfirmed} onChange={(e) => setCustomerAlreadyConfirmed(e.target.checked)} />
                 Customer already confirmed this order
               </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={sendWhatsApp} onChange={(e) => setSendWhatsApp(e.target.checked)} />
-                Send WhatsApp message to customer
-              </label>
+              {!isGift ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={sendWhatsApp} onChange={(e) => setSendWhatsApp(e.target.checked)} />
+                  Send WhatsApp message to customer
+                </label>
+              ) : null}
+              {isGift ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={sendGiftWhatsApp} onChange={(e) => setSendGiftWhatsApp(e.target.checked)} />
+                  Send optional gift WhatsApp message to receiver
+                </label>
+              ) : null}
               <div className="text-xs text-gray-600">
-                If already confirmed, a thank-you/order details template is sent when configured. Otherwise the confirmation request template is sent.
+                {isGift
+                  ? 'Gift orders do not send an order confirmation request. The gift message is optional and off by default.'
+                  : 'If already confirmed, a thank-you/order details template is sent when configured. Otherwise the confirmation request template is sent.'}
               </div>
             </div>
           </div>
@@ -432,7 +469,7 @@ const PlaceCustomerOrder = () => {
               onChange={(e) => setStockAction((prev) => ({ ...prev, mode: e.target.value, siteId: e.target.value === 'later' ? '' : prev.siteId }))}
             >
               <option value="later">Handle later in Order Management</option>
-              <option value="reserve">Reserve directly now</option>
+              {isSuperAdmin ? <option value="reserve">Reserve directly now</option> : null}
               <option value="request">Request stock from site</option>
             </select>
             <select

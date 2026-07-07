@@ -236,6 +236,7 @@ jmm_route.get('/orders/fulfilment-site-products', authenticateUser, authorizePag
 jmm_route.put('/orders/:id/assign-courier', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleAssignCourier);
 jmm_route.put('/orders/:id/dispatch', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleDispatchOrder);
 jmm_route.put('/orders/:id/cancel', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleCancelOrder);
+jmm_route.put('/orders/:id/uncancel-whatsapp', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleUncancelWhatsAppOrder);
 jmm_route.put('/orders/:id/deliver', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleDeliverOrder);
 jmm_route.put('/orders/:id/return', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleReturnOrder);
 jmm_route.put('/orders/:id/returned/mark-wasted', authenticateUser, authorizePage('orderManagement', 'manage'), jmm_controller.handleResolveReturnedAsWasted);

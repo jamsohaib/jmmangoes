@@ -31,6 +31,7 @@ const OrderManagement = () => {
     giftPaymentType: 'prepaid',
     giftAmount: '0',
     giftNote: '',
+    sendGiftWhatsApp: false,
     saving: false,
   });
   const [feedbackModal, setFeedbackModal] = useState({ open: false, order: null });
@@ -364,6 +365,7 @@ const OrderManagement = () => {
       giftPaymentType: 'prepaid',
       giftAmount: String(Number(order?.finalAmount || order?.totalCost || 0) || 0),
       giftNote: '',
+      sendGiftWhatsApp: false,
       saving: false,
     });
   };
@@ -395,6 +397,7 @@ const OrderManagement = () => {
         giftPaymentType: giftModal.giftPaymentType,
         giftAmount,
         giftNote: giftModal.giftNote,
+        sendWhatsApp: giftModal.sendGiftWhatsApp === true,
       });
       toast.success('Order marked as gift.');
       setGiftModal({
@@ -408,6 +411,7 @@ const OrderManagement = () => {
         giftPaymentType: 'prepaid',
         giftAmount: '0',
         giftNote: '',
+        sendGiftWhatsApp: false,
         saving: false,
       });
       await load();
@@ -765,6 +769,19 @@ const OrderManagement = () => {
     toast.success('Order cancelled.');
     setCancelModal({ open: false, orderId: '', reason: '' });
     await load();
+  };
+
+  const uncancelWhatsAppOrder = async (order) => {
+    if (!order?._id) return;
+    const ok = window.confirm(`Uncancel order ${order.orderNumber}?\n\nThis will restore it to Pending For Confirmation and mark the customer as confirmed for processing review.`);
+    if (!ok) return;
+    try {
+      await api.put(`/orders/${order._id}/uncancel-whatsapp`, {});
+      toast.success('Order restored from WhatsApp cancellation.');
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to uncancel order.');
+    }
   };
 
   const submitReturn = async () => {
@@ -1283,6 +1300,9 @@ const OrderManagement = () => {
         <div className="flex flex-col gap-1">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline text-left">View Order</button>
           <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline text-left">Notes</button>
+          {o?.customerConfirmation?.status === 'cancelled' && o?.customerConfirmation?.responseSource === 'whatsapp' ? (
+            <button onClick={() => uncancelWhatsAppOrder(o)} className="text-green-700 hover:underline text-left">Uncancel WhatsApp Order</button>
+          ) : null}
           <span>{o.adminRemarks || o.rejectionReason || '-'}</span>
         </div>
       ))}
@@ -1364,7 +1384,7 @@ const OrderManagement = () => {
                     />
                     Sent from Customer
                   </div>
-                  <div className="text-xs text-gray-600 mt-1">Enter sender details and whether the gift amount is prepaid or pay later.</div>
+                  <div className="text-xs text-gray-600 mt-1">Enter sender details. Customer-sent gifts are booked as prepaid with zero courier COD.</div>
                 </label>
               </div>
 
@@ -1416,17 +1436,9 @@ const OrderManagement = () => {
                     value={giftModal.senderAddress}
                     onChange={(e) => setGiftModal((p) => ({ ...p, senderAddress: e.target.value }))}
                   />
-                  <label className="block">
-                    <span className="block font-medium mb-1">Gift payment *</span>
-                    <select
-                      className="border p-2 rounded w-full"
-                      value={giftModal.giftPaymentType}
-                      onChange={(e) => setGiftModal((p) => ({ ...p, giftPaymentType: e.target.value }))}
-                    >
-                      <option value="prepaid">Prepaid</option>
-                      <option value="pay_later">Pay Later</option>
-                    </select>
-                  </label>
+                  <div className="rounded border bg-emerald-50 p-3 text-emerald-900">
+                    Gift payment is prepaid. Courier/COD amount remains zero for the receiver.
+                  </div>
                   <label className="block">
                     <span className="block font-medium mb-1">Gift amount including delivery *</span>
                     <input
@@ -1454,11 +1466,23 @@ const OrderManagement = () => {
               <div className="rounded border bg-blue-50 p-3 text-blue-900">
                 This order will be treated as prepaid for courier processing, so our team books it with zero COD amount.
               </div>
+              <label className="flex items-start gap-2 rounded border bg-amber-50 p-3 text-amber-900">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={giftModal.sendGiftWhatsApp}
+                  onChange={(e) => setGiftModal((p) => ({ ...p, sendGiftWhatsApp: e.target.checked }))}
+                />
+                <span>
+                  <span className="font-semibold block">Send optional gift WhatsApp message to receiver</span>
+                  <span className="text-xs">Disabled by default. Gift orders do not send the normal order confirmation message.</span>
+                </span>
+              </label>
             </div>
             <div className="flex justify-end gap-2 mt-4">
               <button
                 className="border px-3 py-2 rounded"
-                onClick={() => setGiftModal({ open: false, order: null, giftType: 'owner', ownerGiftSourceId: '', senderName: '', senderContact: '', senderAddress: '', giftPaymentType: 'prepaid', giftAmount: '0', giftNote: '', saving: false })}
+                onClick={() => setGiftModal({ open: false, order: null, giftType: 'owner', ownerGiftSourceId: '', senderName: '', senderContact: '', senderAddress: '', giftPaymentType: 'prepaid', giftAmount: '0', giftNote: '', sendGiftWhatsApp: false, saving: false })}
               >
                 Cancel
               </button>
