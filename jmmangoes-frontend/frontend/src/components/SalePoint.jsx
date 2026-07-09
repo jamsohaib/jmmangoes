@@ -199,7 +199,7 @@ const SalePoint = () => {
     if (!canManage) return toast.warn('No manage permission.');
     if (!siteId || saleItems.length === 0) return toast.warn('Add at least one sale item.');
     if (sendWhatsAppOnSale && !String(customerWhatsapp || '').replace(/\D/g, '')) {
-      return toast.warn('Enter customer WhatsApp number or uncheck WhatsApp thank-you.');
+      return toast.warn('Enter customer WhatsApp number or uncheck WhatsApp message.');
     }
     const paymentLine = hasChargeableSaleItems ? `\nPayment Mode: ${selectedPaymentMethodName}` : '';
     const ok = window.confirm(`Confirm payment and save sale?\nNet Amount: PKR ${saleTotals.net.toFixed(2)}${paymentLine}`);
@@ -697,7 +697,7 @@ const SalePoint = () => {
                   checked={sendWhatsAppOnSale}
                   onChange={(e) => setSendWhatsAppOnSale(e.target.checked)}
                 />
-                Send WhatsApp thank-you
+                {saleItems.some((item) => item.isGift) ? 'Send WhatsApp gift message' : 'Send WhatsApp thank-you'}
               </label>
             </div>
           </div>

@@ -38,6 +38,9 @@ const orderSchema = new mongoose.Schema({
     isVerified: { type: Boolean, default: false },
     verifiedAt: { type: Date, default: null },
     verifiedByName: { type: String, default: '' },
+    codDeliveryCharges: { type: Number, default: 0 },
+    codNetReceived: { type: Number, default: 0 },
+    deliveryExpenseEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'ExpenseEntry', default: null },
   },
   status: {
     type: String,

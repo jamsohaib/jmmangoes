@@ -86,6 +86,90 @@ async function ensureDefaultExpenseSetup() {
   return othersHead;
 }
 
+async function ensureCodDeliveryExpenseMeta() {
+  const head = await ExpenseHead.findOneAndUpdate(
+    { name: 'Order Delivery Charges' },
+    { $setOnInsert: { name: 'Order Delivery Charges', colorCode: '#F97316', isActive: true } },
+    { new: true, upsert: true }
+  );
+  const item = await ExpenseItem.findOneAndUpdate(
+    { headId: head._id, name: 'Courier Delivery Charges' },
+    { $setOnInsert: { headId: head._id, name: 'Courier Delivery Charges', isActive: true } },
+    { new: true, upsert: true }
+  );
+  return { head, item };
+}
+
+function getOrderReceivableAmount(order) {
+  return [
+    order?.paymentDetails?.payableAmount,
+    order?.finalAmount,
+    order?.totalCost,
+    Number(order?.subtotal || 0) + Number(order?.shippingCost || 0),
+  ].map(Number).find((n) => Number.isFinite(n) && n > 0) || 0;
+}
+
+async function ensureCodSaleLedgerRows(order, req) {
+  if (!order) return 0;
+  const isCod = order.paymentMode === 'cod' || order?.paymentDetails?.methodCode === 'cash-on-delivery';
+  if (!isCod || order?.paymentDetails?.isVerified !== true) return 0;
+  const existingSaleRows = await SalePointEntry.countDocuments({ sourceOrderId: order._id, entryType: 'sale' });
+  if (existingSaleRows > 0) return 0;
+  const onlineSite = await ensureOnlineSite();
+  const payableAmount = getOrderReceivableAmount(order);
+  const orderItems = Array.isArray(order.items) ? order.items : [];
+  const lineBases = orderItems.map((item) => Math.max(0, Number(item.price || 0) * Number(item.quantity || 0)));
+  const baseTotal = lineBases.reduce((sum, value) => sum + value, 0);
+  let allocatedTotal = 0;
+  let created = 0;
+  for (let index = 0; index < orderItems.length; index += 1) {
+    const item = orderItems[index];
+    const qty = Math.max(1, Number(item.quantity || 1));
+    let productId = item.productId || null;
+    let product = productId ? await Product.findById(productId) : null;
+    if (!product) product = await Product.findOne({ name: item.name });
+    productId = product?._id || productId || null;
+    const isLast = index === orderItems.length - 1;
+    const allocatedAmount = isLast
+      ? Math.max(0, payableAmount - allocatedTotal)
+      : Math.round(((baseTotal > 0 ? (lineBases[index] / baseTotal) : (1 / Math.max(1, orderItems.length))) * payableAmount) * 100) / 100;
+    allocatedTotal += allocatedAmount;
+    await SalePointEntry.create({
+      entryType: 'sale',
+      siteId: onlineSite._id,
+      siteName: onlineSite.name,
+      holderType: 'online',
+      holderId: onlineSite._id,
+      holderName: onlineSite.name,
+      productId,
+      productName: item.name || product?.name || 'Order Item',
+      date: order?.paymentDetails?.verifiedAt || new Date(),
+      quantity: qty,
+      unitPrice: allocatedAmount / qty,
+      grossAmount: allocatedAmount,
+      priceIncreaseAmount: 0,
+      discountAmount: 0,
+      receivableAmount: 0,
+      paymentMethodId: null,
+      paymentMethodName: 'Cash on Delivery',
+      paymentMethodCode: 'cash-on-delivery',
+      paymentStatus: 'not_applicable',
+      netAmount: allocatedAmount,
+      customerName: order.customer?.name || '',
+      customerWhatsapp: order.customer?.mobile || '',
+      customerEmail: order.customer?.email || '',
+      sourceOrderId: order._id,
+      sourceOrderNumber: order.orderNumber,
+      remarks: `COD payment received for order ${order.orderNumber}${order?.courier?.courierName ? ` via ${order.courier.courierName}` : ''}`,
+      noStockMovement: true,
+      createdBy: req?.user?.id === 'super-admin' ? null : req?.user?.id,
+      createdByName: req?.user?.name || req?.user?.username || '',
+    });
+    created += 1;
+  }
+  return created;
+}
+
 function normalizePaymentCode(value) {
   return String(value || '')
     .trim()
@@ -1810,16 +1894,34 @@ async function handleCreateSaleCheckout(req, res) {
       netTotal += netAmount;
     }
 
-    await sendWhatsAppTemplateIfEnabled({
-      enabled: sendWhatsApp !== false,
-      to: customerWhatsapp,
-      contentSid: getTwilioTemplateSid('stallPurchaseThankYou', 'TWILIO_TEMPLATE_STALL_PURCHASE_THANK_YOU_SID', 'TWILIO_STALL_PURCHASE_THANK_YOU_CONTENT_SID'),
-      variables: {
-        1: String(customerName || 'Customer').trim() || 'Customer',
-        2: orderItemsSummary(createdEntries),
-      },
-      label: 'Stall purchase WhatsApp thank-you',
-    });
+    const giftEntries = createdEntries.filter((entry) => entry.entryType === 'gift');
+    const regularSaleEntries = giftEntries.length ? [] : createdEntries.filter((entry) => entry.entryType === 'sale');
+    if (giftEntries.length) {
+      const giftSenderName = [...new Set(giftEntries.map((entry) => entry.giftSourceName).filter(Boolean))].join(', ') || 'JM Mangoes family';
+      await sendWhatsAppTemplateIfEnabled({
+        enabled: sendWhatsApp !== false,
+        to: customerWhatsapp,
+        contentSid: getGiftNotificationTemplateSid(),
+        variables: {
+          1: String(customerName || 'Customer').trim() || 'Customer',
+          2: giftSenderName,
+          3: orderItemsSummary(giftEntries),
+        },
+        label: 'Stall gift WhatsApp notification',
+      });
+    }
+    if (regularSaleEntries.length) {
+      await sendWhatsAppTemplateIfEnabled({
+        enabled: sendWhatsApp !== false,
+        to: customerWhatsapp,
+        contentSid: getTwilioTemplateSid('stallPurchaseThankYou', 'TWILIO_TEMPLATE_STALL_PURCHASE_THANK_YOU_SID', 'TWILIO_STALL_PURCHASE_THANK_YOU_CONTENT_SID'),
+        variables: {
+          1: String(customerName || 'Customer').trim() || 'Customer',
+          2: orderItemsSummary(regularSaleEntries),
+        },
+        label: 'Stall purchase WhatsApp thank-you',
+      });
+    }
 
     return res.status(201).json({ success: true, entries: createdEntries, grossTotal, priceIncreaseTotal, discountTotal, netTotal });
   } catch (err) {
@@ -1920,6 +2022,16 @@ async function handleGetSalePointEntries(req, res) {
       const end = new Date(date);
       end.setDate(end.getDate() + 1);
       query.date = { $gte: start, $lt: end };
+    }
+    if (normalizedHolderType === 'online') {
+      const verifiedCodOrders = await Order.find({
+        status: 'delivered',
+        paymentMode: 'cod',
+        'paymentDetails.isVerified': true,
+      }).limit(200);
+      for (const order of verifiedCodOrders) {
+        await ensureCodSaleLedgerRows(order, req);
+      }
     }
     if (req.user.role !== 'admin') {
       if (normalizedHolderType && effectiveHolderId) {
@@ -2022,12 +2134,13 @@ async function handleDeleteSalePointEntry(req, res) {
     const rowHolderId = row.holderId || row.siteId;
     if (!userCanAccessEntity(req, rowHolderType, rowHolderId)) return res.status(403).json({ message: 'Holder access denied' });
 
-    const product = await Product.findById(row.productId);
-    const productRef = product || { _id: row.productId, name: row.productName };
     const qty = Number(row.quantity || 0);
     if (qty <= 0) return res.status(400).json({ message: 'Invalid transaction quantity' });
 
-    if (row.entryType === 'return') {
+    if (row.noStockMovement) {
+      // Online order sale rows are financial ledger entries; stock was already handled by order dispatch.
+    } else if (row.entryType === 'return') {
+      const product = row.productId ? await Product.findById(row.productId) : null;
       const consumed = await consumeHolderProductLots(rowHolderType, rowHolderId, row.productId, qty);
       if (!consumed.ok) {
         return res.status(400).json({ message: `Unable to delete return. Only ${consumed.available} stock available to reverse.` });
@@ -2052,6 +2165,8 @@ async function handleDeleteSalePointEntry(req, res) {
         });
       }
     } else {
+      const product = row.productId ? await Product.findById(row.productId) : null;
+      const productRef = product || { _id: row.productId, name: row.productName };
       const lot = await addHolderProductReturnLot(rowHolderType, rowHolderId, row.holderName || row.siteName, productRef, qty, Number(row.unitPrice || 0));
       await createStockLedgerRow({
         movementType: 'in',
@@ -3301,6 +3416,7 @@ async function handleGetSalesDashboardSummary(req, res) {
       expenseDaily,
       expenseRange,
       pendingReceivables,
+      pendingCodReceivables,
       giftRows,
       depositsOverall,
       depositsDaily,
@@ -3322,6 +3438,30 @@ async function handleGetSalesDashboardSummary(req, res) {
         },
         { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
       ]),
+      Order.aggregate([
+        {
+          $match: {
+            status: 'delivered',
+            paymentMode: 'cod',
+            'paymentDetails.isVerified': { $ne: true },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            amount: { $sum: { $ifNull: ['$paymentDetails.payableAmount', '$totalCost'] } },
+            quantity: {
+              $sum: {
+                $reduce: {
+                  input: { $ifNull: ['$items', []] },
+                  initialValue: 0,
+                  in: { $add: ['$$value', { $ifNull: ['$$this.quantity', 0] }] },
+                },
+              },
+            },
+          },
+        },
+      ]),
       SalePointEntry.aggregate([
         {
           $match: {
@@ -3339,6 +3479,10 @@ async function handleGetSalesDashboardSummary(req, res) {
 
     const onlineOrderMatch = {
       status: { $nin: ['rejected', 'cancelled', 'returned'] },
+      $and: [
+        { paymentMode: { $ne: 'cod' } },
+        { 'paymentDetails.methodCode': { $ne: 'cash-on-delivery' } },
+      ],
     };
     if (allowedSiteIds && !allowOnline) {
       // non-admin user without online site access should not see online order sales
@@ -3552,8 +3696,8 @@ async function handleGetSalesDashboardSummary(req, res) {
         quantity: sumField(siteCards, (c) => c.range.quantity),
       },
       pendingReceivables: {
-        amount: Number(pendingReceivables?.[0]?.amount || 0),
-        quantity: Number(pendingReceivables?.[0]?.quantity || 0),
+        amount: Number(pendingReceivables?.[0]?.amount || 0) + Number(pendingCodReceivables?.[0]?.amount || 0),
+        quantity: Number(pendingReceivables?.[0]?.quantity || 0) + Number(pendingCodReceivables?.[0]?.quantity || 0),
       },
       gifting: {
         quantity: giftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
@@ -4351,7 +4495,15 @@ async function calculateCashPositionForHolder(holder) {
 
   const onlineOrderAgg = isOnlineHolder
     ? await Order.aggregate([
-        { $match: { status: { $nin: ['rejected', 'cancelled', 'returned'] } } },
+        {
+          $match: {
+            status: { $nin: ['rejected', 'cancelled', 'returned'] },
+            $and: [
+              { paymentMode: { $ne: 'cod' } },
+              { 'paymentDetails.methodCode': { $ne: 'cash-on-delivery' } },
+            ],
+          },
+        },
         {
           $group: {
             _id: null,
@@ -6114,16 +6266,19 @@ async function handleConfirmOrder(req, res) {
     };
     await order.save();
     await sendOrderAlertEmails(`Order Confirmed - ${order.orderNumber}`, `Your order ${order.orderNumber} has been confirmed.`, order.customer?.email);
-    await sendWhatsAppTemplateIfEnabled({
-      enabled: sendWhatsApp !== false,
-      to: getOrderCustomerWhatsApp(order),
-      contentSid: getTwilioTemplateSid('thankYouForPurchase', 'TWILIO_TEMPLATE_THANK_YOU_FOR_PURCHASE_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMED_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMATION_SID'),
-      variables: {
-        1: order.customer?.name || 'Customer',
-        2: orderItemsSummary(order),
-      },
-      label: 'Order confirmed WhatsApp notification',
-    });
+    const alreadyNotifiedByStaffOrder = order?.createdByAdmin?.isAdminCreated && order?.createdByAdmin?.customerAlreadyConfirmed;
+    if (!alreadyNotifiedByStaffOrder) {
+      await sendWhatsAppTemplateIfEnabled({
+        enabled: sendWhatsApp !== false,
+        to: getOrderCustomerWhatsApp(order),
+        contentSid: getTwilioTemplateSid('thankYouForPurchase', 'TWILIO_TEMPLATE_THANK_YOU_FOR_PURCHASE_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMED_SID', 'TWILIO_TEMPLATE_ORDER_CONFIRMATION_SID'),
+        variables: {
+          1: order.customer?.name || 'Customer',
+          2: orderItemsSummary(order),
+        },
+        label: 'Order confirmed WhatsApp notification',
+      });
+    }
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -7033,15 +7188,47 @@ async function handleRedirectReturnedOrder(req, res) {
 async function handleVerifyOrderPayment(req, res) {
   try {
     const { id } = req.params;
+    const deliveryCharges = Math.max(0, Number(req.body?.deliveryCharges || 0));
     const order = await Order.findById(id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    const payableAmount = getOrderReceivableAmount(order);
+    if (Number.isNaN(deliveryCharges)) return res.status(400).json({ message: 'Valid delivery charges are required' });
+    if (deliveryCharges > payableAmount) return res.status(400).json({ message: 'Delivery charges cannot be greater than receivable amount' });
+    const isCod = order.paymentMode === 'cod' || order?.paymentDetails?.methodCode === 'cash-on-delivery';
+    if (deliveryCharges > 0 && !isCod) return res.status(400).json({ message: 'Delivery charges can only be recorded for COD orders' });
+    let deliveryExpenseEntryId = order?.paymentDetails?.deliveryExpenseEntryId || null;
+    if (deliveryCharges > 0 && !deliveryExpenseEntryId) {
+      const onlineSite = await ensureOnlineSite();
+      const { head, item } = await ensureCodDeliveryExpenseMeta();
+      const entry = await ExpenseEntry.create({
+        siteId: onlineSite._id,
+        siteName: onlineSite.name,
+        holderType: 'online',
+        holderId: onlineSite._id,
+        holderName: onlineSite.name,
+        date: new Date(),
+        headId: head._id,
+        headName: head.name,
+        itemId: item._id,
+        itemName: item.name,
+        amount: deliveryCharges,
+        remarks: `COD delivery charges for order ${order.orderNumber}${order?.courier?.courierName ? ` via ${order.courier.courierName}` : ''}${order?.courier?.trackingNumber ? ` (${order.courier.trackingNumber})` : ''}`,
+        enteredBy: req.user.id === 'super-admin' ? null : req.user.id,
+        enteredByName: req.user.name || req.user.username || '',
+      });
+      deliveryExpenseEntryId = entry._id;
+    }
     order.paymentDetails = {
       ...(order.paymentDetails || {}),
       isVerified: true,
       verifiedAt: new Date(),
       verifiedByName: req.user?.name || req.user?.username || 'Admin',
+      codDeliveryCharges: deliveryCharges,
+      codNetReceived: Math.max(0, payableAmount - deliveryCharges),
+      deliveryExpenseEntryId,
     };
     await order.save();
+    await ensureCodSaleLedgerRows(order, req);
     return res.status(200).json({ success: true, order });
   } catch (err) {
     return res.status(500).json({ message: 'Server error', error: err.message });
@@ -8881,7 +9068,7 @@ async function calculateFinancialSummaryByRange(startDate, endDate, financialYea
     ],
   };
 
-  const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows, pendingReceivableRows, giftRows, cashDepositRows] = await Promise.all([
+  const [salePointRows, onlineRows, salesExpenseRows, farmExpenseRows, farmHrRows, treeProductionRows, blockProductionRows, pendingReceivableRows, pendingCodReceivableRows, giftRows, cashDepositRows] = await Promise.all([
     SalePointEntry.aggregate([
       {
         $match: {
@@ -8914,7 +9101,16 @@ async function calculateFinancialSummaryByRange(startDate, endDate, financialYea
       },
     ]),
     Order.aggregate([
-      { $match: { createdAt: range, status: { $nin: ['rejected', 'cancelled', 'returned'] } } },
+      {
+        $match: {
+          createdAt: range,
+          status: { $nin: ['rejected', 'cancelled', 'returned'] },
+          $and: [
+            { paymentMode: { $ne: 'cod' } },
+            { 'paymentDetails.methodCode': { $ne: 'cash-on-delivery' } },
+          ],
+        },
+      },
       {
         $group: {
           _id: null,
@@ -8954,6 +9150,24 @@ async function calculateFinancialSummaryByRange(startDate, endDate, financialYea
     SalePointEntry.aggregate([
       { $match: { $and: [activeHolderMatch, { date: range, entryType: 'pay_later', paymentStatus: 'pending' }] } },
       { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
+    ]),
+    Order.aggregate([
+      { $match: { createdAt: range, status: 'delivered', paymentMode: 'cod', 'paymentDetails.isVerified': { $ne: true } } },
+      {
+        $group: {
+          _id: null,
+          amount: { $sum: { $ifNull: ['$paymentDetails.payableAmount', '$totalCost'] } },
+          quantity: {
+            $sum: {
+              $reduce: {
+                input: { $ifNull: ['$items', []] },
+                initialValue: 0,
+                in: { $add: ['$$value', { $ifNull: ['$$this.quantity', 0] }] },
+              },
+            },
+          },
+        },
+      },
     ]),
     SalePointEntry.aggregate([
       { $match: { $and: [activeHolderMatch, { date: range, entryType: 'gift' }] } },
@@ -9003,8 +9217,8 @@ async function calculateFinancialSummaryByRange(startDate, endDate, financialYea
       gradeD: Number(treeProductionRows?.[0]?.gradeD || 0),
     },
     pendingReceivables: {
-      amount: Number(pendingReceivableRows?.[0]?.amount || 0),
-      quantity: Number(pendingReceivableRows?.[0]?.quantity || 0),
+      amount: Number(pendingReceivableRows?.[0]?.amount || 0) + Number(pendingCodReceivableRows?.[0]?.amount || 0),
+      quantity: Number(pendingReceivableRows?.[0]?.quantity || 0) + Number(pendingCodReceivableRows?.[0]?.quantity || 0),
     },
     companyCashDeposits: cashDeposits,
     gifting: {

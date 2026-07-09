@@ -19,6 +19,7 @@ const OrderManagement = () => {
   const [modifyModal, setModifyModal] = useState({ open: false, order: null, discountAmount: '0', items: [], fulfilmentSiteId: '', fulfilmentOptions: [], loadingSites: false, sendModificationEmail: true });
   const [viewOrderModal, setViewOrderModal] = useState({ open: false, order: null });
   const [notesModal, setNotesModal] = useState({ open: false, order: null, text: '', saving: false });
+  const [codPaymentModal, setCodPaymentModal] = useState({ open: false, order: null, deliveryCharges: '0', saving: false });
   const [giftSources, setGiftSources] = useState([]);
   const [giftModal, setGiftModal] = useState({
     open: false,
@@ -250,11 +251,20 @@ const OrderManagement = () => {
       .catch(() => setGiftSources([]));
   }, [canView]);
 
+  function isCodOrder(o) {
+    return o?.paymentMode === 'cod' || o?.paymentDetails?.methodCode === 'cash-on-delivery';
+  }
+
+  function isPaymentVerified(o) {
+    return Boolean(o?.paymentDetails?.isVerified);
+  }
+
   const grouped = useMemo(() => ({
     pending: orders.filter((o) => o.status === 'pending_confirmation'),
     courier: orders.filter((o) => o.status === 'confirmed'),
     dispatched: orders.filter((o) => o.status === 'dispatched'),
-    delivered: orders.filter((o) => o.status === 'delivered'),
+    deliveredVerified: orders.filter((o) => o.status === 'delivered' && (!isCodOrder(o) || isPaymentVerified(o))),
+    deliveredPendingPayment: orders.filter((o) => o.status === 'delivered' && isCodOrder(o) && !isPaymentVerified(o)),
     returned: orders.filter((o) => o.status === 'returned'),
     cancelled: orders.filter((o) => o.status === 'cancelled' || o.status === 'rejected'),
   }), [orders]);
@@ -292,9 +302,18 @@ const OrderManagement = () => {
     return orders.filter((order) => searchableOrderText(order).includes(q));
   }, [orders, globalOrderSearch]);
 
-  const amount = (o) => Number(o.finalAmount || o.totalCost || 0).toFixed(2);
+  const receivableAmount = (o) => {
+    const candidates = [
+      o?.paymentDetails?.payableAmount,
+      o?.finalAmount,
+      o?.totalCost,
+      Number(o?.subtotal || 0) + Number(o?.shippingCost || 0),
+    ];
+    const value = candidates.map(Number).find((n) => Number.isFinite(n) && n > 0);
+    return value || 0;
+  };
+  const amount = (o) => receivableAmount(o).toFixed(2);
   const paymentLabel = (o) => o?.paymentDetails?.methodName || o?.paymentMode || '-';
-  const isCodOrder = (o) => o?.paymentMode === 'cod' || o?.paymentDetails?.methodCode === 'cash-on-delivery';
   const modifySubtotal = modifyModal.items.reduce((sum, it) => sum + (Number(it.price || 0) * Number(it.quantity || 0)), 0);
   const modifyShipping = Number(modifyModal.order?.shippingCost || 0);
   const modifyDiscount = Number(modifyModal.discountAmount || 0);
@@ -643,6 +662,30 @@ const OrderManagement = () => {
     }
   };
 
+  const openCodPaymentModal = (order) => {
+    setCodPaymentModal({ open: true, order, deliveryCharges: String(order?.paymentDetails?.codDeliveryCharges || 0), saving: false });
+  };
+
+  const saveCodPaymentVerification = async () => {
+    const order = codPaymentModal.order;
+    if (!order?._id) return;
+    const deliveryCharges = Number(codPaymentModal.deliveryCharges || 0);
+    const receivable = receivableAmount(order);
+    if (Number.isNaN(deliveryCharges) || deliveryCharges < 0) return toast.warn('Enter valid delivery charges.');
+    if (deliveryCharges > receivable) return toast.warn('Delivery charges cannot be greater than receivable amount.');
+    if (!window.confirm(`Verify COD payment for ${order.orderNumber}?\n\nReceivable: PKR ${receivable.toFixed(2)}\nDelivery Charges: PKR ${deliveryCharges.toFixed(2)}\nNet Cash: PKR ${(receivable - deliveryCharges).toFixed(2)}`)) return;
+    setCodPaymentModal((p) => ({ ...p, saving: true }));
+    try {
+      await api.put(`/orders/${order._id}/verify-payment`, { deliveryCharges });
+      toast.success('COD payment verified and delivery expense recorded.');
+      setCodPaymentModal({ open: false, order: null, deliveryCharges: '0', saving: false });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Failed to verify COD payment.');
+      setCodPaymentModal((p) => ({ ...p, saving: false }));
+    }
+  };
+
   const openModify = (order) => {
     setModifyModal({
       open: true,
@@ -981,7 +1024,7 @@ const OrderManagement = () => {
           },
           { name: 'City', selector: (o) => o.customer?.city || '-', sortable: true, wrap: true },
           { name: 'Fulfilment Source', selector: (o) => fulfillmentSourceLabel(o), sortable: true, wrap: true, grow: 1.1 },
-          ...((tableKey === 'dispatched' || tableKey === 'returned') ? [{
+          ...((tableKey === 'dispatched' || tableKey === 'deliveredPendingPayment' || tableKey === 'deliveredVerified' || tableKey === 'returned') ? [{
             name: 'Courier / Tracking',
             selector: (o) => `${o?.courier?.courierName || '-'} ${o?.courier?.trackingNumber || '-'}`.trim(),
             sortable: true,
@@ -994,7 +1037,7 @@ const OrderManagement = () => {
               </div>
             ),
           }] : []),
-          ...((tableKey === 'courier' || tableKey === 'dispatched' || tableKey === 'delivered' || tableKey === 'returned') ? [{
+          ...((tableKey === 'courier' || tableKey === 'dispatched' || tableKey === 'deliveredPendingPayment' || tableKey === 'deliveredVerified' || tableKey === 'returned') ? [{
             name: 'Courier Status',
             selector: (o) => o?.courier?.latestStatus || '-',
             sortable: true,
@@ -1260,7 +1303,26 @@ const OrderManagement = () => {
         </div>
       ))}
 
-      {renderTable('delivered', 'Delivered Orders', grouped.delivered, (o) => (
+      {renderTable('deliveredPendingPayment', 'Delivered Orders - COD Payment Verification Pending', grouped.deliveredPendingPayment, (o) => (
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
+          <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
+          <button onClick={() => openCodPaymentModal(o)} className="text-emerald-700 hover:underline">Verify COD Payment Received</button>
+          {o.feedback?.rating ? (
+            <button onClick={() => setFeedbackModal({ open: true, order: o })} className="text-green-700 hover:underline">View Feedback</button>
+          ) : (
+            <span className="inline-flex items-center gap-2">
+              <button onClick={() => sendFeedbackReminder(o._id)} className="text-blue-700 hover:underline">Send Feedback Reminder</button>
+              <WhatsAppCheckbox action="feedback" orderId={o._id} />
+            </span>
+          )}
+          {isSuperAdmin ? (
+            <button onClick={() => deleteTestOrder(o)} className="text-red-700 hover:underline">Delete Test Order</button>
+          ) : null}
+        </div>
+      ))}
+
+      {renderTable('deliveredVerified', 'Delivered Orders - Payment Verified', grouped.deliveredVerified, (o) => (
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setViewOrderModal({ open: true, order: o })} className="text-gray-700 hover:underline">View Order</button>
           <button onClick={() => openNotes(o)} className="text-sky-700 hover:underline">Notes</button>
@@ -1352,6 +1414,68 @@ const OrderManagement = () => {
                 {notesModal.saving ? 'Saving...' : 'Add Note'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {codPaymentModal.open && codPaymentModal.order && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-3">
+          <div className="bg-white rounded shadow p-4 w-full max-w-lg">
+            {(() => {
+              const order = codPaymentModal.order;
+              const receivable = receivableAmount(order);
+              const deliveryCharges = Math.max(0, Number(codPaymentModal.deliveryCharges || 0));
+              const netCash = Math.max(0, receivable - deliveryCharges);
+              return (
+                <>
+                  <h3 className="text-lg font-semibold mb-3">Verify COD Payment: {order.orderNumber}</h3>
+                  <div className="space-y-2 text-sm">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="border rounded p-2"><span className="font-semibold">Customer:</span><br />{order.customer?.name || '-'}</div>
+                      <div className="border rounded p-2"><span className="font-semibold">Courier:</span><br />{order.courier?.courierName || '-'}</div>
+                      <div className="border rounded p-2"><span className="font-semibold">Tracking:</span><br />{order.courier?.trackingNumber || '-'}</div>
+                      <div className="border rounded p-2"><span className="font-semibold">Receivable:</span><br />PKR {receivable.toFixed(2)}</div>
+                    </div>
+                    <div className="border rounded p-2">
+                      <span className="font-semibold">Items:</span>
+                      <div>{orderItemsText(order) || '-'}</div>
+                    </div>
+                    <label className="block">
+                      <span className="block font-medium mb-1">Delivery Charges Paid To Courier</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={receivable}
+                        className="border p-2 rounded w-full"
+                        value={codPaymentModal.deliveryCharges}
+                        onChange={(e) => setCodPaymentModal((p) => ({ ...p, deliveryCharges: e.target.value }))}
+                      />
+                    </label>
+                    <div className="rounded border bg-emerald-50 p-3 text-emerald-900">
+                      Net cash to add to online cash in hand after expense: <strong>PKR {netCash.toFixed(2)}</strong>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Saving will mark COD payment verified and create an online-store expense named Courier Delivery Charges with this order number and courier.
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      className="border px-3 py-2 rounded"
+                      onClick={() => setCodPaymentModal({ open: false, order: null, deliveryCharges: '0', saving: false })}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="bg-emerald-600 text-white px-3 py-2 rounded disabled:opacity-60"
+                      disabled={codPaymentModal.saving}
+                      onClick={saveCodPaymentVerification}
+                    >
+                      {codPaymentModal.saving ? 'Saving...' : 'Save COD Verification'}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
