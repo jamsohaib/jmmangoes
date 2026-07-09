@@ -109,9 +109,20 @@ function getOrderReceivableAmount(order) {
   ].map(Number).find((n) => Number.isFinite(n) && n > 0) || 0;
 }
 
+function isCodOrderLike(order = {}) {
+  const mode = String(order?.paymentMode || '').trim().toLowerCase();
+  const methodCode = String(order?.paymentDetails?.methodCode || '').trim().toLowerCase();
+  const methodName = String(order?.paymentDetails?.methodName || '').trim().toLowerCase();
+  return mode === 'cod' ||
+    methodCode === 'cod' ||
+    methodCode === 'cash-on-delivery' ||
+    methodName === 'cod' ||
+    methodName.includes('cash on delivery');
+}
+
 async function ensureCodSaleLedgerRows(order, req) {
   if (!order) return 0;
-  const isCod = order.paymentMode === 'cod' || order?.paymentDetails?.methodCode === 'cash-on-delivery';
+  const isCod = isCodOrderLike(order);
   if (!isCod || order?.paymentDetails?.isVerified !== true) return 0;
   const existingSaleRows = await SalePointEntry.countDocuments({ sourceOrderId: order._id, entryType: 'sale' });
   if (existingSaleRows > 0) return 0;
@@ -1660,14 +1671,17 @@ async function handleGetSaleHolders(req, res) {
       warehouses = warehouses.filter((w) => warehouseSet.has(String(w._id)));
     }
     const rows = [
-      ...sites.map((s) => ({
-        _id: `site:${s._id}`,
-        holderType: 'site',
-        holderId: s._id,
-        name: s.name,
-        label: `Sale Point / Site - ${s.name}`,
-        contactNumber: s.contactNumber || '',
-      })),
+      ...sites.map((s) => {
+        const isOnline = String(s.name || '').trim().toLowerCase() === 'online';
+        return {
+          _id: `${isOnline ? 'online' : 'site'}:${s._id}`,
+          holderType: isOnline ? 'online' : 'site',
+          holderId: s._id,
+          name: s.name,
+          label: `Sale Point / Site - ${s.name}`,
+          contactNumber: s.contactNumber || '',
+        };
+      }),
       ...warehouses.map((w) => ({
         _id: `warehouse:${w._id}`,
         holderType: 'warehouse',
@@ -2026,8 +2040,12 @@ async function handleGetSalePointEntries(req, res) {
     if (normalizedHolderType === 'online') {
       const verifiedCodOrders = await Order.find({
         status: 'delivered',
-        paymentMode: 'cod',
         'paymentDetails.isVerified': true,
+        $or: [
+          { paymentMode: 'cod' },
+          { 'paymentDetails.methodCode': { $in: ['cod', 'cash-on-delivery'] } },
+          { 'paymentDetails.methodName': /cash on delivery|^cod$/i },
+        ],
       }).limit(200);
       for (const order of verifiedCodOrders) {
         await ensureCodSaleLedgerRows(order, req);
@@ -3442,8 +3460,12 @@ async function handleGetSalesDashboardSummary(req, res) {
         {
           $match: {
             status: 'delivered',
-            paymentMode: 'cod',
             'paymentDetails.isVerified': { $ne: true },
+            $or: [
+              { paymentMode: 'cod' },
+              { 'paymentDetails.methodCode': { $in: ['cod', 'cash-on-delivery'] } },
+              { 'paymentDetails.methodName': /cash on delivery|^cod$/i },
+            ],
           },
         },
         {
@@ -7194,7 +7216,7 @@ async function handleVerifyOrderPayment(req, res) {
     const payableAmount = getOrderReceivableAmount(order);
     if (Number.isNaN(deliveryCharges)) return res.status(400).json({ message: 'Valid delivery charges are required' });
     if (deliveryCharges > payableAmount) return res.status(400).json({ message: 'Delivery charges cannot be greater than receivable amount' });
-    const isCod = order.paymentMode === 'cod' || order?.paymentDetails?.methodCode === 'cash-on-delivery';
+    const isCod = isCodOrderLike(order);
     if (deliveryCharges > 0 && !isCod) return res.status(400).json({ message: 'Delivery charges can only be recorded for COD orders' });
     let deliveryExpenseEntryId = order?.paymentDetails?.deliveryExpenseEntryId || null;
     if (deliveryCharges > 0 && !deliveryExpenseEntryId) {
@@ -9152,7 +9174,18 @@ async function calculateFinancialSummaryByRange(startDate, endDate, financialYea
       { $group: { _id: null, amount: { $sum: '$receivableAmount' }, quantity: { $sum: '$quantity' } } },
     ]),
     Order.aggregate([
-      { $match: { createdAt: range, status: 'delivered', paymentMode: 'cod', 'paymentDetails.isVerified': { $ne: true } } },
+      {
+        $match: {
+          createdAt: range,
+          status: 'delivered',
+          'paymentDetails.isVerified': { $ne: true },
+          $or: [
+            { paymentMode: 'cod' },
+            { 'paymentDetails.methodCode': { $in: ['cod', 'cash-on-delivery'] } },
+            { 'paymentDetails.methodName': /cash on delivery|^cod$/i },
+          ],
+        },
+      },
       {
         $group: {
           _id: null,
