@@ -119,6 +119,16 @@ const createEmptyForm = () => ({
   isActive: true,
 });
 
+const cleanIdArray = (values = []) => Array.from(new Set(
+  (Array.isArray(values) ? values : [])
+    .map((value) => {
+      const raw = typeof value === 'object' && value !== null ? (value._id || value.id || '') : value;
+      const str = String(raw || '').trim();
+      return str.includes(':') ? str.split(':').pop() : str;
+    })
+    .filter(Boolean)
+));
+
 const AdminUsers = () => {
   const authUser = useAuthStore((state) => state.user);
   const canView = authUser?.role === 'admin' || authUser?.permissions?.userManagement?.view;
@@ -154,6 +164,10 @@ const AdminUsers = () => {
       if (!String(payload.email || '').trim()) {
         delete payload.email;
       }
+      payload.siteAccess = cleanIdArray(payload.siteAccess);
+      payload.warehouseAccess = cleanIdArray(payload.warehouseAccess);
+      payload.wholesellerAccess = cleanIdArray(payload.wholesellerAccess);
+      payload.farmBlockAccess = cleanIdArray(payload.farmBlockAccess);
       await api.post('/users', payload);
       toast.success('User created.');
       setForm(createEmptyForm());
@@ -196,6 +210,10 @@ const AdminUsers = () => {
       if (!String(payload.email || '').trim()) {
         delete payload.email;
       }
+      payload.siteAccess = cleanIdArray(payload.siteAccess);
+      payload.warehouseAccess = cleanIdArray(payload.warehouseAccess);
+      payload.wholesellerAccess = cleanIdArray(payload.wholesellerAccess);
+      payload.farmBlockAccess = cleanIdArray(payload.farmBlockAccess);
       if (!resetPasswordOpen) {
         delete payload.password;
         delete payload.confirmPassword;

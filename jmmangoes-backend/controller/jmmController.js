@@ -4938,6 +4938,18 @@ async function handleGetUsers(req, res) {
   }
 }
 
+function cleanObjectIdArray(values = []) {
+  return Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => {
+        const raw = typeof value === 'object' && value !== null ? (value._id || value.id || '') : value;
+        const str = String(raw || '').trim();
+        return str.includes(':') ? str.split(':').pop() : str;
+      })
+      .filter((value) => mongoose.Types.ObjectId.isValid(value))
+  ));
+}
+
 async function handleCreateUser(req, res) {
   try {
     const {
@@ -4982,10 +4994,10 @@ async function handleCreateUser(req, res) {
       email: normalizedEmail || undefined,
       password,
       role,
-      siteAccess,
-      warehouseAccess,
-      wholesellerAccess,
-      farmBlockAccess,
+      siteAccess: cleanObjectIdArray(siteAccess),
+      warehouseAccess: cleanObjectIdArray(warehouseAccess),
+      wholesellerAccess: cleanObjectIdArray(wholesellerAccess),
+      farmBlockAccess: cleanObjectIdArray(farmBlockAccess),
       isFarmUser: Boolean(isFarmUser),
       isSalesUser: Boolean(isSalesUser),
       permissions,
@@ -4994,6 +5006,13 @@ async function handleCreateUser(req, res) {
     await user.save();
     return res.status(201).json({ success: true, user: { ...user.toObject(), password: undefined } });
   } catch (err) {
+    if (err?.code === 11000) {
+      const dupField = Object.keys(err.keyPattern || {})[0] || 'field';
+      return res.status(400).json({ message: `${dupField} already exists` });
+    }
+    if (err?.name === 'ValidationError' || err?.name === 'CastError') {
+      return res.status(400).json({ message: err.message });
+    }
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
 }
@@ -5037,10 +5056,10 @@ async function handleUpdateUser(req, res) {
       }
     }
     user.role = role ?? user.role;
-    user.siteAccess = Array.isArray(siteAccess) ? siteAccess : user.siteAccess;
-    user.warehouseAccess = Array.isArray(warehouseAccess) ? warehouseAccess : user.warehouseAccess;
-    user.wholesellerAccess = Array.isArray(wholesellerAccess) ? wholesellerAccess : user.wholesellerAccess;
-    user.farmBlockAccess = Array.isArray(farmBlockAccess) ? farmBlockAccess : user.farmBlockAccess;
+    user.siteAccess = Array.isArray(siteAccess) ? cleanObjectIdArray(siteAccess) : user.siteAccess;
+    user.warehouseAccess = Array.isArray(warehouseAccess) ? cleanObjectIdArray(warehouseAccess) : user.warehouseAccess;
+    user.wholesellerAccess = Array.isArray(wholesellerAccess) ? cleanObjectIdArray(wholesellerAccess) : user.wholesellerAccess;
+    user.farmBlockAccess = Array.isArray(farmBlockAccess) ? cleanObjectIdArray(farmBlockAccess) : user.farmBlockAccess;
     if (typeof isFarmUser === 'boolean') user.isFarmUser = isFarmUser;
     if (typeof isSalesUser === 'boolean') user.isSalesUser = isSalesUser;
     user.permissions = permissions ?? user.permissions;
@@ -5064,6 +5083,9 @@ async function handleUpdateUser(req, res) {
     if (err?.code === 11000) {
       const dupField = Object.keys(err.keyPattern || {})[0] || 'field';
       return res.status(400).json({ message: `${dupField} already exists` });
+    }
+    if (err?.name === 'ValidationError' || err?.name === 'CastError') {
+      return res.status(400).json({ message: err.message });
     }
     return res.status(500).json({ message: 'Server error', error: err.message });
   }
