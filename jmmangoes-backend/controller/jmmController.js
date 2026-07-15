@@ -695,7 +695,7 @@ function renderTwilioTemplatePreview(contentSid = '', variables = {}) {
   }
   if (String(contentSid || '').trim() === getGiftNotificationTemplateSid()) {
     const { 1: receiver = 'Customer', 2: sender = 'Someone special', 3: items = 'a mango gift' } = variables || {};
-    return `Dear ${receiver},\n\n${sender} has sent you a gift from JM Mangoes: ${items}.\n\nIt will be delivered soon once confirmed by courier.\n\njmmangoes.pk\n03218869344`;
+    return `Dear ${receiver},\n\n${sender} has sent you a gift from JM Mangoes: ${items}.\n\nWe hope you enjoy this gift sent as a token of care and warmth.\n\njmmangoes.pk\n03218869344`;
   }
   if (String(contentSid || '').trim() === getGiftDispatchTemplateSid()) {
     const { 1: name = 'Customer', 2: items = 'gift', 3: courier = 'courier', 4: tracking = '' } = variables || {};
